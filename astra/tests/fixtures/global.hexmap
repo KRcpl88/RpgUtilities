@@ -1,0 +1,44 @@
+FANTASY-MAP 1
+[metadata]
+{"defaultTerrain":"water","id":"global-fixture","kind":"global","name":"Global example","projection":{"columns":2,"id":"equilateral-chamfered-cube","version":1},"scale":"XL","scaleFamily":"regional"}
+[terrain {"column":0,"height":16,"panelId":"Hyz+-","row":0,"width":16}]
+i~______________
+~~______________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+[terrain {"column":-16,"height":16,"panelId":"Sz-","row":0,"width":16}]
+_______________~
+_______________l
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+[paths]
+{"id":"river-1","points":[{"east":0,"north":0,"panelId":"Sz-"},{"east":75.18446165231624,"north":-75.18446165231626,"panelId":"Sz-"},{"east":-100.24594886975503,"north":141.7691804645674,"panelId":"Hyz+-"},{"east":0,"north":0,"panelId":"Hyz+-"}],"type":"river"}
+[landmarks]
+{"id":"city-1","position":{"east":-187.06148721743872,"north":-108,"panelId":"Sz-"},"tile":{"panelId":"Sz-","q":-1,"r":0},"type":"city"}
+[labels]
+{"id":"label-1","offset":[0,0],"position":{"east":-187.06148721743872,"north":-108,"panelId":"Sz-"},"rotation":15,"size":12,"text":"Caf\u00e9 \u03b1 \ud83c\udff0","tile":{"panelId":"Sz-","q":-1,"r":0}}
+[end]

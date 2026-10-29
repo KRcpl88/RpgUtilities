@@ -1,0 +1,27 @@
+FANTASY-MAP 1
+[metadata]
+{"anchor":null,"defaultTerrain":"plain","extent":{"height":3,"origin":[-0.25,0.75],"width":6},"id":"local-fixture","kind":"local","name":"Local example","scale":"M","scaleFamily":"local"}
+[terrain {"column":0,"height":16,"panelId":"local","row":0,"width":16}]
+~ilw.h__________
+m^dsfr__________
+gtcba.__________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+________________
+[paths]
+{"id":"trail-1","points":[{"east":-0.25,"north":0.75,"panelId":"local"},{"east":-0.249,"north":0.749,"panelId":"local"}],"type":"trail"}
+[landmarks]
+{"id":"city-1","position":{"east":-0.25,"north":0.75,"panelId":"local"},"tile":{"panelId":"local","q":0,"r":0},"type":"city"}
+[labels]
+{"id":"label-1","offset":[0,0],"position":{"east":-0.25,"north":0.75,"panelId":"local"},"rotation":15,"size":12,"text":"Caf\u00e9 \u03b1 \ud83c\udff0","tile":{"panelId":"local","q":0,"r":0}}
+[end]
