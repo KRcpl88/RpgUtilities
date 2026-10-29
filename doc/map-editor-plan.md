@@ -24,6 +24,7 @@ tests/
   lattice.test.cjs  topology.test.cjs  coordinates.test.cjs                               [done]
   model.test.cjs                                                                         [done]
   view.test.cjs                 # camera, layouts, hit testing, culling, demo terrain    [done]
+  edit.test.cjs                 # brush, stroke, flood fill, undo of edits               [done]
   fileformat.test.cjs  regions.test.cjs  svgexport.test.cjs
   fixtures/sample-global.map.txt  fixtures/sample-local.map.txt
 tools/generate_map_projection.py                                                         [done]
@@ -53,7 +54,7 @@ Every module is an inline block that registers one frozen object:
 - Blocks appear in dependency order; `Util` is first and `App` is last.
 - Blocks that touch the DOM carry `data-dom="true"`. The tests skip these, so every other block must be DOM-free.
 - `tests/_load.cjs` `LoadModules()` blanks out HTML comments, compiles each DOM-free block with `vm.compileFunction` (passing a sandbox object as `globalThis`, with `lineOffset` so errors report `index.html` line numbers), and returns `RpgMap`.
-- **Planned modules, in order:** `Util` ✅ → `Projection` ✅ → `Lattice` ✅ → `Topology` ✅ → `Coordinates` ✅ → `Terrain` ✅ → `Model` ✅ → `History` ✅ → `View` ✅ → `FileFormat` → `Regions` → `SvgExport` → `Renderer`* ✅ → `Tools`* → `App`* ✅. Modules marked * use the DOM.
+- **Planned modules, in order:** `Util` ✅ → `Projection` ✅ → `Lattice` ✅ → `Topology` ✅ → `Coordinates` ✅ → `Terrain` ✅ → `Model` ✅ → `History` ✅ → `View` ✅ → `Edit` ✅ → `FileFormat` → `Regions` → `SvgExport` → `Renderer`* ✅ → `App`* ✅. Modules marked * use the DOM. The tool UI (palette, pointer and key handling) lives in `App`; the testable tool logic is the DOM-free `Edit` module (§11.32), so there is no separate `Tools` module.
 
 ## 3. Projection module (port of the Python geometry)
 
@@ -304,7 +305,7 @@ road r1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Zeta
 3. ✅ **Lattice and Topology:** flat-top lattice, global size and scales, equatorial continuous lattice, partial tiles clipped per panel, adjacency, universal coordinates (miles), local-map lattice.
 4. ✅ **Terrain table, Model, History.**
 5. ✅ **Renderer and viewport:** pan, zoom, culling, clipped panels, outlines, minimap, panel focus view, status bar coordinates.
-6. **Terrain tools:** brush, fill, eyedropper, undo/redo.
+6. ✅ **Terrain tools:** brush, fill, eyedropper, undo/redo.
 7. **File format:** `doc/file-format.md`, writer, parser, open/save/autosave, fixtures.
 8. **Overlays, landmarks, labels:** tools, properties panel, A* gap filling.
 9. **Local maps:** new-map dialog, scales, anchor snapping, conversion to universal coordinates.
@@ -342,9 +343,16 @@ road r1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Zeta
 26. **View module:** camera, layouts, culling, hit testing and the demo terrain live in a DOM-free `View` module (after `History`) so they are unit-tested; `Renderer` only does canvas drawing.
 27. **World space:** in the net view, world = net space; in the panel focus view, world = the focus panel's frame. Both are y-up edge units. A layout is a list of placements `{ szPanel, rgdFrameToWorld, … }`; focus layouts place each edge-neighbour through its seam transform and draw the focus panel last.
 28. **Point ownership at seams** (`prompt.md` "Map projection"): on the east/west seams between equatorial panels, edge hexes belong wholly to their own panel. The small tip of an edge hex that pokes across the seam into the neighbouring panel therefore belongs to that hex, and so to the other panel. On every other seam, partial tiles are clipped to their panel, so the panel containing the point owns it. Each equatorial panel draws its strip neighbours' edge columns (mapped through the seam), clipped to its own polygon. `View.HitTest` follows the same rule: it returns the owning tile, `szPanel` = the owner's panel, `rgdFrame` = the point in the owner's frame, and `szDrawPanel` = the panel whose outline contains the point.
-29. **Drawing thresholds (hex size in screen pixels):** below 3 px, a cached raster of the whole layout is used (at most 4096 px across, rebuilt when the document revision changes); below 4 px, tiles are filled as their w × d cells; the hex grid appears at 6 px. Fills are inflated by ½ px to hide anti-aliasing seams and are issued in chunks of 512 tiles, because canvas path fills slow down superlinearly with subpath count.
+29. **Drawing thresholds (hex size in screen pixels):** below 3 px, a cached raster of the whole layout is used (at most 4096 px across; rebuilt when the document changes in a way it was not told about, otherwise repainted per tile, §11.37); below 4 px, tiles are filled as their w × d cells; the hex grid appears at 6 px. Fills are inflated by ½ px to hide anti-aliasing seams and are issued in chunks of 512 tiles, because canvas path fills slow down superlinearly with subpath count.
 30. **Demo terrain:** until files can be opened (milestone 7), the editor starts with `View.DemoTerrain(Topo, 1)`, a deterministic world from seeded sphere waves.
 31. **Viewport input (milestone 5):** dragging with any button pans; milestone 6 moves pan to the middle/right button or Space+drag when the left button becomes the active tool. A double-click opens the focus view on the clicked panel. A minimap click recentres the net view, or refocuses on the clicked panel in focus view. Keys: arrows pan (Shift ×4), `+`/`=`/`-` zoom, Home fits all, `F` fits the panel, `N` shows the net, `P` focuses the panel at the view centre.
+
+32. **Edit module:** the brush, stroke, flood fill and command helpers are a DOM-free `Edit` module (after `View`), unit-tested in `tests/edit.test.cjs`. `App` owns the tool state and input.
+33. **Brush:** the radius (0–5, default 1) is in tiles: the footprint is every tile within that many adjacency steps (BFS over `Topology.Neighbors`), so it crosses seams and is a hex of 3r(r+1)+1 tiles away from panel corners. While the Brush tool is active, the footprint under the cursor is outlined.
+34. **Strokes:** between pointer samples, the segment is hit-tested every d/4 world units so fast strokes leave no gaps; each tile under the path stamps the brush once per stroke. A whole stroke (pointer down to up) is one History command, labelled `Paint <terrain>`.
+35. **Flood fill** replaces the connected region of the clicked tile's terrain (BFS across seams, no size cap) with the active terrain, as one command labelled `Fill <terrain>`; filling with the same terrain is a no-op. Even the whole world at n = 24 L (218,088 tiles) fills in well under a second, so no confirmation is asked.
+36. **Tool input (replaces §11.31's "any button pans"):** tools are Pan (`H`), Brush (`B`), Fill (`G`) and Pick/eyedropper (`I`); `[`/`]` change the brush radius. The left button drives the active tool; the middle or right button, Space+drag, or the Pan tool pans. Alt+click picks a terrain with any tool. A double-click opens the focus view only with the Pan tool, so quick brush clicks never change view. Clicking a terrain in the properties legend makes it active (default: plain). Ctrl+Z undoes; Ctrl+Y and Ctrl+Shift+Z redo; toolbar Undo/Redo buttons are disabled when unavailable. The status message leads with the last action (`Paint Forest: 37 tiles`, `Undo Fill Water: 1,999 tiles`).
+37. **Incremental raster:** after an edit, undo or redo, `Renderer.MarkTilesChanged` marks the changed tiles on each cached raster of that document. The next draw clears an integer-pixel box around each tile in every placement it is drawn in (its own panel, plus the strip neighbours for equatorial tiles) and redraws whatever overlaps the boxes, clipped to them. More than 3,000 changed tiles redraws the whole raster in place. Colour buckets are painted in terrain-id order so a partial repaint matches a full redraw (apart from a few hundred anti-aliased pixels, which are invisible).
 
 ## 12. Open questions
 

@@ -94,8 +94,29 @@
   }
   #toolbar button:hover, #toolbar select:hover { border-color: var(--accent); }
   #toolbar button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  #map-canvas[data-tool="pan"] { cursor: grab; }
+  #map-canvas[data-tool="pan"].dragging, #map-canvas.dragging { cursor: grabbing; }
+  #toolbar .toolbar-gap { display: inline-block; width: 12px; }
+  #toolbar button:disabled { opacity: 0.45; border-color: var(--panel-border); }
+  .tool-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 8px; }
+  .tool-button {
+    padding: 4px 6px;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    background: #383a40;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+  }
+  .tool-button:hover { border-color: var(--accent); }
+  .tool-button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  .tool-option { display: flex; align-items: center; gap: 6px; margin: 4px 0 8px; }
+  .tool-option input[type="range"] { flex: 1; min-width: 0; }
+  #tool-list { margin-bottom: 12px; }
   .layer-toggle { display: block; margin: 2px 0; cursor: pointer; }
-  .legend-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+  .legend-row { display: flex; align-items: center; gap: 6px; margin: 1px 0; padding: 1px 4px; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
+  .legend-row:hover { border-color: var(--panel-border); }
+  .legend-row.active { border-color: var(--accent); background: rgba(255, 255, 255, 0.06); }
   .legend-row code { width: 1.2em; text-align: center; color: var(--text-dim); }
   .swatch { width: 14px; height: 14px; border-radius: 2px; border: 1px solid rgba(0, 0, 0, 0.4); }
   #layer-list { margin-bottom: 12px; }
@@ -2801,6 +2822,170 @@
 })(globalThis);
 </script>
 
+<script data-module="Edit">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+  const { Util, Topology, Terrain, Model, History, View } = RpgMap;
+  const { Require } = Util;
+
+  // DOM-free terrain editing: brush footprints, flood fill, stroke interpolation, and
+  // commands grouped in History. Tile sets are found by walking tile adjacency, so they
+  // cross panel seams in every view.
+  const g_nMaxBrushRadius = 5;
+  // Stroke samples per hex height when interpolating between pointer positions.
+  const g_nSamplesPerHex = 4;
+
+  function NeighborsOf(Doc, nTile) {
+    return Doc.Topo ? Topology.Neighbors(Doc.Topo, nTile) : Model.Neighbors(Doc, nTile);
+  }
+
+  function CheckRadius(nRadius) {
+    Require(Number.isInteger(nRadius) && nRadius >= 0 && nRadius <= g_nMaxBrushRadius,
+      `Brush radius must be an integer 0-${g_nMaxBrushRadius}`);
+  }
+
+  // Tiles within nRadius steps of nCenter, nearest first.
+  function BrushTiles(Doc, nCenter, nRadius) {
+    Require(Model.IsTile(Doc, nCenter), `Unknown tile: ${nCenter}`);
+    CheckRadius(nRadius);
+    const Seen = new Set([nCenter]);
+    let rgnRing = [nCenter];
+    const rgnResult = [nCenter];
+    for (let nStep = 0; nStep < nRadius; nStep++) {
+      const rgnNext = [];
+      for (const nTile of rgnRing) {
+        for (const nOther of NeighborsOf(Doc, nTile)) {
+          if (!Seen.has(nOther)) {
+            Seen.add(nOther);
+            rgnNext.push(nOther);
+            rgnResult.push(nOther);
+          }
+        }
+      }
+      rgnRing = rgnNext;
+    }
+    return rgnResult;
+  }
+
+  // The connected region of tiles sharing nStart's terrain, in breadth-first order.
+  function FloodRegion(Doc, nStart) {
+    Require(Model.IsTile(Doc, nStart), `Unknown tile: ${nStart}`);
+    const rgnTerrain = Doc.rgnTerrain;
+    const nId = rgnTerrain[nStart];
+    const rgfSeen = new Uint8Array(Doc.nTiles);
+    rgfSeen[nStart] = 1;
+    const rgnResult = [nStart];
+    for (let nHead = 0; nHead < rgnResult.length; nHead++) {
+      for (const nOther of NeighborsOf(Doc, rgnResult[nHead])) {
+        if (!rgfSeen[nOther] && rgnTerrain[nOther] === nId) {
+          rgfSeen[nOther] = 1;
+          rgnResult.push(nOther);
+        }
+      }
+    }
+    return rgnResult;
+  }
+
+  // Tiles under the world-space segment from rgdFrom to rgdTo in Layout, in order, without
+  // consecutive repeats. Sampled densely enough that no crossed tile is skipped in practice.
+  function SegmentTiles(Topo, Layout, rgdFrom, rgdTo) {
+    const dLength = Math.hypot(rgdTo[0] - rgdFrom[0], rgdTo[1] - rgdFrom[1]);
+    const nSteps = Math.max(1, Math.ceil(dLength * g_nSamplesPerHex / Topo.dD));
+    const rgnResult = [];
+    for (let nStep = 0; nStep <= nSteps; nStep++) {
+      const dT = nStep / nSteps;
+      const Hit = View.HitTest(Topo, Layout, [rgdFrom[0] + dT * (rgdTo[0] - rgdFrom[0]), rgdFrom[1] + dT * (rgdTo[1] - rgdFrom[1])]);
+      if (Hit && rgnResult[rgnResult.length - 1] !== Hit.nTile) {
+        rgnResult.push(Hit.nTile);
+      }
+    }
+    return rgnResult;
+  }
+
+  // Sets the terrain of each tile; returns the tiles that changed. fnRecord receives
+  // each change record (for History.Record).
+  function PaintTiles(Doc, rgnTiles, nTerrainId, fnRecord) {
+    Require(Terrain.IsValidId(nTerrainId), `Unknown terrain id: ${nTerrainId}`);
+    const rgnChanged = [];
+    for (const nTile of rgnTiles) {
+      const Change = Model.SetTerrain(Doc, nTile, nTerrainId);
+      if (Change) {
+        fnRecord(Change);
+        rgnChanged.push(nTile);
+      }
+    }
+    return rgnChanged;
+  }
+
+  // A brush stroke is one History command, opened here and closed by EndStroke.
+  function BeginStroke(HistoryState, nTerrainId, nRadius) {
+    Require(Terrain.IsValidId(nTerrainId), `Unknown terrain id: ${nTerrainId}`);
+    CheckRadius(nRadius);
+    History.Begin(HistoryState, `Paint ${Terrain.ById(nTerrainId).szName}`);
+    return { History: HistoryState, nTerrainId, nRadius, rgdLast: null, nLastTile: -1, Centers: new Set(), nChanged: 0 };
+  }
+
+  // Paints along the segment from the previous point (or just at rgdWorld for the first
+  // point). Returns the tiles that changed.
+  function StrokeTo(Stroke, Layout, rgdWorld) {
+    const Doc = Stroke.History.Doc;
+    const rgnCenters = Stroke.rgdLast ? SegmentTiles(Doc.Topo, Layout, Stroke.rgdLast, rgdWorld) : SegmentTiles(Doc.Topo, Layout, rgdWorld, rgdWorld);
+    Stroke.rgdLast = [rgdWorld[0], rgdWorld[1]];
+    const fnRecord = (Change) => History.Record(Stroke.History, Change);
+    const rgnChanged = [];
+    for (const nCenter of rgnCenters) {
+      if (Stroke.Centers.has(nCenter)) {
+        continue;
+      }
+      Stroke.Centers.add(nCenter);
+      rgnChanged.push(...PaintTiles(Doc, BrushTiles(Doc, nCenter, Stroke.nRadius), Stroke.nTerrainId, fnRecord));
+    }
+    Stroke.nChanged += rgnChanged.length;
+    return rgnChanged;
+  }
+
+  // Closes the stroke's command; returns it, or null if nothing changed.
+  function EndStroke(Stroke) {
+    return History.Commit(Stroke.History);
+  }
+
+  // Replaces the connected region under nStart with nTerrainId as one command.
+  // Returns { Command, rgnTiles } (Command null when nothing changed).
+  function Fill(HistoryState, nStart, nTerrainId) {
+    const Doc = HistoryState.Doc;
+    Require(Terrain.IsValidId(nTerrainId), `Unknown terrain id: ${nTerrainId}`);
+    if (Model.GetTerrain(Doc, nStart) === nTerrainId) {
+      return { Command: null, rgnTiles: [] };
+    }
+    const rgnRegion = FloodRegion(Doc, nStart);
+    let rgnTiles = [];
+    const Command = History.Perform(HistoryState, `Fill ${Terrain.ById(nTerrainId).szName}`, (_, fnRecord) => {
+      rgnTiles = PaintTiles(Doc, rgnRegion, nTerrainId, fnRecord);
+    });
+    return { Command, rgnTiles };
+  }
+
+  // The tiles whose terrain a command changes.
+  function CommandTiles(Command) {
+    return Command ? Command.rgChanges.filter((Change) => Change.szLayer === 'terrain').map((Change) => Change.Key) : [];
+  }
+
+  RpgMap.Edit = Object.freeze({
+    g_nMaxBrushRadius,
+    BrushTiles,
+    FloodRegion,
+    SegmentTiles,
+    PaintTiles,
+    BeginStroke,
+    StrokeTo,
+    EndStroke,
+    Fill,
+    CommandTiles,
+  });
+})(globalThis);
+</script>
+
 <script data-module="Renderer" data-dom="true">
 (function (Root) {
   'use strict';
@@ -2817,11 +3002,14 @@
   // Canvas path fills slow down superlinearly with subpath count, so long tile lists are
   // filled or stroked in chunks.
   const g_nPathChunk = 512;
+  // Above this many changed tiles, a cached raster is redrawn whole instead.
+  const g_nMaxRepaintTiles = 3000;
   const g_szBackground = '#10151c';
   const g_szGridColor = 'rgba(16, 21, 28, 0.35)';
   const g_szOutlineColor = 'rgba(230, 230, 230, 0.8)';
   const g_szFocusColor = '#ffd166';
   const g_szHoverColor = '#ffd166';
+  const g_szPreviewColor = 'rgba(255, 209, 102, 0.7)';
   const g_rgrgdHexUnit = [0, 1, 2, 3, 4, 5].map((nIndex) => [Math.cos(nIndex * Math.PI / 3), Math.sin(nIndex * Math.PI / 3)]);
 
   function Create(Canvas) {
@@ -2927,7 +3115,9 @@
             (Buckets.get(nId) || Buckets.set(nId, []).get(nId)).push(nTile);
           }
           const dInflate = g_dSeamPixels / dScale;
-          for (const [nId, rgnTiles] of Buckets) {
+          // Inflated neighbours overlap, so paint in terrain-id order: then a partial
+          // repaint layers the overlaps exactly as a full redraw does.
+          for (const [nId, rgnTiles] of [...Buckets].sort((A, B) => A[0] - B[0])) {
             Context.fillStyle = Terrain.ById(nId).szColor;
             PaintTiles(Context, Topo, rgnTiles, fSmall, dInflate, () => Context.fill());
           }
@@ -2944,20 +3134,95 @@
   }
 
   // A cached terrain image of a whole layout, used when hexes are too small to draw.
+  // Edits reported through MarkTilesChanged are repainted in place; any other document
+  // change (a revision the raster was not told about) rebuilds it.
   function GetRaster(Renderer, szKey, Doc, Layout, dScale) {
     const Cached = Renderer.Rasters.get(szKey);
     if (Cached && Cached.Doc === Doc && Cached.Layout === Layout && Cached.nRevision === Doc.nRevision && Cached.dScale === dScale) {
+      if (Cached.DirtyTiles.size > g_nMaxRepaintTiles) {
+        Cached.Context.setTransform(1, 0, 0, 1, 0, 0);
+        Cached.Context.clearRect(0, 0, Cached.Canvas.width, Cached.Canvas.height);
+        DrawTiles(Cached.Context, 1, Doc, Layout, Cached.rgdWorldToRaster, Cached.rgdBounds, dScale, { fTerrain: true, fGrid: false });
+      } else if (Cached.DirtyTiles.size > 0) {
+        RepaintRasterTiles(Cached);
+      }
+      Cached.DirtyTiles.clear();
       return Cached;
     }
     const rgdBounds = Layout.rgdBounds;
     const Canvas = Root.document.createElement('canvas');
     Canvas.width = Math.max(1, Math.ceil((rgdBounds[2] - rgdBounds[0]) * dScale));
     Canvas.height = Math.max(1, Math.ceil((rgdBounds[3] - rgdBounds[1]) * dScale));
+    const Context = Canvas.getContext('2d');
     const rgdWorldToRaster = [dScale, 0, 0, -dScale, -rgdBounds[0] * dScale, rgdBounds[3] * dScale];
-    DrawTiles(Canvas.getContext('2d'), 1, Doc, Layout, rgdWorldToRaster, rgdBounds, dScale, { fTerrain: true, fGrid: false });
-    const Raster = { Canvas, Doc, Layout, nRevision: Doc.nRevision, dScale, rgdBounds };
+    DrawTiles(Context, 1, Doc, Layout, rgdWorldToRaster, rgdBounds, dScale, { fTerrain: true, fGrid: false });
+    const Raster = { Canvas, Context, Doc, Layout, nRevision: Doc.nRevision, dScale, rgdBounds, rgdWorldToRaster, DirtyTiles: new Set() };
     Renderer.Rasters.set(szKey, Raster);
     return Raster;
+  }
+
+  // Records tiles whose terrain just changed (the document is at its new revision), so
+  // cached rasters repaint only those tiles on their next use.
+  function MarkTilesChanged(Renderer, Doc, rgnTiles) {
+    for (const Raster of Renderer.Rasters.values()) {
+      if (Raster.Doc === Doc) {
+        rgnTiles.forEach((nTile) => Raster.DirtyTiles.add(nTile));
+        Raster.nRevision = Doc.nRevision;
+      }
+    }
+  }
+
+  // Where a tile is drawn in a layout: its own placement plus, for equatorial edge
+  // columns, the strip neighbours whose polygons its hex overhangs. Yields world centres.
+  function TileWorldCenters(Topo, Layout, nTile) {
+    const Tile = Topo.rgTiles[nTile];
+    const rgrgdCenters = [];
+    const Own = View.FindPlacement(Layout, Tile.szPanel);
+    if (Own) {
+      rgrgdCenters.push(Projection.ApplyTransform(Own.rgdFrameToWorld, Tile.rgdCenter));
+    }
+    const Info = Topo.Panels[Tile.szPanel];
+    if (Info.Lattice.fEquatorial) {
+      for (const szOther of [Info.szWest, Info.szEast]) {
+        const Other = View.FindPlacement(Layout, szOther);
+        if (Other) {
+          const Seam = Projection.FindSeam(Tile.szPanel, szOther);
+          const rgdToOther = Seam.szPanelA === Tile.szPanel ? Seam.rgdAToB : Seam.rgdBToA;
+          rgrgdCenters.push(Projection.ApplyTransform(Other.rgdFrameToWorld, Projection.ApplyTransform(rgdToOther, Tile.rgdCenter)));
+        }
+      }
+    }
+    return rgrgdCenters;
+  }
+
+  // Clears and redraws whole-pixel boxes around each dirty tile; tiles overlapping the
+  // boxes are redrawn too, clipped to the boxes, so neighbours stay intact.
+  function RepaintRasterTiles(Raster) {
+    const { Context, Doc, Layout, dScale, rgdWorldToRaster } = Raster;
+    const Topo = Doc.Topo;
+    const dRadius = Lattice.HexRadius(Topo.dD);
+    const rgrgnBoxes = [];
+    for (const nTile of Raster.DirtyTiles) {
+      for (const rgdWorld of TileWorldCenters(Topo, Layout, nTile)) {
+        const [dX, dY] = Projection.ApplyTransform(rgdWorldToRaster, rgdWorld);
+        const dHalf = dRadius * dScale + 2;
+        rgrgnBoxes.push([Math.floor(dX - dHalf), Math.floor(dY - dHalf), Math.ceil(dX + dHalf), Math.ceil(dY + dHalf)]);
+      }
+    }
+    if (rgrgnBoxes.length === 0) {
+      return;
+    }
+    const rgdPixelBounds = View.UnionBounds(rgrgnBoxes);
+    const rgdRasterToWorld = Projection.InvertTransform(rgdWorldToRaster);
+    const rgdWorldBounds = View.TransformBounds(rgdRasterToWorld, rgdPixelBounds);
+    Context.save();
+    Context.setTransform(1, 0, 0, 1, 0, 0);
+    Context.beginPath();
+    rgrgnBoxes.forEach(([nLeft, nTop, nRight, nBottom]) => Context.rect(nLeft, nTop, nRight - nLeft, nBottom - nTop));
+    Context.clip();
+    Context.clearRect(rgdPixelBounds[0], rgdPixelBounds[1], rgdPixelBounds[2] - rgdPixelBounds[0], rgdPixelBounds[3] - rgdPixelBounds[1]);
+    DrawTiles(Context, 1, Doc, Layout, rgdWorldToRaster, rgdWorldBounds, dScale, { fTerrain: true, fGrid: false });
+    Context.restore();
   }
 
   function MainRasterScale(Doc, Layout) {
@@ -3028,23 +3293,41 @@
     Context.restore();
   }
 
+  // Outlines tiles in their own panels' placements (tiles of panels not in the layout
+  // are skipped).
+  function OutlineTiles(Context, dRatio, State, rgdWorldToScreen, rgnTiles, dWidth, szColor) {
+    const { Doc, Layout } = State;
+    const ByPanel = new Map();
+    for (const nTile of rgnTiles) {
+      const szPanel = Doc.Topo.rgTiles[nTile].szPanel;
+      (ByPanel.get(szPanel) || ByPanel.set(szPanel, []).get(szPanel)).push(nTile);
+    }
+    for (const [szPanel, rgnPanelTiles] of ByPanel) {
+      const Placement = View.FindPlacement(Layout, szPanel);
+      if (!Placement) {
+        continue;
+      }
+      Context.save();
+      SetTransform(Context, dRatio, Projection.ComposeTransforms(Placement.rgdFrameToWorld, rgdWorldToScreen));
+      Context.beginPath();
+      rgnPanelTiles.forEach((nTile) => TraceTile(Context, Doc.Topo, nTile, false));
+      Context.lineWidth = dWidth / State.Camera.dScale;
+      Context.lineJoin = 'round';
+      Context.strokeStyle = szColor;
+      Context.stroke();
+      Context.restore();
+    }
+  }
+
+  // The brush footprint (State.rgnPreviewTiles) and the hovered tile.
   function DrawHover(Context, dRatio, State, rgdWorldToScreen) {
-    const { Doc, Layout, nHoverTile } = State;
-    if (nHoverTile < 0) {
-      return;
+    const rgnPreview = State.rgnPreviewTiles || [];
+    if (rgnPreview.length > 1) {
+      OutlineTiles(Context, dRatio, State, rgdWorldToScreen, rgnPreview, 1.25, g_szPreviewColor);
     }
-    const Placement = View.FindPlacement(Layout, Doc.Topo.rgTiles[nHoverTile].szPanel);
-    if (!Placement) {
-      return;
+    if (State.nHoverTile >= 0) {
+      OutlineTiles(Context, dRatio, State, rgdWorldToScreen, [State.nHoverTile], 2, g_szHoverColor);
     }
-    Context.save();
-    SetTransform(Context, dRatio, Projection.ComposeTransforms(Placement.rgdFrameToWorld, rgdWorldToScreen));
-    Context.beginPath();
-    TraceTile(Context, Doc.Topo, nHoverTile, false);
-    Context.lineWidth = 2 / State.Camera.dScale;
-    Context.strokeStyle = g_szHoverColor;
-    Context.stroke();
-    Context.restore();
   }
 
   // State: { Doc, Layout, Camera, Layers: { fTerrain, fGrid, fOutlines, fNames }, nHoverTile }.
@@ -3114,6 +3397,7 @@
     Create,
     Draw,
     DrawMinimap,
+    MarkTilesChanged,
   });
 })(globalThis);
 </script>
@@ -3122,9 +3406,16 @@
 (function (Root) {
   'use strict';
   const RpgMap = Root.RpgMap = Root.RpgMap || {};
-  const { Util, Projection, Coordinates, Terrain, Model, History, View, Renderer } = RpgMap;
+  const { Util, Projection, Coordinates, Terrain, Model, History, View, Edit, Renderer } = RpgMap;
 
-  const g_szVersion = '0.2.0';
+  const g_szVersion = '0.3.0';
+  // [id, label, hotkey, title]
+  const g_rgTools = [
+    ['pan', 'Pan', 'h', 'Pan the view (H). Middle/right drag or Space+drag pans with any tool.'],
+    ['brush', 'Brush', 'b', 'Paint the active terrain (B). Alt+click picks a terrain.'],
+    ['fill', 'Fill', 'g', 'Fill the connected area of one terrain (G). Alt+click picks a terrain.'],
+    ['eyedropper', 'Pick', 'i', 'Pick the terrain of a tile (I)'],
+  ];
   const g_dKeyPanPixels = 60;
   const g_dKeyZoomFactor = 1.25;
   const g_rgLayerToggles = [
@@ -3141,6 +3432,13 @@
     Camera: View.CreateCamera(),
     Layers: { fTerrain: true, fGrid: true, fOutlines: true, fNames: true },
     nHoverTile: -1,
+    rgnPreviewTiles: [],
+    szTool: 'brush',
+    nTerrainId: Terrain.ByKey('plain').nId,
+    nBrushRadius: 1,
+    fSpaceDown: false,
+    Stroke: null,
+    szMessage: '',
     Renderer: null,
     MiniCanvas: null,
     MiniCamera: null,
@@ -3184,6 +3482,7 @@
     const szView = State.Layout.szMode === 'net' ? 'Net view' : `Focus: ${Projection.Build().Panels[State.Layout.szFocus].szName}`;
     const Draw = State.LastDraw;
     Root.document.getElementById('status-message').textContent = [
+      State.szMessage,
       szView,
       `n=${Doc.Global.nPanelHexes} ${Doc.Global.szTileScale}`,
       `${Doc.nTiles.toLocaleString('en-US')} tiles`,
@@ -3193,15 +3492,115 @@
   }
 
   function SetHover(nTile) {
-    if (nTile !== State.nHoverTile) {
+    const rgnPreview = nTile >= 0 && State.szTool === 'brush' ? Edit.BrushTiles(State.Doc, nTile, State.nBrushRadius) : [];
+    if (nTile !== State.nHoverTile || rgnPreview.length !== State.rgnPreviewTiles.length) {
       State.nHoverTile = nTile;
+      State.rgnPreviewTiles = rgnPreview;
       RequestDraw();
     }
   }
 
+  function HitAt(rgdScreen) {
+    return View.HitTest(State.Doc.Topo, State.Layout, View.ScreenToWorld(State.Camera, rgdScreen));
+  }
+
   function HoverAt(rgdScreen) {
-    const Hit = View.HitTest(State.Doc.Topo, State.Layout, View.ScreenToWorld(State.Camera, rgdScreen));
+    const Hit = HitAt(rgdScreen);
     SetHover(Hit ? Hit.nTile : -1);
+  }
+
+  // Editing -------------------------------------------------------------------------
+
+  function SetMessage(szMessage) {
+    State.szMessage = szMessage;
+    RequestDraw();
+  }
+
+  function TilesChanged(rgnTiles) {
+    if (rgnTiles.length > 0) {
+      Renderer.MarkTilesChanged(State.Renderer, State.Doc, rgnTiles);
+    }
+    SyncUndoButtons();
+    RequestDraw();
+  }
+
+  function CountText(nCount) {
+    return `${nCount.toLocaleString('en-US')} tile${nCount === 1 ? '' : 's'}`;
+  }
+
+  function SetTool(szTool) {
+    State.szTool = szTool;
+    for (const [szId] of g_rgTools) {
+      const Button = Root.document.getElementById(`tool-${szId}`);
+      Button.setAttribute('aria-pressed', String(szId === szTool));
+    }
+    Root.document.getElementById('brush-options').hidden = szTool !== 'brush';
+    Root.document.getElementById('map-canvas').dataset.tool = szTool;
+    SetHover(State.nHoverTile);
+  }
+
+  function SetTerrain(nTerrainId) {
+    State.nTerrainId = nTerrainId;
+    const Item = Terrain.ById(nTerrainId);
+    Root.document.querySelectorAll('.legend-row').forEach((Row) => {
+      const fActive = Number(Row.dataset.terrain) === nTerrainId;
+      Row.classList.toggle('active', fActive);
+      Row.setAttribute('aria-checked', String(fActive));
+    });
+    Root.document.getElementById('active-terrain-swatch').style.background = Item.szColor;
+    Root.document.getElementById('active-terrain-name').textContent = Item.szName;
+  }
+
+  function SetBrushRadius(nRadius) {
+    State.nBrushRadius = Math.max(0, Math.min(Edit.g_nMaxBrushRadius, nRadius));
+    Root.document.getElementById('brush-radius').value = String(State.nBrushRadius);
+    Root.document.getElementById('brush-radius-value').textContent = String(State.nBrushRadius);
+    SetHover(State.nHoverTile);
+  }
+
+  function PickTerrain(nTile) {
+    SetTerrain(Model.GetTerrain(State.Doc, nTile));
+    SetMessage(`Picked ${Terrain.ById(State.nTerrainId).szName}`);
+  }
+
+  function FillAt(nTile) {
+    const { Command, rgnTiles } = Edit.Fill(State.History, nTile, State.nTerrainId);
+    SetMessage(Command ? `${Command.szLabel}: ${CountText(rgnTiles.length)}` : 'Fill: no change');
+    TilesChanged(rgnTiles);
+  }
+
+  function StrokeAt(rgdScreen) {
+    TilesChanged(Edit.StrokeTo(State.Stroke, State.Layout, View.ScreenToWorld(State.Camera, rgdScreen)));
+  }
+
+  function EndStroke() {
+    if (State.Stroke) {
+      const Stroke = State.Stroke;
+      State.Stroke = null;
+      const Command = Edit.EndStroke(Stroke);
+      SetMessage(Command ? `${Command.szLabel}: ${CountText(Edit.CommandTiles(Command).length)}` : 'Paint: no change');
+      SyncUndoButtons();
+    }
+  }
+
+  function UndoOrRedo(fUndo) {
+    if (State.Stroke) {
+      return;
+    }
+    const Command = fUndo ? History.Undo(State.History) : History.Redo(State.History);
+    if (Command) {
+      const rgnTiles = Edit.CommandTiles(Command);
+      SetMessage(`${fUndo ? 'Undo' : 'Redo'} ${Command.szLabel}: ${CountText(rgnTiles.length)}`);
+      TilesChanged(rgnTiles);
+      SetHover(State.nHoverTile);
+    } else {
+      SetMessage(fUndo ? 'Nothing to undo' : 'Nothing to redo');
+    }
+  }
+
+  function SyncUndoButtons() {
+    Root.document.getElementById('undo').disabled = !History.CanUndo(State.History);
+    Root.document.getElementById('redo').disabled = !History.CanRedo(State.History);
   }
 
   function FitNet() {
@@ -3275,6 +3674,9 @@
       Select,
       Element('button', { id: 'fit-net', type: 'button', textContent: 'Fit all', title: 'Fit the whole view (Home)', onclick: FitNet }),
       Element('button', { id: 'fit-panel', type: 'button', textContent: 'Fit panel', title: 'Fit the focus panel or the panel at the centre (F)', onclick: FitPanel }),
+      Element('span', { className: 'toolbar-gap' }),
+      Element('button', { id: 'undo', type: 'button', textContent: 'Undo', title: 'Undo (Ctrl+Z)', onclick: () => UndoOrRedo(true) }),
+      Element('button', { id: 'redo', type: 'button', textContent: 'Redo', title: 'Redo (Ctrl+Y or Ctrl+Shift+Z)', onclick: () => UndoOrRedo(false) }),
     ];
     Root.document.getElementById('toolbar-actions').replaceChildren(...rgButtons);
   }
@@ -3291,13 +3693,43 @@
     Root.document.getElementById('layer-list').replaceChildren(...rgRows);
   }
 
+  function BuildToolList() {
+    const rgButtons = g_rgTools.map(([szId, szLabel, , szTitle]) =>
+      Element('button', { id: `tool-${szId}`, type: 'button', className: 'tool-button', textContent: szLabel, title: szTitle, onclick: () => SetTool(szId) }));
+    const Slider = Element('input', { id: 'brush-radius', type: 'range', min: '0', max: String(Edit.g_nMaxBrushRadius), step: '1', value: String(State.nBrushRadius) });
+    Slider.addEventListener('input', () => SetBrushRadius(Number(Slider.value)));
+    const BrushOptions = Element('div', { id: 'brush-options', className: 'tool-option' }, [
+      Element('label', { htmlFor: 'brush-radius', title: 'Brush radius in tiles ([ and ])' }, ['Radius ']),
+      Slider,
+      Element('span', { id: 'brush-radius-value', textContent: String(State.nBrushRadius) }),
+    ]);
+    const ActiveTerrain = Element('div', { className: 'tool-option', title: 'Active terrain: click a terrain under Properties to change it' }, [
+      Element('span', { id: 'active-terrain-swatch', className: 'swatch' }),
+      Element('span', { id: 'active-terrain-name' }),
+    ]);
+    Root.document.getElementById('tool-list').replaceChildren(
+      Element('div', { className: 'tool-buttons' }, rgButtons), BrushOptions, ActiveTerrain);
+  }
+
   function BuildLegend() {
-    const rgRows = Terrain.g_rgTerrains.map((Item) => Element('div', { className: 'legend-row' }, [
-      Element('span', { className: 'swatch', style: `background:${Item.szColor}` }),
-      Element('code', { textContent: Item.szChar }),
-      ` ${Item.szName}`,
-    ]));
-    Root.document.getElementById('property-list').replaceChildren(Element('h2', { textContent: 'Terrain' }), ...rgRows);
+    const rgRows = Terrain.g_rgTerrains.map((Item) => {
+      const Row = Element('div', { className: 'legend-row', role: 'radio', tabIndex: 0, title: `Paint with ${Item.szName}` }, [
+        Element('span', { className: 'swatch', style: `background:${Item.szColor}` }),
+        Element('code', { textContent: Item.szChar }),
+        ` ${Item.szName}`,
+      ]);
+      Row.dataset.terrain = String(Item.nId);
+      Row.addEventListener('click', () => SetTerrain(Item.nId));
+      Row.addEventListener('keydown', (Event) => {
+        if (Event.key === 'Enter' || Event.key === ' ') {
+          Event.preventDefault();
+          SetTerrain(Item.nId);
+        }
+      });
+      return Row;
+    });
+    Root.document.getElementById('property-list').replaceChildren(
+      Element('h2', { textContent: 'Terrain' }), Element('div', { role: 'radiogroup', ariaLabel: 'Active terrain' }, rgRows));
   }
 
   function LocalPoint(Event, Target) {
@@ -3305,24 +3737,63 @@
     return [Event.clientX - Rect.left, Event.clientY - Rect.top];
   }
 
+  // The left button drives the active tool; the middle or right button, Space+drag
+  // and the Pan tool pan. Alt+click picks a terrain with any editing tool.
   function AttachCanvasEvents(Canvas) {
     let Drag = null;
+    Canvas.addEventListener('contextmenu', (Event) => Event.preventDefault());
     Canvas.addEventListener('pointerdown', (Event) => {
-      Drag = { nPointer: Event.pointerId, rgdLast: LocalPoint(Event, Canvas) };
+      if (Drag) {
+        return;
+      }
+      const rgdPoint = LocalPoint(Event, Canvas);
+      const fPan = Event.button === 1 || Event.button === 2 || State.fSpaceDown || State.szTool === 'pan';
+      if (Event.button === 1) {
+        Event.preventDefault();
+      }
+      if (fPan) {
+        Drag = { szMode: 'pan', nPointer: Event.pointerId, rgdLast: rgdPoint };
+        Canvas.classList.add('dragging');
+      } else if (Event.button === 0) {
+        const Hit = HitAt(rgdPoint);
+        if (Event.altKey || State.szTool === 'eyedropper') {
+          if (Hit) {
+            PickTerrain(Hit.nTile);
+          }
+          return;
+        }
+        if (State.szTool === 'fill') {
+          if (Hit) {
+            FillAt(Hit.nTile);
+          }
+          return;
+        }
+        State.Stroke = Edit.BeginStroke(State.History, State.nTerrainId, State.nBrushRadius);
+        Drag = { szMode: 'paint', nPointer: Event.pointerId };
+        StrokeAt(rgdPoint);
+      } else {
+        return;
+      }
       Canvas.setPointerCapture(Event.pointerId);
-      Canvas.classList.add('dragging');
     });
     Canvas.addEventListener('pointermove', (Event) => {
       const rgdPoint = LocalPoint(Event, Canvas);
       if (Drag && Drag.nPointer === Event.pointerId) {
-        View.Pan(State.Camera, rgdPoint[0] - Drag.rgdLast[0], rgdPoint[1] - Drag.rgdLast[1]);
-        Drag.rgdLast = rgdPoint;
-        RequestDraw();
+        if (Drag.szMode === 'pan') {
+          View.Pan(State.Camera, rgdPoint[0] - Drag.rgdLast[0], rgdPoint[1] - Drag.rgdLast[1]);
+          Drag.rgdLast = rgdPoint;
+          RequestDraw();
+        } else {
+          StrokeAt(rgdPoint);
+        }
       }
       HoverAt(rgdPoint);
     });
     const EndDrag = (Event) => {
       if (Drag && Drag.nPointer === Event.pointerId) {
+        if (Drag.szMode === 'paint') {
+          EndStroke();
+        }
         Drag = null;
         Canvas.classList.remove('dragging');
       }
@@ -3338,6 +3809,9 @@
       RequestDraw();
     }, { passive: false });
     Canvas.addEventListener('dblclick', (Event) => {
+      if (State.szTool !== 'pan') {
+        return;
+      }
       const Hit = View.PlacementAt(State.Layout, View.ScreenToWorld(State.Camera, LocalPoint(Event, Canvas)));
       if (Hit && (State.Layout.szMode === 'net' || Hit.Placement.szPanel !== State.Layout.szFocus)) {
         ShowFocus(Hit.Placement.szPanel, State.Layout.szMode === 'net' ? null : Hit.rgdFrame);
@@ -3364,9 +3838,42 @@
   }
 
   function AttachKeyboard() {
+    Root.addEventListener('keyup', (Event) => {
+      if (Event.key === ' ') {
+        State.fSpaceDown = false;
+      }
+    });
+    Root.addEventListener('blur', () => {
+      State.fSpaceDown = false;
+    });
     Root.addEventListener('keydown', (Event) => {
       const szTag = Event.target && Event.target.tagName;
+      const fTextEntry = szTag === 'TEXTAREA' || (szTag === 'INPUT' && Event.target.type !== 'range' && Event.target.type !== 'checkbox');
+      if ((Event.ctrlKey || Event.metaKey) && !Event.altKey && !fTextEntry) {
+        const szKey = Event.key.toLowerCase();
+        if (szKey === 'z' || szKey === 'y') {
+          Event.preventDefault();
+          UndoOrRedo(szKey === 'z' && !Event.shiftKey);
+        }
+        return;
+      }
       if (szTag === 'INPUT' || szTag === 'SELECT' || szTag === 'TEXTAREA' || Event.ctrlKey || Event.metaKey || Event.altKey) {
+        return;
+      }
+      if (Event.key === ' ') {
+        Event.preventDefault();
+        State.fSpaceDown = true;
+        return;
+      }
+      const Tool = g_rgTools.find((Entry) => Entry[2] === Event.key.toLowerCase());
+      if (Tool) {
+        Event.preventDefault();
+        SetTool(Tool[0]);
+        return;
+      }
+      if (Event.key === '[' || Event.key === ']') {
+        Event.preventDefault();
+        SetBrushRadius(State.nBrushRadius + (Event.key === ']' ? 1 : -1));
         return;
       }
       const dStep = g_dKeyPanPixels * (Event.shiftKey ? 4 : 1);
@@ -3408,8 +3915,12 @@
     State.History = History.Create(State.Doc);
     State.Layout = View.BuildNetLayout();
     BuildToolbar();
+    BuildToolList();
     BuildLayerList();
     BuildLegend();
+    SetTool(State.szTool);
+    SetTerrain(State.nTerrainId);
+    SyncUndoButtons();
     AttachCanvasEvents(Canvas);
     AttachMinimapEvents(State.MiniCanvas);
     AttachKeyboard();
@@ -3421,7 +3932,7 @@
     RequestDraw();
   }
 
-  RpgMap.App = Object.freeze({ g_szVersion, State, Start, ShowFocus, ShowNet, FitNet, FitPanel });
+  RpgMap.App = Object.freeze({ g_szVersion, State, Start, ShowFocus, ShowNet, FitNet, FitPanel, SetTool, SetTerrain, SetBrushRadius, UndoOrRedo });
 
   if (Root.document.readyState === 'loading') {
     Root.document.addEventListener('DOMContentLoaded', Start);
