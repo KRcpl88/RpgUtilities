@@ -20,7 +20,8 @@ tests/
   scaffold.test.cjs             # enforces the module and no-external-dependency rules   [done]
   util.test.cjs                 #                                                        [done]
   projection-reference.test.cjs # golden JSON structure, Python reproducibility          [done]
-  projection.test.cjs  lattice.test.cjs  topology.test.cjs  coordinates.test.cjs
+  projection.test.cjs           # port vs golden JSON, frames, seams                     [done]
+  lattice.test.cjs  topology.test.cjs  coordinates.test.cjs
   model.test.cjs  fileformat.test.cjs  regions.test.cjs  svgexport.test.cjs
   fixtures/sample-global.map.txt  fixtures/sample-local.map.txt
 tools/generate_map_projection.py                                                         [done]
@@ -50,7 +51,7 @@ Every module is an inline block that registers one frozen object:
 - Blocks appear in dependency order; `Util` is first and `App` is last.
 - Blocks that touch the DOM carry `data-dom="true"`. The tests skip these, so every other block must be DOM-free.
 - `tests/_load.cjs` `LoadModules()` blanks out HTML comments, compiles each DOM-free block with `vm.compileFunction` (passing a sandbox object as `globalThis`, with `lineOffset` so errors report `index.html` line numbers), and returns `RpgMap`.
-- **Planned modules, in order:** `Util` ✅ → `Projection` → `Lattice` → `Topology` → `Coordinates` → `Terrain` → `Model` → `History` → `FileFormat` → `Regions` → `SvgExport` → `Renderer`* → `Tools`* → `App`* ✅. Modules marked * use the DOM.
+- **Planned modules, in order:** `Util` ✅ → `Projection` ✅ → `Lattice` → `Topology` → `Coordinates` → `Terrain` → `Model` → `History` → `FileFormat` → `Regions` → `SvgExport` → `Renderer`* → `Tools`* → `App`* ✅. Modules marked * use the DOM.
 
 ## 3. Projection module (port of the Python geometry)
 
@@ -297,7 +298,7 @@ road r1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Zeta
 ## 10. Milestones (each ends green: `node --test tests/` and `python3 tools/generate_map_projection.py --labels --check`)
 
 1. ✅ **Scaffold:** HTML shell, module convention, `_load.cjs`, Util, projection tool, golden JSON.
-2. **Projection:** JS port, validation, panel frames (north axis, reference point, equator), 48 seam transforms.
+2. ✅ **Projection:** JS port, validation, panel frames (north axis, reference point, equator), 48 seam transforms.
 3. **Lattice and Topology:** flat-top lattice, global size and scales, equatorial continuous lattice, partial tiles clipped per panel, adjacency, universal coordinates (miles), local-map lattice.
 4. **Terrain table, Model, History.**
 5. **Renderer and viewport:** pan, zoom, culling, clipped panels, outlines, minimap, panel focus view, status bar coordinates.
@@ -322,6 +323,8 @@ road r1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Zeta
 9. **Terrain characters:** as in the §5 table. `_` means "not a tile".
 10. **Embellishments for mangrove, islands, canyon, badlands and farmland:** as in the §8 table.
 11. **True latitude/longitude:** central projection onto the sphere. Used for display only.
+12. **Frame units:** `Projection` frames and seams are in edge units, so `Build()` is independent of panel size. `MilesPerEdge(nHexes)` converts to miles: `nHexes · 216 · √3/2` miles across the equatorial panel width.
+13. **Seam direction:** panel A and B of a seam are the solid edge's `faces[0]` and `faces[1]`. Transforms use the canvas/SVG matrix layout `[a, b, c, d, e, f]`.
 
 ## 12. Open questions
 

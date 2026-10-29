@@ -227,6 +227,722 @@
 })(globalThis);
 </script>
 
+<script data-module="Projection">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+  const Util = RpgMap.Util;
+  const { Require, Subtract, Dot, Cross, Unit, Center, Boundary, Distance } = Util;
+
+  // Port of tools/generate_map_projection.py (geometry, net and validation),
+  // keeping its identifiers and ordering, plus panel frames and seam transforms.
+  const g_dTolerance = 1e-9;
+  const g_dAcuteAngle = Math.acos(-1 / 3) * 180 / Math.PI;
+  const g_dObtuseAngle = (360 - g_dAcuteAngle) / 2;
+  const g_dXlHexMiles = 216;
+  const g_North = Object.freeze(Unit([1, -1, -1]));
+
+  const g_SectorLabels = Object.freeze({
+    'Hyz+-': '\u03b1', 'Hxz--': '\u03b2', 'Hxy--': '\u03b3',
+    'Hyz-+': '\u03b4', 'Hxz++': '\u03b5', 'Hxy++': '\u03b6',
+    'Hxz+-': '\u03b7', 'Hyz--': '\u03b8', 'Hxy+-': '\u03b9',
+    'Hxy-+': '\u03ba', 'Hxz-+': '\u03bb', 'Hyz++': '\u03bc',
+    'Sz-': '\u03bd', 'Sy-': '\u03be', 'Sx+': '\u03bf',
+    'Sx-': '\u03c0', 'Sz+': '\u03c1', 'Sy+': '\u03c3',
+  });
+  const g_SectorNames = Object.freeze({
+    '\u03b1': 'Alpha', '\u03b2': 'Beta', '\u03b3': 'Gamma',
+    '\u03b4': 'Delta', '\u03b5': 'Epsilon', '\u03b6': 'Zeta',
+    '\u03b7': 'Eta', '\u03b8': 'Theta', '\u03b9': 'Iota',
+    '\u03ba': 'Kappa', '\u03bb': 'Lambda', '\u03bc': 'Mu',
+    '\u03bd': 'Nu', '\u03be': 'Xi', '\u03bf': 'Omicron',
+    '\u03c0': 'Pi', '\u03c1': 'Rho', '\u03c3': 'Sigma',
+  });
+
+  const g_rgszStrip = ['Hxy++', 'Hyz+-', 'Hxz--', 'Hxy--', 'Hyz-+', 'Hxz++'];
+  const g_rgAttachments = [
+    ['Hxy++', ['Sx+', 'Hxz+-'], ['Hyz++', 'Sy+']],
+    ['Hxz--', ['Sz-', 'Hyz--'], ['Hxy-+', 'Sx-']],
+    ['Hyz-+', ['Sy-', 'Hxy+-'], ['Hxz-+', 'Sz+']],
+  ];
+
+  function Pad2(nValue) {
+    return String(nValue).padStart(2, '0');
+  }
+
+  function CompareStrings(szLeft, szRight) {
+    return szLeft < szRight ? -1 : (szLeft > szRight ? 1 : 0);
+  }
+
+  function EdgeKey(szFirst, szSecond) {
+    return [szFirst, szSecond].sort(CompareStrings);
+  }
+
+  function KeyText(rgszKey) {
+    return rgszKey.join('|');
+  }
+
+  function Angle(rgdPrevious, rgdVertex, rgdFollowing) {
+    const dCosine = Dot(Unit(Subtract(rgdPrevious, rgdVertex)), Unit(Subtract(rgdFollowing, rgdVertex)));
+    return Math.acos(Math.max(-1, Math.min(1, dCosine))) * 180 / Math.PI;
+  }
+
+  // Python itertools.product((-1, 1), repeat=n): the last position varies fastest.
+  function SignProduct(nCount) {
+    let rgrgnResult = [[]];
+    for (let nIndex = 0; nIndex < nCount; nIndex++) {
+      const rgrgnNext = [];
+      for (const rgnPrefix of rgrgnResult) {
+        for (const nSign of [-1, 1]) {
+          rgrgnNext.push([...rgnPrefix, nSign]);
+        }
+      }
+      rgrgnResult = rgrgnNext;
+    }
+    return rgrgnResult;
+  }
+
+  function Combinations(rgItems, nCount) {
+    if (nCount === 0) {
+      return [[]];
+    }
+    const rgResult = [];
+    for (let nIndex = 0; nIndex <= rgItems.length - nCount; nIndex++) {
+      for (const rgRest of Combinations(rgItems.slice(nIndex + 1), nCount - 1)) {
+        rgResult.push([rgItems[nIndex], ...rgRest]);
+      }
+    }
+    return rgResult;
+  }
+
+  function CountKinds(rgszKinds) {
+    const Counts = {};
+    for (const szKind of rgszKinds) {
+      Counts[szKind] = (Counts[szKind] || 0) + 1;
+    }
+    return Counts;
+  }
+
+  function SameCounts(Left, Right) {
+    const rgszKeys = Object.keys(Left);
+    return rgszKeys.length === Object.keys(Right).length
+      && rgszKeys.every((szKey) => Left[szKey] === Right[szKey]);
+  }
+
+  function BuildSolidVertices() {
+    const dSmall = 0.5;
+    const dCorner = dSmall + 1 / Math.sqrt(3);
+    const dLarge = dSmall + 2 / Math.sqrt(3);
+    const rgrgdPoints = SignProduct(3).map((rgnSigns) => rgnSigns.map((nSign) => nSign * dCorner));
+    for (let nAxis = 0; nAxis < 3; nAxis++) {
+      for (const rgnSigns of SignProduct(3)) {
+        rgrgdPoints.push(rgnSigns.map((nSign, nCoordinate) =>
+          nSign * (nCoordinate === nAxis ? dLarge : dSmall)));
+      }
+    }
+    const Vertices = {};
+    rgrgdPoints.forEach((rgdPoint, nIndex) => {
+      Vertices[`V${Pad2(nIndex + 1)}`] = rgdPoint;
+    });
+    return { Vertices, dLarge, dCorner };
+  }
+
+  function BuildSolid() {
+    const { Vertices, dLarge, dCorner } = BuildSolidVertices();
+    const Faces = {};
+    for (const [nCount, szPrefix, dOffset] of [[1, 'S', dLarge], [2, 'H', 2 * dCorner]]) {
+      for (const rgnAxes of Combinations([0, 1, 2], nCount)) {
+        for (const rgnSigns of SignProduct(nCount)) {
+          const rgdNormal = [0, 1, 2].map((nAxis) =>
+            rgnAxes.includes(nAxis) ? rgnSigns[rgnAxes.indexOf(nAxis)] : 0);
+          const szName = szPrefix + rgnAxes.map((nAxis) => 'xyz'[nAxis]).join('')
+            + rgnSigns.map((nSign) => (nSign > 0 ? '+' : '-')).join('');
+          const rgszIds = Object.keys(Vertices).filter((szId) =>
+            Math.abs(Dot(Vertices[szId], rgdNormal) - dOffset) < g_dTolerance);
+          const rgdOrigin = Center(rgszIds.map((szId) => Vertices[szId]));
+          const rgdAxisX = Unit(Subtract(Vertices[rgszIds[0]], rgdOrigin));
+          const rgdAxisY = Cross(Unit(rgdNormal), rgdAxisX);
+          const AngleOf = (szId) => {
+            const rgdRelative = Subtract(Vertices[szId], rgdOrigin);
+            return Math.atan2(Dot(rgdRelative, rgdAxisY), Dot(rgdRelative, rgdAxisX));
+          };
+          rgszIds.sort((szLeft, szRight) => AngleOf(szLeft) - AngleOf(szRight));
+          Faces[szName] = {
+            id: szName,
+            kind: nCount === 1 ? 'square' : 'hexagon',
+            vertices: rgszIds,
+            normal: Unit(rgdNormal),
+          };
+        }
+      }
+    }
+    const EdgeFaces = {};
+    for (const [szId, Face] of Object.entries(Faces)) {
+      for (const [szFirst, szSecond] of Boundary(Face.vertices)) {
+        const szKey = KeyText(EdgeKey(szFirst, szSecond));
+        (EdgeFaces[szKey] = EdgeFaces[szKey] || []).push(szId);
+      }
+    }
+    const Edges = {};
+    Object.keys(EdgeFaces).sort(CompareStrings).forEach((szKey, nIndex) => {
+      Edges[szKey] = { id: `E${Pad2(nIndex + 1)}`, vertices: szKey.split('|'), faces: EdgeFaces[szKey] };
+    });
+    return { Vertices, Faces, Edges };
+  }
+
+  function AddNetVertex(NetVertices, szSolidId, rgdPoint) {
+    const szId = `N${Pad2(Object.keys(NetVertices).length + 1)}`;
+    NetVertices[szId] = { id: szId, position: rgdPoint, solid_vertex: szSolidId };
+    return szId;
+  }
+
+  function InitializeNet(Vertices, Faces, rgszStrip) {
+    const dRootThree = Math.sqrt(3);
+    const dSmall = 0.5;
+    const dCorner = 0.5 + 1 / dRootThree;
+    const dLarge = 0.5 + 2 / dRootThree;
+    const dA = Math.sqrt(2 / 3);
+    const dB = 1 / dRootThree;
+    const dC = 2 * Math.sqrt(2) / 3;
+    const rgrgdRootSolid = [
+      [dLarge, dSmall, dSmall], [dLarge, dSmall, -dSmall],
+      [dCorner, dCorner, -dCorner], [dSmall, dLarge, -dSmall],
+      [dSmall, dLarge, dSmall], [dCorner, dCorner, dCorner],
+    ];
+    const rgrgdRootFlat = [
+      [0, 0.5], [dA, 0.5 + dB], [dA + dC, 0.5 + dB - 1 / 3],
+      [dA + dC, -0.5 + dB - 1 / 3], [dC, -5 / 6], [0, -0.5],
+    ];
+    const PointIds = {};
+    for (const [szId, rgdPoint] of Object.entries(Vertices)) {
+      PointIds[rgdPoint.join(',')] = szId;
+    }
+    const NetVertices = {};
+    const NetFaces = {};
+    const FaceMaps = {};
+
+    // Reflect the seed face so its outward winding is preserved in the net.
+    const RootMap = {};
+    rgrgdRootSolid.forEach((rgdSolid, nIndex) => {
+      const szSolidId = PointIds[rgdSolid.join(',')];
+      Require(szSolidId !== undefined, 'Root vertex is not a solid vertex');
+      const rgdFlat = rgrgdRootFlat[nIndex];
+      RootMap[szSolidId] = AddNetVertex(NetVertices, szSolidId, [-rgdFlat[0], rgdFlat[1]]);
+    });
+    FaceMaps[rgszStrip[0]] = RootMap;
+    NetFaces[rgszStrip[0]] = {
+      id: rgszStrip[0], kind: 'hexagon', placement: 'strip',
+      vertices: Faces[rgszStrip[0]].vertices.map((szId) => RootMap[szId]),
+      parent: null, hinge: null,
+    };
+    return { NetVertices, NetFaces, FaceMaps };
+  }
+
+  function AttachNetFace(Vertices, Faces, Edges, NetVertices, NetFaces, FaceMaps,
+    szParent, szChild, szPlacement) {
+    Require(!(szChild in NetFaces), `Repeated face: ${szChild}`);
+    const rgszShared = Faces[szParent].vertices
+      .filter((szId) => Faces[szChild].vertices.includes(szId))
+      .sort(CompareStrings);
+    Require(rgszShared.length === 2, `Faces do not share an edge: ${szParent}, ${szChild}`);
+    const [szFirst, szSecond] = rgszShared;
+    const rgdSolidStart = Vertices[szFirst];
+    const rgdSolidEnd = Vertices[szSecond];
+    const rgdFlatStart = NetVertices[FaceMaps[szParent][szFirst]].position;
+    const rgdFlatEnd = NetVertices[FaceMaps[szParent][szSecond]].position;
+    const rgdAxis3D = Unit(Subtract(rgdSolidEnd, rgdSolidStart));
+    const rgdChildCenter = Center(Faces[szChild].vertices.map((szId) => Vertices[szId]));
+    const rgdToward = Subtract(rgdChildCenter, rgdSolidStart);
+    const dToward = Dot(rgdToward, rgdAxis3D);
+    const rgdInward3D = Unit(rgdToward.map((dValue, nIndex) => dValue - dToward * rgdAxis3D[nIndex]));
+    const rgdAxis2D = Unit(Subtract(rgdFlatEnd, rgdFlatStart));
+    const rgdPerpendicular = [-rgdAxis2D[1], rgdAxis2D[0]];
+    const rgdParentCenter = Center(NetFaces[szParent].vertices.map((szId) => NetVertices[szId].position));
+    const dSide = Dot(Subtract(rgdParentCenter, rgdFlatStart), rgdPerpendicular);
+    const dSign = (dSide < 0 || Object.is(dSide, -0)) ? 1 : -1;
+    const ChildMap = {};
+    for (const szSolidId of Faces[szChild].vertices) {
+      if (rgszShared.includes(szSolidId)) {
+        ChildMap[szSolidId] = FaceMaps[szParent][szSolidId];
+      } else {
+        const rgdRelative = Subtract(Vertices[szSolidId], rgdSolidStart);
+        const dAlong = Dot(rgdRelative, rgdAxis3D);
+        const dAcross = Dot(rgdRelative, rgdInward3D);
+        const rgdPoint = rgdFlatStart.map((dStart, nIndex) =>
+          dStart + dAlong * rgdAxis2D[nIndex] + dSign * dAcross * rgdPerpendicular[nIndex]);
+        ChildMap[szSolidId] = AddNetVertex(NetVertices, szSolidId, rgdPoint);
+      }
+    }
+    FaceMaps[szChild] = ChildMap;
+    NetFaces[szChild] = {
+      id: szChild, kind: Faces[szChild].kind, placement: szPlacement,
+      vertices: Faces[szChild].vertices.map((szId) => ChildMap[szId]),
+      parent: szParent, hinge: Edges[KeyText(rgszShared)].id,
+    };
+  }
+
+  function BuildNetEdges(NetVertices, NetFaces, Edges) {
+    const NetEdges = {};
+    for (const [szId, Face] of Object.entries(NetFaces)) {
+      for (const [szFirst, szSecond] of Boundary(Face.vertices)) {
+        const rgszKey = EdgeKey(szFirst, szSecond);
+        const szKey = KeyText(rgszKey);
+        if (!(szKey in NetEdges)) {
+          const szSolidKey = KeyText(EdgeKey(
+            NetVertices[szFirst].solid_vertex, NetVertices[szSecond].solid_vertex));
+          NetEdges[szKey] = {
+            id: `NE${Pad2(Object.keys(NetEdges).length + 1)}`, vertices: rgszKey,
+            solid_edge: Edges[szSolidKey].id, faces: [],
+          };
+        }
+        NetEdges[szKey].faces.push(szId);
+      }
+    }
+    const Copies = {};
+    for (const Edge of Object.values(NetEdges)) {
+      Edge.kind = Edge.faces.length === 2 ? 'fold' : 'cut';
+      (Copies[Edge.solid_edge] = Copies[Edge.solid_edge] || []).push(Edge);
+    }
+    for (const rgPair of Object.values(Copies)) {
+      for (const Edge of rgPair) {
+        const Other = rgPair.find((Candidate) => Candidate !== Edge);
+        Edge.mate = Other ? Other.id : null;
+      }
+    }
+    return NetEdges;
+  }
+
+  function BuildNet(Vertices, Faces, Edges) {
+    const { NetVertices, NetFaces, FaceMaps } = InitializeNet(Vertices, Faces, g_rgszStrip);
+    for (let nIndex = 1; nIndex < g_rgszStrip.length; nIndex++) {
+      AttachNetFace(Vertices, Faces, Edges, NetVertices, NetFaces, FaceMaps,
+        g_rgszStrip[nIndex - 1], g_rgszStrip[nIndex], 'strip');
+    }
+    for (const [szParent, rgszTop, rgszBottom] of g_rgAttachments) {
+      for (const szChild of rgszTop) {
+        AttachNetFace(Vertices, Faces, Edges, NetVertices, NetFaces, FaceMaps, szParent, szChild, 'top');
+      }
+      for (const szChild of rgszBottom) {
+        AttachNetFace(Vertices, Faces, Edges, NetVertices, NetFaces, FaceMaps, szParent, szChild, 'bottom');
+      }
+    }
+    const NetEdges = BuildNetEdges(NetVertices, NetFaces, Edges);
+    return { NetVertices, NetFaces, NetEdges, rgszStrip: [...g_rgszStrip].reverse() };
+  }
+
+  function InteriorsOverlap(rgrgdFirst, rgrgdSecond) {
+    // Separating-axis theorem for the convex faces; touching edges are allowed.
+    for (const rgrgdPolygon of [rgrgdFirst, rgrgdSecond]) {
+      for (const [rgdStart, rgdEnd] of Boundary(rgrgdPolygon)) {
+        const rgdDirection = Subtract(rgdEnd, rgdStart);
+        const rgdAxis = Unit([-rgdDirection[1], rgdDirection[0]]);
+        const rgdLeft = rgrgdFirst.map((rgdPoint) => Dot(rgdPoint, rgdAxis));
+        const rgdRight = rgrgdSecond.map((rgdPoint) => Dot(rgdPoint, rgdAxis));
+        if (Math.min(Math.max(...rgdLeft), Math.max(...rgdRight))
+          - Math.max(Math.min(...rgdLeft), Math.min(...rgdRight)) <= g_dTolerance) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  function ValidateFaceAngles(szId, Face, rgrgdSolid, rgrgdFlat, Incidences, nExpected, Errors) {
+    const rgnAcute = [];
+    Face.vertices.forEach((szVertex, nIndex) => {
+      Incidences[szVertex].push(szId);
+      let dExpected = 90;
+      if (nExpected === 6) {
+        const fCorner = Number(szVertex.slice(1)) <= 8;
+        dExpected = fCorner ? g_dAcuteAngle : g_dObtuseAngle;
+        if (fCorner) {
+          rgnAcute.push(nIndex);
+        }
+      }
+      const nPrevious = (nIndex + nExpected - 1) % nExpected;
+      for (const rgrgdPolygon of [rgrgdSolid, rgrgdFlat]) {
+        const dAngle = Angle(rgrgdPolygon[nPrevious], rgrgdPolygon[nIndex], rgrgdPolygon[(nIndex + 1) % nExpected]);
+        Errors.dMaxAngle = Math.max(Errors.dMaxAngle, Math.abs(dAngle - dExpected));
+        Errors.dMaxLength = Math.max(Errors.dMaxLength,
+          Math.abs(Distance(rgrgdPolygon[nPrevious], rgrgdPolygon[nIndex]) - 1));
+      }
+      Require(Math.abs(Dot(Subtract(rgrgdSolid[nIndex], rgrgdSolid[0]), Face.normal)) < g_dTolerance,
+        `Nonplanar face: ${szId}`);
+    });
+    return rgnAcute;
+  }
+
+  function ValidateHexagonEdges(szId, Face, Faces, Edges, rgnAcute) {
+    Require(rgnAcute.length === 2 && rgnAcute[1] - rgnAcute[0] === 3,
+      `Acute vertices must be opposite: ${szId}`);
+    const rgnSquareEdges = [];
+    Boundary(Face.vertices).forEach(([szFirst, szSecond], nIndex) => {
+      const rgszAdjacent = Edges[KeyText(EdgeKey(szFirst, szSecond))].faces;
+      if (rgszAdjacent.some((szOther) => Faces[szOther].kind === 'square')) {
+        rgnSquareEdges.push(nIndex);
+        Require(!rgnAcute.includes(nIndex) && !rgnAcute.includes((nIndex + 1) % 6),
+          `Square at an acute vertex: ${szId}`);
+      }
+    });
+    Require(rgnSquareEdges.length === 2 && rgnSquareEdges[1] - rgnSquareEdges[0] === 3,
+      `Square edges must be opposite: ${szId}`);
+  }
+
+  function ValidateFaces(Vertices, Faces, Edges, NetVertices, NetFaces) {
+    const Errors = { dMaxLength: 0, dMaxAngle: 0, dMaxDistance: 0 };
+    const Incidences = {};
+    for (const szId of Object.keys(Vertices)) {
+      Incidences[szId] = [];
+    }
+    const Polygons = {};
+    for (const [szId, Face] of Object.entries(Faces)) {
+      const rgrgdSolid = Face.vertices.map((szVertex) => Vertices[szVertex]);
+      const NetFace = NetFaces[szId];
+      const rgrgdFlat = NetFace.vertices.map((szVertex) => NetVertices[szVertex].position);
+      const dArea = Boundary(rgrgdFlat).reduce((dSum, [rgdFirst, rgdSecond]) =>
+        dSum + rgdFirst[0] * rgdSecond[1] - rgdSecond[0] * rgdFirst[1], 0);
+      Require(dArea > 0, `Net face must be viewed from outside: ${szId}`);
+      Polygons[szId] = rgrgdFlat;
+      Require(NetFace.vertices.map((szVertex) => NetVertices[szVertex].solid_vertex).join()
+        === Face.vertices.join(), `Vertex correspondence: ${szId}`);
+      const nExpected = Face.kind === 'hexagon' ? 6 : 4;
+      Require(rgrgdSolid.length === nExpected, `Polygon size: ${szId}`);
+      const rgnAcute = ValidateFaceAngles(szId, Face, rgrgdSolid, rgrgdFlat, Incidences, nExpected, Errors);
+      if (nExpected === 6) {
+        ValidateHexagonEdges(szId, Face, Faces, Edges, rgnAcute);
+      }
+      for (const [nFirst, nSecond] of Combinations([...Array(nExpected).keys()], 2)) {
+        Errors.dMaxDistance = Math.max(Errors.dMaxDistance, Math.abs(
+          Distance(rgrgdSolid[nFirst], rgrgdSolid[nSecond]) - Distance(rgrgdFlat[nFirst], rgrgdFlat[nSecond])));
+      }
+    }
+    return { Incidences, Polygons, Errors };
+  }
+
+  function ValidateSolidIncidences(Faces, Edges, Incidences) {
+    for (const [szVertex, rgszFaces] of Object.entries(Incidences)) {
+      const Expected = Number(szVertex.slice(1)) <= 8 ? { hexagon: 3 } : { hexagon: 2, square: 1 };
+      Require(SameCounts(CountKinds(rgszFaces.map((szId) => Faces[szId].kind)), Expected),
+        `Vertex incidence: ${szVertex}`);
+    }
+    for (const Edge of Object.values(Edges)) {
+      Require(Edge.faces.length === 2, `Nonmanifold edge: ${Edge.id}`);
+    }
+  }
+
+  function ValidateSeams(Edges, NetVertices, NetEdges) {
+    const Copies = {};
+    const NetEdgeIds = {};
+    for (const Edge of Object.values(NetEdges)) {
+      NetEdgeIds[Edge.id] = Edge;
+    }
+    let nFolds = 0;
+    for (const Edge of Object.values(NetEdges)) {
+      (Copies[Edge.solid_edge] = Copies[Edge.solid_edge] || []).push(Edge);
+      if (Edge.kind === 'fold') {
+        nFolds++;
+        Require(Edge.faces.length === 2 && Edge.mate === null, 'Invalid fold');
+      } else {
+        Require(Edge.faces.length === 1 && Edge.mate in NetEdgeIds, 'Unpaired cut');
+        const Mate = NetEdgeIds[Edge.mate];
+        Require(Mate.mate === Edge.id && Mate.solid_edge === Edge.solid_edge, 'Cut seam mismatch');
+      }
+    }
+    Require(nFolds === 17, 'The 18-face tree must have 17 hinges');
+    for (const Edge of Object.values(Edges)) {
+      const rgPair = Copies[Edge.id];
+      Require(rgPair.length === 1 || rgPair.length === 2, 'Wrong number of edge copies');
+      Require(rgPair.flatMap((Copy) => Copy.faces).sort(CompareStrings).join()
+        === [...Edge.faces].sort(CompareStrings).join(), 'Folded edge incidence does not close');
+      for (const Copy of rgPair) {
+        Require(KeyText(EdgeKey(...Copy.vertices.map((szId) => NetVertices[szId].solid_vertex)))
+          === KeyText(Edge.vertices), 'Folded endpoints do not close');
+      }
+    }
+  }
+
+  function ValidateHingeTree(NetFaces, NetEdges) {
+    const Visited = new Set();
+    for (const [szId, Face] of Object.entries(NetFaces)) {
+      Require(Visited.has(Face.parent) || (Visited.size === 0 && Face.parent === null),
+        'Disconnected or cyclic hinge tree');
+      if (Face.parent !== null) {
+        Require(Object.values(NetEdges).some((Edge) =>
+          Edge.kind === 'fold' && Edge.solid_edge === Face.hinge
+          && Edge.faces.length === 2 && Edge.faces.includes(szId) && Edge.faces.includes(Face.parent)),
+        'Parent hinge missing');
+      }
+      Visited.add(szId);
+    }
+  }
+
+  function ValidateStrip(Faces, NetVertices, NetEdges, rgszStrip, Polygons) {
+    const rgrgdCenters = rgszStrip.map((szId) => Center(Polygons[szId]));
+    const rgdY = rgrgdCenters.map((rgdPoint) => rgdPoint[1]);
+    Require(Math.max(...rgdY) - Math.min(...rgdY) < g_dTolerance, 'Strip centers are not horizontal');
+    Require(rgrgdCenters.every((rgdPoint, nIndex) =>
+      nIndex === 0 || rgrgdCenters[nIndex - 1][0] < rgdPoint[0]), 'Strip must be ordered left to right');
+    const EdgeCenter = (Edge) => Center(Edge.vertices.map((szVertex) => NetVertices[szVertex].position));
+    rgszStrip.forEach((szId, nIndex) => {
+      for (const szSide of ['top', 'bottom']) {
+        const dCenterY = rgrgdCenters[nIndex][1];
+        const rgSideEdges = Object.values(NetEdges).filter((Edge) => Edge.faces.includes(szId)
+          && Math.abs(NetVertices[Edge.vertices[0]].position[0] - NetVertices[Edge.vertices[1]].position[0]) > g_dTolerance
+          && (EdgeCenter(Edge)[1] > dCenterY) === (szSide === 'top'));
+        rgSideEdges.sort((Left, Right) => EdgeCenter(Left)[0] - EdgeCenter(Right)[0]);
+        const rgszPattern = rgSideEdges.map((Edge) => {
+          const szOther = Edge.faces.find((szFace) => szFace !== szId);
+          return szOther === undefined ? '-' : Faces[szOther].kind;
+        });
+        const rgszExpected = nIndex % 2 === 1
+          ? (szSide === 'top' ? ['hexagon', 'square'] : ['square', 'hexagon'])
+          : ['-', '-'];
+        Require(rgszPattern.join() === rgszExpected.join(), `Incorrect ${szSide} attachment pattern: ${szId}`);
+      }
+    });
+  }
+
+  function Validate(Vertices, Faces, Edges, NetVertices, NetFaces, NetEdges, rgszStrip) {
+    const nVertices = Object.keys(Vertices).length;
+    const nEdges = Object.keys(Edges).length;
+    const nFaces = Object.keys(Faces).length;
+    const nNetVertices = Object.keys(NetVertices).length;
+    const nNetEdges = Object.keys(NetEdges).length;
+    const nNetFaces = Object.keys(NetFaces).length;
+    Require(nVertices === 32 && nEdges === 48 && nFaces === 18, 'Solid counts');
+    Require(SameCounts(CountKinds(Object.values(Faces).map((Face) => Face.kind)), { hexagon: 12, square: 6 }),
+      'Face types');
+    Require(nNetFaces === nFaces && Object.keys(Faces).every((szId) => szId in NetFaces),
+      'Every solid face must appear exactly once');
+    Require(nNetVertices === 62 && nNetEdges === 79, 'Net counts');
+    Require(nVertices - nEdges + nFaces === 2, 'Solid Euler characteristic');
+    Require(nNetVertices - nNetEdges + nNetFaces === 1, 'Net Euler characteristic');
+    const { Incidences, Polygons, Errors } = ValidateFaces(Vertices, Faces, Edges, NetVertices, NetFaces);
+    ValidateSolidIncidences(Faces, Edges, Incidences);
+    Require(Errors.dMaxLength < g_dTolerance, 'Unequal side lengths');
+    Require(Errors.dMaxAngle < g_dTolerance, 'Incorrect interior angles');
+    Require(Errors.dMaxDistance < g_dTolerance, "Unfolding changed a face's geometry");
+    for (const [szFirst, szSecond] of Combinations(Object.keys(Polygons), 2)) {
+      Require(!InteriorsOverlap(Polygons[szFirst], Polygons[szSecond]),
+        `Overlapping faces: ${szFirst}, ${szSecond}`);
+    }
+    ValidateSeams(Edges, NetVertices, NetEdges);
+    ValidateHingeTree(NetFaces, NetEdges);
+    ValidateStrip(Faces, NetVertices, NetEdges, rgszStrip, Polygons);
+    return {
+      solid_counts: { vertices: 32, edges: 48, faces: 18 },
+      net_counts: { vertices: 62, edges: 79, faces: 18, hinges: 17, cut_pairs: 31 },
+      edge_length_tolerance: g_dTolerance,
+      angle_tolerance_degrees: g_dTolerance,
+      face_distance_tolerance: g_dTolerance,
+      overlapping_face_pairs: 0,
+      folded_seams_match: true,
+    };
+  }
+
+  // 2D affine transforms use the canvas/SVG matrix layout [a, b, c, d, e, f]:
+  // x' = a x + c y + e, y' = b x + d y + f.
+  function ApplyTransform(rgdT, rgdPoint) {
+    return [
+      rgdT[0] * rgdPoint[0] + rgdT[2] * rgdPoint[1] + rgdT[4],
+      rgdT[1] * rgdPoint[0] + rgdT[3] * rgdPoint[1] + rgdT[5],
+    ];
+  }
+
+  // Returns the transform that applies rgdFirst, then rgdSecond.
+  function ComposeTransforms(rgdFirst, rgdSecond) {
+    const [a, b, c, d, e, f] = rgdSecond;
+    return [
+      a * rgdFirst[0] + c * rgdFirst[1], b * rgdFirst[0] + d * rgdFirst[1],
+      a * rgdFirst[2] + c * rgdFirst[3], b * rgdFirst[2] + d * rgdFirst[3],
+      a * rgdFirst[4] + c * rgdFirst[5] + e, b * rgdFirst[4] + d * rgdFirst[5] + f,
+    ];
+  }
+
+  function InvertTransform(rgdT) {
+    const [a, b, c, d, e, f] = rgdT;
+    const dDeterminant = a * d - b * c;
+    Require(Math.abs(dDeterminant) > g_dTolerance, 'Transform is not invertible');
+    return [
+      d / dDeterminant, -b / dDeterminant, -c / dDeterminant, a / dDeterminant,
+      (c * f - d * e) / dDeterminant, (b * e - a * f) / dDeterminant,
+    ];
+  }
+
+  // Proper rigid motion (rotation + translation) taking segment P0→P1 onto Q0→Q1.
+  function RigidFromSegments(rgdP0, rgdP1, rgdQ0, rgdQ1) {
+    const rgdFrom = Unit(Subtract(rgdP1, rgdP0));
+    const rgdTo = Unit(Subtract(rgdQ1, rgdQ0));
+    const dCos = rgdFrom[0] * rgdTo[0] + rgdFrom[1] * rgdTo[1];
+    const dSin = rgdFrom[0] * rgdTo[1] - rgdFrom[1] * rgdTo[0];
+    const rgdRotation = [dCos, dSin, -dSin, dCos, 0, 0];
+    const rgdRotated = ApplyTransform(rgdRotation, rgdP0);
+    return [dCos, dSin, -dSin, dCos, rgdQ0[0] - rgdRotated[0], rgdQ0[1] - rgdRotated[1]];
+  }
+
+  // Frame coordinates are [east, north] in edge units, measured in the panel plane
+  // from the panel centre (which lies on the equator for equatorial panels).
+  function SolidToFrame(Frame, rgdPoint) {
+    const rgdRelative = Subtract(rgdPoint, Frame.rgdOrigin3D);
+    return [Dot(rgdRelative, Frame.rgdEast3D), Dot(rgdRelative, Frame.rgdNorth3D)];
+  }
+
+  function FrameToSolid(Frame, rgdFrame) {
+    return Frame.rgdOrigin3D.map((dOrigin, nAxis) =>
+      dOrigin + rgdFrame[0] * Frame.rgdEast3D[nAxis] + rgdFrame[1] * Frame.rgdNorth3D[nAxis]);
+  }
+
+  function BuildFrame(Face, Vertices, NetVertices, NetFace) {
+    const rgrgdSolid = Face.vertices.map((szId) => Vertices[szId]);
+    const rgrgdFlat = NetFace.vertices.map((szId) => NetVertices[szId].position);
+    const rgdNormal = Face.normal;
+    const fEquatorial = Math.abs(Dot(rgdNormal, g_North)) < g_dTolerance;
+    const dAlongNormal = Dot(g_North, rgdNormal);
+    const rgdNorth3D = Unit(g_North.map((dValue, nAxis) => dValue - dAlongNormal * rgdNormal[nAxis]));
+    const rgdEast3D = Cross(rgdNorth3D, rgdNormal);
+    const Frame = {
+      rgdOrigin3D: Center(rgrgdSolid),
+      rgdEast3D,
+      rgdNorth3D,
+      rgdNormal3D: [...rgdNormal],
+    };
+    const rgrgdPolygon = rgrgdSolid.map((rgdPoint) => SolidToFrame(Frame, rgdPoint));
+    // Frame → net is the rigid motion matching the first boundary edge; faces in
+    // the net are viewed from outside, so no reflection is needed.
+    const rgdFrameToNet = RigidFromSegments(rgrgdPolygon[0], rgrgdPolygon[1], rgrgdFlat[0], rgrgdFlat[1]);
+    rgrgdPolygon.forEach((rgdPoint, nIndex) => {
+      Require(Distance(ApplyTransform(rgdFrameToNet, rgdPoint), rgrgdFlat[nIndex]) < g_dTolerance,
+        `Frame placement does not match the net: ${Face.id}`);
+    });
+    let szNorthVertex = null;
+    let szSouthVertex = null;
+    if (!fEquatorial) {
+      const rgdNorths = rgrgdPolygon.map((rgdPoint) => rgdPoint[1]);
+      const nNorth = rgdNorths.indexOf(Math.max(...rgdNorths));
+      const nSouth = rgdNorths.indexOf(Math.min(...rgdNorths));
+      Require(Math.abs(rgrgdPolygon[nNorth][0]) < g_dTolerance && Math.abs(rgrgdPolygon[nSouth][0]) < g_dTolerance,
+        `Panel north must run through opposite vertices: ${Face.id}`);
+      szNorthVertex = Face.vertices[nNorth];
+      szSouthVertex = Face.vertices[nSouth];
+    }
+    return Object.freeze({
+      ...Frame,
+      szPanel: Face.id,
+      fEquatorial,
+      rgszVertices: [...Face.vertices],
+      rgrgdPolygon,
+      rgdOriginNet: ApplyTransform(rgdFrameToNet, [0, 0]),
+      rgdEastNet: [rgdFrameToNet[0], rgdFrameToNet[1]],
+      rgdNorthNet: [rgdFrameToNet[2], rgdFrameToNet[3]],
+      rgdFrameToNet,
+      rgdNetToFrame: InvertTransform(rgdFrameToNet),
+      szNorthVertex,
+      szSouthVertex,
+    });
+  }
+
+  // Seam transform A→B maps frame-A coordinates to frame-B coordinates after
+  // unfolding B about the shared edge into A's plane (a proper isometry).
+  function BuildSeam(Edge, Frames, Vertices) {
+    const [szPanelA, szPanelB] = Edge.faces;
+    const [rgdStart, rgdEnd] = Edge.vertices.map((szId) => Vertices[szId]);
+    const FrameA = Frames[szPanelA];
+    const FrameB = Frames[szPanelB];
+    const rgdAToB = RigidFromSegments(
+      SolidToFrame(FrameA, rgdStart), SolidToFrame(FrameA, rgdEnd),
+      SolidToFrame(FrameB, rgdStart), SolidToFrame(FrameB, rgdEnd));
+    return Object.freeze({
+      szEdge: Edge.id,
+      rgszVertices: [...Edge.vertices],
+      szPanelA,
+      szPanelB,
+      rgdAToB,
+      rgdBToA: InvertTransform(rgdAToB),
+    });
+  }
+
+  function DeepFreeze(Value, Seen = new Set()) {
+    if (Value && typeof Value === 'object' && !Seen.has(Value)) {
+      Seen.add(Value);
+      Object.freeze(Value);
+      Object.values(Value).forEach((Item) => DeepFreeze(Item, Seen));
+    }
+    return Value;
+  }
+
+  let g_Cache = null;
+
+  // Builds (once) the solid, net, validation summary, panel frames and seams.
+  function Build() {
+    if (g_Cache) {
+      return g_Cache;
+    }
+    const { Vertices, Faces, Edges } = BuildSolid();
+    const { NetVertices, NetFaces, NetEdges, rgszStrip } = BuildNet(Vertices, Faces, Edges);
+    const Validation = Validate(Vertices, Faces, Edges, NetVertices, NetFaces, NetEdges, rgszStrip);
+    const Frames = {};
+    const Panels = {};
+    for (const [szId, Face] of Object.entries(Faces)) {
+      const Frame = BuildFrame(Face, Vertices, NetVertices, NetFaces[szId]);
+      const szLetter = g_SectorLabels[szId];
+      Frames[szId] = Frame;
+      Panels[szId] = Object.freeze({
+        szId, szLetter, szName: g_SectorNames[szLetter], szKind: Face.kind, fEquatorial: Frame.fEquatorial, Frame,
+      });
+    }
+    const Seams = Object.values(Edges).map((Edge) => BuildSeam(Edge, Frames, Vertices));
+    const rgszEquatorial = rgszStrip.filter((szId) => Frames[szId].fEquatorial);
+    Require(rgszEquatorial.length === 6, 'The strip must hold the six equatorial panels');
+    const Equatorial = Frames[rgszEquatorial[0]];
+    const dEquatorialWidth = Math.max(...Equatorial.rgrgdPolygon.map((rgdPoint) => rgdPoint[0]))
+      - Math.min(...Equatorial.rgrgdPolygon.map((rgdPoint) => rgdPoint[0]));
+    g_Cache = DeepFreeze({
+      Vertices, Faces, Edges, NetVertices, NetFaces, NetEdges,
+      rgszStrip,
+      rgszEquatorialWestToEast: rgszEquatorial,
+      Validation,
+      Panels,
+      Frames,
+      Seams,
+      dEquatorialWidth,
+    });
+    return g_Cache;
+  }
+
+  // Miles per unit edge when nHexes XL columns span an equatorial panel west to east
+  // (column spacing is 216·√3/2 miles for flat-top hexes).
+  function MilesPerEdge(nHexes) {
+    Require(Number.isInteger(nHexes) && nHexes > 0 && nHexes % 2 === 0,
+      'Panel size must be a positive even number of XL hexes');
+    return nHexes * g_dXlHexMiles * Math.sqrt(3) / 2 / Build().dEquatorialWidth;
+  }
+
+  function FindSeam(szPanelA, szPanelB) {
+    return Build().Seams.find((Seam) =>
+      (Seam.szPanelA === szPanelA && Seam.szPanelB === szPanelB)
+      || (Seam.szPanelA === szPanelB && Seam.szPanelB === szPanelA)) || null;
+  }
+
+  RpgMap.Projection = Object.freeze({
+    g_dTolerance,
+    g_dXlHexMiles,
+    g_North,
+    g_SectorLabels,
+    g_SectorNames,
+    Build,
+    MilesPerEdge,
+    FindSeam,
+    SolidToFrame,
+    FrameToSolid,
+    ApplyTransform,
+    ComposeTransforms,
+    InvertTransform,
+    RigidFromSegments,
+    InteriorsOverlap,
+  });
+})(globalThis);
+</script>
+
 <script data-module="App" data-dom="true">
 (function (Root) {
   'use strict';
