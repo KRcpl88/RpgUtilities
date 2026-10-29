@@ -13,6 +13,10 @@ python3 -m http.server 8000
 # then browse to http://localhost:8000/map-editor/index.html
 ```
 
+The specification is [`prompt.md`](prompt.md), the implementation plan is
+[`doc/map-editor-plan.md`](doc/map-editor-plan.md), and progress is tracked in
+[`doc/map-editor-status.md`](doc/map-editor-status.md).
+
 ### Code layout
 
 | Path | Purpose |
