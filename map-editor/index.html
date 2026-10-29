@@ -1765,6 +1765,629 @@
 })(globalThis);
 </script>
 
+<script data-module="Terrain">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+
+  // The single terrain table: the ID is the index stored in Model terrain arrays and
+  // must never be reordered, because saved files and history refer to it by char.
+  // Embellish is filled in by the SVG export (milestone 11).
+  const g_rgTerrainDefinitions = [
+    ['~', 'water', 'Water', '#4a7fb5', true],
+    ['i', 'islands', 'Islands', '#6b9cc8', true],
+    ['o', 'lakes', 'Lakes', '#5b93c9', true],
+    ['v', 'firth', 'Firth', '#5a8bb0', true],
+    ['.', 'plain', 'Plain', '#c9d98f', false],
+    ['h', 'hills', 'Hills', '#b5b56e', false],
+    ['M', 'mountains', 'Mountains', '#9a8a74', false],
+    ['A', 'mountainPeak', 'Mountain peak', '#7d6e5d', false],
+    ['d', 'desert', 'Desert', '#e8d49a', false],
+    ['D', 'sandDunes', 'Sand dunes', '#e3c27a', false],
+    ['f', 'forest', 'Forest', '#5f8f4e', false],
+    ['m', 'marsh', 'Marsh', '#8fae8a', false],
+    ['g', 'mangrove', 'Mangrove', '#6f9a6a', false],
+    ['t', 'tundra', 'Tundra', '#d8dfd9', false],
+    ['c', 'canyon', 'Canyon', '#c0815a', false],
+    ['b', 'badlands', 'Badlands', '#b89a7a', false],
+    ['=', 'farmland', 'Farmland', '#d9cf7c', false],
+  ];
+
+  const g_rgTerrains = Object.freeze(g_rgTerrainDefinitions.map(([szChar, szKey, szName, szColor, fWater], nId) =>
+    Object.freeze({ nId, szChar, szKey, szName, szColor, fWater, Embellish: null })));
+
+  // Marks a cell of a panel's bounding rectangle that is not a tile of that panel.
+  const g_szReservedChar = '_';
+  const g_nWaterId = 0;
+
+  const g_ByChar = new Map(g_rgTerrains.map((Terrain) => [Terrain.szChar, Terrain]));
+  const g_ByKey = new Map(g_rgTerrains.map((Terrain) => [Terrain.szKey, Terrain]));
+
+  const g_rgLandmarkTypes = Object.freeze([
+    ['village', 'Village'],
+    ['town', 'Town'],
+    ['city', 'City'],
+    ['castle', 'Castle'],
+    ['fortress', 'Fortress'],
+    ['tower', 'Tower'],
+    ['ruins', 'Ruins'],
+    ['mine', 'Mine'],
+    ['temple', 'Temple'],
+    ['cave', 'Cave'],
+    ['dungeon', 'Dungeon'],
+  ].map(([szKey, szName]) => Object.freeze({ szKey, szName })));
+  const g_LandmarksByKey = new Map(g_rgLandmarkTypes.map((Landmark) => [Landmark.szKey, Landmark]));
+
+  function ById(nId) {
+    return Number.isInteger(nId) ? (g_rgTerrains[nId] || null) : null;
+  }
+
+  function ByChar(szChar) {
+    return g_ByChar.get(szChar) || null;
+  }
+
+  function ByKey(szKey) {
+    return g_ByKey.get(szKey) || null;
+  }
+
+  function IsValidId(nId) {
+    return ById(nId) !== null;
+  }
+
+  function IsWater(nId) {
+    const Terrain = ById(nId);
+    return Terrain !== null && Terrain.fWater;
+  }
+
+  function LandmarkType(szKey) {
+    return g_LandmarksByKey.get(szKey) || null;
+  }
+
+  function IsLandmarkType(szKey) {
+    return g_LandmarksByKey.has(szKey);
+  }
+
+  RpgMap.Terrain = Object.freeze({
+    g_rgTerrains,
+    g_szReservedChar,
+    g_nWaterId,
+    g_rgLandmarkTypes,
+    ById,
+    ByChar,
+    ByKey,
+    IsValidId,
+    IsWater,
+    LandmarkType,
+    IsLandmarkType,
+  });
+})(globalThis);
+</script>
+
+<script data-module="Model">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+  const { Util, Lattice, Topology, Coordinates, Terrain } = RpgMap;
+  const { Require } = Util;
+
+  // A map document. Mutators validate their input, apply the change, and return a
+  // change record { szLayer, Key, nIndex, Before, After } (or null for a no-op) that
+  // History stores and ApplyChange replays in either direction.
+  const g_nFormatVersion = 1;
+  const g_rgszOverlayTypes = Object.freeze(['road', 'trail', 'river']);
+  const g_rgszLabelCategories = Object.freeze(['region', 'location', 'city']);
+  const g_LabelDefaultSizes = Object.freeze({ region: 28, location: 14, city: 18 });
+  const g_rgszLayers = Object.freeze(['terrain', 'landmark', 'overlay', 'label']);
+  const g_IdPattern = /^[A-Za-z][A-Za-z0-9_-]*$/;
+  const g_StylePattern = /^[A-Za-z0-9_-]*$/;
+  const g_ControlPattern = /[\u0000-\u001f\u007f]/;
+
+  function NewDocument(szKind, szName, nTiles) {
+    return {
+      nVersion: g_nFormatVersion,
+      szKind,
+      szName,
+      Global: null,
+      Local: null,
+      Topo: null,
+      nTiles,
+      rgnTerrain: new Uint8Array(nTiles).fill(Terrain.g_nWaterId),
+      Landmarks: new Map(),
+      rgOverlays: [],
+      rgLabels: [],
+      nRevision: 0,
+    };
+  }
+
+  function CheckText(szText, szWhat) {
+    Require(typeof szText === 'string', `${szWhat} must be a string`);
+    Require(!g_ControlPattern.test(szText), `${szWhat} must not contain control characters`);
+    return szText;
+  }
+
+  function CreateGlobalMap(Options = {}) {
+    const nPanelHexes = Options.nPanelHexes === undefined ? Topology.g_nDefaultPanelHexes : Options.nPanelHexes;
+    const szTileScale = Options.szTileScale === undefined ? 'XL' : Options.szTileScale;
+    Require(Number.isInteger(nPanelHexes) && nPanelHexes > 0 && nPanelHexes % 2 === 0,
+      'Panel hexes must be a positive even integer');
+    Require(Topology.g_rgszTileScales.includes(szTileScale), `Unsupported global tile scale: ${szTileScale}`);
+    const Topo = Topology.Build(nPanelHexes, szTileScale);
+    const Doc = NewDocument('global', CheckText(Options.szName === undefined ? '' : Options.szName, 'Map name'), Topo.nTiles);
+    Doc.Global = Object.freeze({ nPanelHexes, szTileScale });
+    Doc.Topo = Topo;
+    return Doc;
+  }
+
+  // Options as Coordinates.CreateLocalMap, plus szName.
+  function CreateLocalMap(Options) {
+    const Local = Coordinates.CreateLocalMap(Options);
+    const Doc = NewDocument('local', CheckText(Options.szName === undefined ? '' : Options.szName, 'Map name'),
+      Local.nWidth * Local.nHeight);
+    Doc.Local = Local;
+    return Doc;
+  }
+
+  // Local tiles are numbered row by row from the north-west: index = y·width + x.
+  function LocalTileIndex(Doc, nX, nY) {
+    const { nWidth, nHeight } = Doc.Local;
+    if (!Number.isInteger(nX) || !Number.isInteger(nY) || nX < 0 || nY < 0 || nX >= nWidth || nY >= nHeight) {
+      return -1;
+    }
+    return nY * nWidth + nX;
+  }
+
+  function LocalTileXY(Doc, nTile) {
+    return [nTile % Doc.Local.nWidth, Math.floor(nTile / Doc.Local.nWidth)];
+  }
+
+  function IsTile(Doc, nTile) {
+    return Number.isInteger(nTile) && nTile >= 0 && nTile < Doc.nTiles;
+  }
+
+  function Neighbors(Doc, nTile) {
+    Require(IsTile(Doc, nTile), `Unknown tile: ${nTile}`);
+    if (Doc.Topo) {
+      return Array.from(Topology.Neighbors(Doc.Topo, nTile));
+    }
+    // Local (x, y) is lattice offset (x + parity, −y): x east, y south, odd columns north.
+    const [nX, nY] = LocalTileXY(Doc, nTile);
+    const nParity = Doc.Local.nParity;
+    return Lattice.OffsetNeighbors(nX + nParity, -nY)
+      .map(([nQ, nJ]) => LocalTileIndex(Doc, nQ - nParity, -nJ))
+      .filter((nIndex) => nIndex >= 0);
+  }
+
+  function AreAdjacent(Doc, nFirst, nSecond) {
+    if (!IsTile(Doc, nFirst) || !IsTile(Doc, nSecond)) {
+      return false;
+    }
+    return Doc.Topo ? Topology.AreAdjacent(Doc.Topo, nFirst, nSecond) : Neighbors(Doc, nFirst).includes(nSecond);
+  }
+
+  function CheckTile(Doc, nTile) {
+    Require(IsTile(Doc, nTile), `Unknown tile: ${nTile}`);
+  }
+
+  function CheckId(szId, szWhat) {
+    Require(typeof szId === 'string' && g_IdPattern.test(szId), `Invalid ${szWhat} id: ${szId}`);
+  }
+
+  function CheckFinite(dValue, szWhat) {
+    Require(typeof dValue === 'number' && Number.isFinite(dValue), `${szWhat} must be a finite number`);
+  }
+
+  // The smallest "<prefix><n>" not already used, so ids never depend on history.
+  function NextId(rgItems, szPrefix) {
+    const Used = new Set(rgItems.map((Item) => Item.szId));
+    let nNumber = 1;
+    while (Used.has(szPrefix + nNumber)) {
+      nNumber++;
+    }
+    return szPrefix + nNumber;
+  }
+
+  function IndexOfId(rgItems, szId) {
+    return rgItems.findIndex((Item) => Item.szId === szId);
+  }
+
+  // Terrain ------------------------------------------------------------------
+
+  function GetTerrain(Doc, nTile) {
+    CheckTile(Doc, nTile);
+    return Doc.rgnTerrain[nTile];
+  }
+
+  function SetTerrain(Doc, nTile, nTerrainId) {
+    CheckTile(Doc, nTile);
+    Require(Terrain.IsValidId(nTerrainId), `Unknown terrain id: ${nTerrainId}`);
+    const nBefore = Doc.rgnTerrain[nTile];
+    if (nBefore === nTerrainId) {
+      return null;
+    }
+    return ApplyChange(Doc, { szLayer: 'terrain', Key: nTile, nIndex: -1, Before: nBefore, After: nTerrainId });
+  }
+
+  // Landmarks: at most one per tile, keyed by tile index ------------------------
+
+  function MakeLandmark(Props) {
+    Require(Terrain.IsLandmarkType(Props.szType), `Unknown landmark type: ${Props.szType}`);
+    return Object.freeze({
+      szType: Props.szType,
+      szName: CheckText(Props.szName === undefined ? '' : Props.szName, 'Landmark name'),
+      szNotes: CheckText(Props.szNotes === undefined ? '' : Props.szNotes, 'Landmark notes'),
+    });
+  }
+
+  function GetLandmark(Doc, nTile) {
+    CheckTile(Doc, nTile);
+    return Doc.Landmarks.get(nTile) || null;
+  }
+
+  // Places, replaces or edits the tile's landmark; null removes it.
+  function SetLandmark(Doc, nTile, Props) {
+    CheckTile(Doc, nTile);
+    const Before = Doc.Landmarks.get(nTile) || null;
+    const After = Props === null ? null : MakeLandmark(Props);
+    if (Before === null && After === null) {
+      return null;
+    }
+    return ApplyChange(Doc, { szLayer: 'landmark', Key: nTile, nIndex: -1, Before, After });
+  }
+
+  function RemoveLandmark(Doc, nTile) {
+    return SetLandmark(Doc, nTile, null);
+  }
+
+  // Overlays: road, trail or river paths of adjacent tiles ----------------------
+
+  function CheckPath(Doc, rgnTiles) {
+    Require(Array.isArray(rgnTiles) && rgnTiles.length > 0, 'An overlay needs at least one tile');
+    rgnTiles.forEach((nTile) => CheckTile(Doc, nTile));
+    for (let nIndex = 1; nIndex < rgnTiles.length; nIndex++) {
+      Require(AreAdjacent(Doc, rgnTiles[nIndex - 1], rgnTiles[nIndex]),
+        `Overlay tiles ${rgnTiles[nIndex - 1]} and ${rgnTiles[nIndex]} (points ${nIndex - 1} and ${nIndex}) are not adjacent`);
+    }
+  }
+
+  function MakeOverlay(Doc, Props) {
+    Require(g_rgszOverlayTypes.includes(Props.szType), `Unknown overlay type: ${Props.szType}`);
+    CheckId(Props.szId, 'overlay');
+    const szStyle = Props.szStyle === undefined ? '' : Props.szStyle;
+    Require(typeof szStyle === 'string' && g_StylePattern.test(szStyle), `Invalid overlay style: ${szStyle}`);
+    CheckPath(Doc, Props.rgnTiles);
+    return Object.freeze({
+      szId: Props.szId,
+      szType: Props.szType,
+      szName: CheckText(Props.szName === undefined ? '' : Props.szName, 'Overlay name'),
+      szStyle,
+      rgnTiles: Object.freeze(Props.rgnTiles.slice()),
+    });
+  }
+
+  function GetOverlay(Doc, szId) {
+    return Doc.rgOverlays.find((Overlay) => Overlay.szId === szId) || null;
+  }
+
+  function OverlaysAt(Doc, nTile) {
+    return Doc.rgOverlays.filter((Overlay) => Overlay.rgnTiles.includes(nTile));
+  }
+
+  // Props: { szType, rgnTiles, szName?, szStyle?, szId? }. The id defaults to "<type><n>".
+  function AddOverlay(Doc, Props) {
+    const szId = Props.szId === undefined ? NextId(Doc.rgOverlays, String(Props.szType)) : Props.szId;
+    Require(GetOverlay(Doc, szId) === null, `Duplicate overlay id: ${szId}`);
+    const After = MakeOverlay(Doc, { ...Props, szId });
+    return ApplyChange(Doc, { szLayer: 'overlay', Key: szId, nIndex: Doc.rgOverlays.length, Before: null, After });
+  }
+
+  function UpdateOverlay(Doc, szId, Props) {
+    const nIndex = IndexOfId(Doc.rgOverlays, szId);
+    Require(nIndex >= 0, `Unknown overlay: ${szId}`);
+    const Before = Doc.rgOverlays[nIndex];
+    const After = MakeOverlay(Doc, { ...Before, ...Props, szId });
+    return ApplyChange(Doc, { szLayer: 'overlay', Key: szId, nIndex, Before, After });
+  }
+
+  function RemoveOverlay(Doc, szId) {
+    const nIndex = IndexOfId(Doc.rgOverlays, szId);
+    Require(nIndex >= 0, `Unknown overlay: ${szId}`);
+    return ApplyChange(Doc, { szLayer: 'overlay', Key: szId, nIndex, Before: Doc.rgOverlays[nIndex], After: null });
+  }
+
+  // Labels: text attached to a tile ---------------------------------------------
+
+  function MakeLabel(Doc, Props) {
+    CheckId(Props.szId, 'label');
+    CheckTile(Doc, Props.nTile);
+    Require(g_rgszLabelCategories.includes(Props.szCategory), `Unknown label category: ${Props.szCategory}`);
+    const szText = CheckText(Props.szText, 'Label text');
+    Require(szText.trim().length > 0, 'Label text must not be empty');
+    const dSize = Props.dSize === undefined ? g_LabelDefaultSizes[Props.szCategory] : Props.dSize;
+    CheckFinite(dSize, 'Label size');
+    Require(dSize > 0, 'Label size must be positive');
+    const Label = {
+      szId: Props.szId,
+      nTile: Props.nTile,
+      szText,
+      szCategory: Props.szCategory,
+      dSize,
+      dRotation: Props.dRotation === undefined ? 0 : Props.dRotation,
+      dDx: Props.dDx === undefined ? 0 : Props.dDx,
+      dDy: Props.dDy === undefined ? 0 : Props.dDy,
+    };
+    CheckFinite(Label.dRotation, 'Label rotation');
+    CheckFinite(Label.dDx, 'Label dx');
+    CheckFinite(Label.dDy, 'Label dy');
+    return Object.freeze(Label);
+  }
+
+  function GetLabel(Doc, szId) {
+    return Doc.rgLabels.find((Label) => Label.szId === szId) || null;
+  }
+
+  function LabelsAt(Doc, nTile) {
+    return Doc.rgLabels.filter((Label) => Label.nTile === nTile);
+  }
+
+  // Props: { nTile, szText, szCategory, dSize?, dRotation?, dDx?, dDy?, szId? }.
+  function AddLabel(Doc, Props) {
+    const szId = Props.szId === undefined ? NextId(Doc.rgLabels, 'label') : Props.szId;
+    Require(GetLabel(Doc, szId) === null, `Duplicate label id: ${szId}`);
+    const After = MakeLabel(Doc, { ...Props, szId });
+    return ApplyChange(Doc, { szLayer: 'label', Key: szId, nIndex: Doc.rgLabels.length, Before: null, After });
+  }
+
+  function UpdateLabel(Doc, szId, Props) {
+    const nIndex = IndexOfId(Doc.rgLabels, szId);
+    Require(nIndex >= 0, `Unknown label: ${szId}`);
+    const Before = Doc.rgLabels[nIndex];
+    const After = MakeLabel(Doc, { ...Before, ...Props, szId });
+    return ApplyChange(Doc, { szLayer: 'label', Key: szId, nIndex, Before, After });
+  }
+
+  function RemoveLabel(Doc, szId) {
+    const nIndex = IndexOfId(Doc.rgLabels, szId);
+    Require(nIndex >= 0, `Unknown label: ${szId}`);
+    return ApplyChange(Doc, { szLayer: 'label', Key: szId, nIndex, Before: Doc.rgLabels[nIndex], After: null });
+  }
+
+  // Replaying changes -------------------------------------------------------------
+
+  function ApplyListChange(rgItems, Change, Before, After) {
+    if (Before === null) {
+      rgItems.splice(Change.nIndex, 0, After);
+      return;
+    }
+    const nIndex = IndexOfId(rgItems, Change.Key);
+    Require(nIndex >= 0, `Cannot apply change: ${Change.Key} is missing`);
+    if (After === null) {
+      rgItems.splice(nIndex, 1);
+    } else {
+      rgItems[nIndex] = After;
+    }
+  }
+
+  // Sets the changed item to After (fForward) or Before, and returns the change.
+  function ApplyChange(Doc, Change, fForward = true) {
+    const Before = fForward ? Change.Before : Change.After;
+    const After = fForward ? Change.After : Change.Before;
+    switch (Change.szLayer) {
+      case 'terrain':
+        Doc.rgnTerrain[Change.Key] = After;
+        break;
+      case 'landmark':
+        if (After === null) {
+          Doc.Landmarks.delete(Change.Key);
+        } else {
+          Doc.Landmarks.set(Change.Key, After);
+        }
+        break;
+      case 'overlay':
+        ApplyListChange(Doc.rgOverlays, Change, Before, After);
+        break;
+      case 'label':
+        ApplyListChange(Doc.rgLabels, Change, Before, After);
+        break;
+      default:
+        Require(false, `Unknown change layer: ${Change.szLayer}`);
+    }
+    Doc.nRevision++;
+    return Change;
+  }
+
+  RpgMap.Model = Object.freeze({
+    g_nFormatVersion,
+    g_rgszOverlayTypes,
+    g_rgszLabelCategories,
+    g_LabelDefaultSizes,
+    g_rgszLayers,
+    CreateGlobalMap,
+    CreateLocalMap,
+    LocalTileIndex,
+    LocalTileXY,
+    IsTile,
+    Neighbors,
+    AreAdjacent,
+    GetTerrain,
+    SetTerrain,
+    GetLandmark,
+    SetLandmark,
+    RemoveLandmark,
+    GetOverlay,
+    OverlaysAt,
+    AddOverlay,
+    UpdateOverlay,
+    RemoveOverlay,
+    GetLabel,
+    LabelsAt,
+    AddLabel,
+    UpdateLabel,
+    RemoveLabel,
+    ApplyChange,
+  });
+})(globalThis);
+</script>
+
+<script data-module="History">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+  const { Util, Model } = RpgMap;
+  const { Require } = Util;
+
+  // Command-pattern undo/redo. A command is { szLabel, rgChanges } holding only the
+  // Model change records; undo replays them backwards, redo forwards.
+  const g_nDefaultLimit = 500;
+
+  function Create(Doc, Options = {}) {
+    const nLimit = Options.nLimit === undefined ? g_nDefaultLimit : Options.nLimit;
+    Require(Number.isInteger(nLimit) && nLimit > 0, 'History limit must be a positive integer');
+    return { Doc, nLimit, rgUndo: [], rgRedo: [], Pending: null };
+  }
+
+  // Starts a grouped command, such as a brush stroke. Must be closed by Commit or Cancel.
+  function Begin(History, szLabel) {
+    Require(History.Pending === null, 'A history group is already open');
+    History.Pending = { szLabel: String(szLabel), rgChanges: [] };
+  }
+
+  // Records changes already applied to the document (nulls from no-op mutators are skipped).
+  function Record(History, Changes) {
+    Require(History.Pending !== null, 'History.Record needs an open group (call Begin first)');
+    for (const Change of Array.isArray(Changes) ? Changes : [Changes]) {
+      if (Change !== null && Change !== undefined) {
+        History.Pending.rgChanges.push(Change);
+      }
+    }
+  }
+
+  // Merges repeated terrain/landmark changes to one tile (first Before, last After) and
+  // drops those that end where they started. Overlay and label changes keep their order.
+  function Coalesce(rgChanges) {
+    const rgResult = [];
+    const ByKey = new Map();
+    for (const Change of rgChanges) {
+      if (Change.szLayer !== 'terrain' && Change.szLayer !== 'landmark') {
+        rgResult.push(Change);
+        continue;
+      }
+      const szKey = `${Change.szLayer}:${Change.Key}`;
+      const nIndex = ByKey.get(szKey);
+      if (nIndex === undefined) {
+        ByKey.set(szKey, rgResult.length);
+        rgResult.push(Change);
+      } else {
+        rgResult[nIndex] = { ...rgResult[nIndex], After: Change.After };
+      }
+    }
+    return rgResult.filter((Change) => Change.Before !== Change.After);
+  }
+
+  function Push(History, Command) {
+    History.rgUndo.push(Command);
+    if (History.rgUndo.length > History.nLimit) {
+      History.rgUndo.shift();
+    }
+    History.rgRedo.length = 0;
+  }
+
+  // Closes the open group; returns the command, or null if it changed nothing.
+  function Commit(History) {
+    Require(History.Pending !== null, 'No history group is open');
+    const { szLabel, rgChanges } = History.Pending;
+    History.Pending = null;
+    const rgCoalesced = Coalesce(rgChanges);
+    if (rgCoalesced.length === 0) {
+      return null;
+    }
+    const Command = Object.freeze({ szLabel, rgChanges: Object.freeze(rgCoalesced) });
+    Push(History, Command);
+    return Command;
+  }
+
+  // Reverts and discards the open group.
+  function Cancel(History) {
+    Require(History.Pending !== null, 'No history group is open');
+    const { rgChanges } = History.Pending;
+    History.Pending = null;
+    for (let nIndex = rgChanges.length - 1; nIndex >= 0; nIndex--) {
+      Model.ApplyChange(History.Doc, rgChanges[nIndex], false);
+    }
+  }
+
+  // Runs fnMutate(Doc, fnRecord) as one command. fnMutate passes each change record
+  // (for example fnRecord(Model.SetTerrain(...))) to fnRecord, which returns it.
+  // If fnMutate throws, the recorded changes are reverted and the error is rethrown.
+  function Perform(History, szLabel, fnMutate) {
+    Begin(History, szLabel);
+    const fnRecord = (Change) => {
+      Record(History, Change);
+      return Change;
+    };
+    try {
+      fnMutate(History.Doc, fnRecord);
+    } catch (Failure) {
+      Cancel(History);
+      throw Failure;
+    }
+    return Commit(History);
+  }
+
+  function CanUndo(History) {
+    return History.Pending === null && History.rgUndo.length > 0;
+  }
+
+  function CanRedo(History) {
+    return History.Pending === null && History.rgRedo.length > 0;
+  }
+
+  function Undo(History) {
+    if (!CanUndo(History)) {
+      return null;
+    }
+    const Command = History.rgUndo.pop();
+    for (let nIndex = Command.rgChanges.length - 1; nIndex >= 0; nIndex--) {
+      Model.ApplyChange(History.Doc, Command.rgChanges[nIndex], false);
+    }
+    History.rgRedo.push(Command);
+    return Command;
+  }
+
+  function Redo(History) {
+    if (!CanRedo(History)) {
+      return null;
+    }
+    const Command = History.rgRedo.pop();
+    for (const Change of Command.rgChanges) {
+      Model.ApplyChange(History.Doc, Change, true);
+    }
+    History.rgUndo.push(Command);
+    return Command;
+  }
+
+  function Clear(History) {
+    Require(History.Pending === null, 'Cannot clear history while a group is open');
+    History.rgUndo.length = 0;
+    History.rgRedo.length = 0;
+  }
+
+  RpgMap.History = Object.freeze({
+    g_nDefaultLimit,
+    Create,
+    Begin,
+    Record,
+    Commit,
+    Cancel,
+    Perform,
+    CanUndo,
+    CanRedo,
+    Undo,
+    Redo,
+    Clear,
+  });
+})(globalThis);
+</script>
+
 <script data-module="App" data-dom="true">
 (function (Root) {
   'use strict';

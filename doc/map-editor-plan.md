@@ -22,7 +22,8 @@ tests/
   projection-reference.test.cjs # golden JSON structure, Python reproducibility          [done]
   projection.test.cjs           # port vs golden JSON, frames, seams                     [done]
   lattice.test.cjs  topology.test.cjs  coordinates.test.cjs                               [done]
-  model.test.cjs  fileformat.test.cjs  regions.test.cjs  svgexport.test.cjs
+  model.test.cjs                                                                         [done]
+  fileformat.test.cjs  regions.test.cjs  svgexport.test.cjs
   fixtures/sample-global.map.txt  fixtures/sample-local.map.txt
 tools/generate_map_projection.py                                                         [done]
 doc/
@@ -51,7 +52,7 @@ Every module is an inline block that registers one frozen object:
 - Blocks appear in dependency order; `Util` is first and `App` is last.
 - Blocks that touch the DOM carry `data-dom="true"`. The tests skip these, so every other block must be DOM-free.
 - `tests/_load.cjs` `LoadModules()` blanks out HTML comments, compiles each DOM-free block with `vm.compileFunction` (passing a sandbox object as `globalThis`, with `lineOffset` so errors report `index.html` line numbers), and returns `RpgMap`.
-- **Planned modules, in order:** `Util` ✅ → `Projection` ✅ → `Lattice` ✅ → `Topology` ✅ → `Coordinates` ✅ → `Terrain` → `Model` → `History` → `FileFormat` → `Regions` → `SvgExport` → `Renderer`* → `Tools`* → `App`* ✅. Modules marked * use the DOM.
+- **Planned modules, in order:** `Util` ✅ → `Projection` ✅ → `Lattice` ✅ → `Topology` ✅ → `Coordinates` ✅ → `Terrain` ✅ → `Model` ✅ → `History` ✅ → `FileFormat` → `Regions` → `SvgExport` → `Renderer`* → `Tools`* → `App`* ✅. Modules marked * use the DOM.
 
 ## 3. Projection module (port of the Python geometry)
 
@@ -300,7 +301,7 @@ road r1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Zeta
 1. ✅ **Scaffold:** HTML shell, module convention, `_load.cjs`, Util, projection tool, golden JSON.
 2. ✅ **Projection:** JS port, validation, panel frames (north axis, reference point, equator), 48 seam transforms.
 3. ✅ **Lattice and Topology:** flat-top lattice, global size and scales, equatorial continuous lattice, partial tiles clipped per panel, adjacency, universal coordinates (miles), local-map lattice.
-4. **Terrain table, Model, History.**
+4. ✅ **Terrain table, Model, History.**
 5. **Renderer and viewport:** pan, zoom, culling, clipped panels, outlines, minimap, panel focus view, status bar coordinates.
 6. **Terrain tools:** brush, fill, eyedropper, undo/redo.
 7. **File format:** `doc/file-format.md`, writer, parser, open/save/autosave, fixtures.
@@ -330,6 +331,13 @@ road r1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Zeta
 16. **Partial-tile pieces:** a partial tile stores `rgPieces = [{szPanel, rgrgdPolygon}]` in its own panel's frame (edge units). An equatorial east/west tile can have pieces in the neighbouring panel, mapped through the seam transform. Whole tiles store `rgPieces = null`. A tile is whole if its area is at least (1 − 1e-9) of a hex.
 17. **Adjacency tolerance:** two tiles are adjacent if their shared lattice edge, clipped to the regions they cover, is longer than 1e-6·d. Across non-equatorial seams, the pieces' boundary intervals along the seam edge must overlap by more than that.
 18. **Local-map anchor parity:** a regional local map snaps its anchor to the global lattice of the same scale and records that hex's column parity, so its odd columns shift north exactly like the global lattice. Local (yard) maps are not snapped.
+19. **Terrain IDs and colours:** a terrain's ID is its row in the §5 table (water = 0, the default), so IDs must never be reordered. Files store the char, not the ID. Colours are the planner's choice (§12).
+20. **Model change records:** every mutator validates, applies, and returns `{ szLayer: 'terrain'|'landmark'|'overlay'|'label', Key, nIndex, Before, After }` (or null for a no-op). `Key` is the tile index (terrain, landmark) or item id (overlay, label); `nIndex` is the list position, so undoing a removal restores the original order. Overlay, label and landmark values are frozen objects and are replaced, never edited in place.
+21. **Ids:** overlay ids default to `road1`, `trail1`, `river1`, … and label ids to `label1`, …: the smallest unused number, computed from the current contents (no counter, so history never needs to restore one). Ids match `[A-Za-z][A-Za-z0-9_-]*`; overlay styles match `[A-Za-z0-9_-]*`; names, notes and label text may not contain control characters.
+22. **Overlay paths** need at least one tile (the overlay tool starts a path with one click). Consecutive tiles must be adjacent, so a tile cannot repeat consecutively; a path may revisit a tile non-consecutively.
+23. **Label defaults:** size region 28, city 18, location 14 (SVG px at 1:1 export); rotation in degrees, clockwise; `dx`, `dy` offsets default to 0.
+24. **History:** a command is `{ szLabel, rgChanges }`. `Begin`/`Record`/`Commit` group a brush stroke; on commit, repeated terrain or landmark changes to one tile coalesce (first `Before`, last `After`) and net no-ops are dropped; an empty command is discarded without clearing redo. `Perform(History, szLabel, (Doc, fnRecord) => …)` reverts recorded changes if the callback throws. The stack keeps the latest 500 commands.
+25. **Local tile numbering:** local tile index = `y · width + x`; local `(x, y)` is lattice offset `(x + parity, −y)`, which gives the neighbours.
 
 ## 12. Open questions
 

@@ -1,6 +1,6 @@
 # Global Map Editor: Plan Status
 
-Last updated: 2026-10-29 (after milestone 3). See [`map-editor-plan.md`](map-editor-plan.md) for the full plan and [`../prompt.md`](../prompt.md) for the specification.
+Last updated: 2026-10-29 (after milestone 4). See [`map-editor-plan.md`](map-editor-plan.md) for the full plan and [`../prompt.md`](../prompt.md) for the specification.
 
 ## Summary
 
@@ -9,8 +9,8 @@ Last updated: 2026-10-29 (after milestone 3). See [`map-editor-plan.md`](map-edi
 | 1 | Scaffold: HTML shell, module convention, test loader, Util, projection tool, golden JSON | ✅ Done |
 | 2 | Projection: JS port, validation, panel frames, seam transforms | ✅ Done |
 | 3 | Lattice and Topology: flat-top lattice, equatorial strip, partial tiles, adjacency, universal coordinates | ✅ Done |
-| 4 | Terrain table, Model, History | ⏭ **Next** |
-| 5 | Renderer and viewport | Pending |
+| 4 | Terrain table, Model, History | ✅ Done |
+| 5 | Renderer and viewport | ⏭ **Next** |
 | 6 | Terrain tools | Pending |
 | 7 | ASCII file format | Pending |
 | 8 | Overlays, landmarks, labels | Pending |
@@ -19,9 +19,9 @@ Last updated: 2026-10-29 (after milestone 3). See [`map-editor-plan.md`](map-edi
 | 11 | SVG export, part 2: terrain embellishments | Pending |
 | 12 | Polish | Pending |
 
-## What exists now (milestones 1–3)
+## What exists now (milestones 1–4)
 
-- **`map-editor/index.html`**: the editor shell (toolbar, tool panel, canvas, properties panel, status bar) with six modules.
+- **`map-editor/index.html`**: the editor shell (toolbar, tool panel, canvas, properties panel, status bar) with nine modules.
   - `Util` (DOM-free): vector helpers, `Center`, `Boundary`, `Require`, `CreateRng` (mulberry32), `HashIntegers`, `FormatNumber`, and 2D geometry: `PolygonArea` (signed, CCW positive), `ClipPolygonToConvex` (Sutherland–Hodgman), `ClipSegmentToConvex` (returns `[t0, t1]` or null), `PointInConvex`.
   - `Projection` (DOM-free): a 1:1 port of the Python geometry, net and `Validate`, plus panel frames and seams. Exports `g_North`, `g_SectorLabels`, `g_SectorNames`, `g_dXlHexMiles`, `Build()`, `MilesPerEdge(nHexes)`, `FindSeam(szA, szB)`, `SolidToFrame`, `FrameToSolid`, and 2D transform helpers (`ApplyTransform`, `ComposeTransforms`, `InvertTransform`, `RigidFromSegments`).
   - `Lattice` (DOM-free): scale tables (`g_Scales`, regional XL/L/M/S = 216/72/24/8 mi; local in yards), flat-top offset ↔ axial ↔ cube ↔ point, `CubeRound`, `HexPolygon` (CCW from due east), `PointToOffset`, neighbours in order N, NE, SE, S, SW, NW (`g_rgrgnDirections`), `SharedEdge`, `OffsetDistance`, `NestOffset(q, j, r)`. Offset `(q, j)` centre = `(q·w, (j + ½·odd(q))·d)`.
@@ -31,6 +31,12 @@ Last updated: 2026-10-29 (after milestone 3). See [`map-editor-plan.md`](map-edi
     - Helpers: `TileAt(Topo, szPanel, [east, north])`, `LocateLattice`, `TileByColumnRow`, `Neighbors`, `AreAdjacent`, `TilePolygons`, `PanelLattice`, `LatticeCenter`, `LatticeNearest`.
     - Equatorial lattices are anchored on XL centres so finer scales nest (§11.14).
   - `Coordinates` (DOM-free): `TileToUniversal` / `UniversalToTile` (miles; returns −1 beyond 0.25·d), `FormatUniversal` (`Eta 187.1W 324.0N`), `ParseUniversal`, `PanelIdByName`, `MakeLocation`, `CreateLocalMap`, `LocalTileToUniversal`, `UniversalToLocalTile` (local x east, y south; regional anchors snap to the global lattice, §11.18).
+  - `Terrain` (DOM-free): `g_rgTerrains` (17 frozen `{ nId, szChar, szKey, szName, szColor, fWater, Embellish }`, ID = row of plan §5, water = 0; `Embellish` is null until milestone 11), `g_szReservedChar` (`_`), `g_nWaterId`, `ById`, `ByChar`, `ByKey`, `IsValidId`, `IsWater`, and `g_rgLandmarkTypes` (village … dungeon) with `LandmarkType`, `IsLandmarkType`.
+  - `Model` (DOM-free): `CreateGlobalMap({ nPanelHexes = 24, szTileScale = 'XL', szName })` and `CreateLocalMap({ nWidth, nHeight, szSystem, szScale, Anchor, nPanelHexes?, szName })`.
+    - Document: `{ nVersion, szKind, szName, Global | Local, Topo (global only), nTiles, rgnTerrain: Uint8Array (water), Landmarks: Map<tile, {szType, szName, szNotes}>, rgOverlays: [{szId, szType, szName, szStyle, rgnTiles}], rgLabels: [{szId, nTile, szText, szCategory, dSize, dRotation, dDx, dDy}], nRevision }`. The document is mutable; its items are frozen and replaced on edit.
+    - Mutators validate, apply, and return a change record `{ szLayer, Key, nIndex, Before, After }` or null for a no-op (plan §11.20): `SetTerrain`, `SetLandmark` (place/replace/edit; null removes), `RemoveLandmark`, `AddOverlay`/`UpdateOverlay`/`RemoveOverlay` (paths of adjacent tiles), `AddLabel`/`UpdateLabel`/`RemoveLabel`. `ApplyChange(Doc, Change, fForward)` replays a record and bumps `nRevision`.
+    - Queries: `IsTile`, `Neighbors`, `AreAdjacent` (Topology for global maps; lattice offsets for local maps), `LocalTileIndex`/`LocalTileXY` (index = y·width + x), `GetTerrain`, `GetLandmark`, `GetOverlay`, `OverlaysAt`, `GetLabel`, `LabelsAt`.
+  - `History` (DOM-free): `Create(Doc, { nLimit = 500 })`, `Begin`/`Record`/`Commit`/`Cancel` (a brush stroke is one command; repeats coalesce), `Perform(H, szLabel, (Doc, fnRecord) => …)`, `Undo`, `Redo` (return the command so the UI can redraw its tiles), `CanUndo`, `CanRedo`, `Clear`. A new command clears redo (plan §11.24).
   - `App` (`data-dom="true"`): sizes the canvas, draws a "No map loaded" placeholder, and lists the loaded modules in the status bar.
 - **`Projection.Build()`** runs once, validates, and returns a deep-frozen object:
   - `Vertices`, `Faces`, `Edges`, `NetVertices`, `NetFaces`, `NetEdges` with the same IDs, order and fields as the golden JSON (edge maps are keyed `"V01|V09"`);
@@ -40,7 +46,7 @@ Last updated: 2026-10-29 (after milestone 3). See [`map-editor-plan.md`](map-edi
   - `Seams`: 48 entries `{ szEdge, rgszVertices, szPanelA, szPanelB, rgdAToB, rgdBToA }`.
 - **Transforms** are `[a, b, c, d, e, f]` (canvas/SVG layout): `x' = a·x + c·y + e`, `y' = b·x + d·y + f`. Units are edge lengths; multiply by `MilesPerEdge(n)` for miles (plan §11.12).
 - **`tests/_load.cjs`**: `LoadModules()` returns `RpgMap` built from the DOM-free blocks.
-- **Tests** (62, all passing): `scaffold`, `util` (including the geometry helpers), `lattice`, `topology`, `coordinates`, `projection-reference` (golden JSON counts and Python `--check`), and `projection.test.cjs`:
+- **Tests** (74, all passing): `scaffold`, `util` (including the geometry helpers), `lattice`, `topology`, `coordinates`, `model` (terrain table vs plan §5, global/local documents, local adjacency, terrain/landmark/overlay/label undo-redo round trips, grouped strokes, Perform rollback, validation, history limit), `projection-reference` (golden JSON counts and Python `--check`), and `projection.test.cjs`:
   - every solid/net vertex, edge and face deep-equals the golden JSON within 1e-9; validation summary matches;
   - frames are orthonormal, east = north × normal, origins at panel centres, frame→net placement and frame→solid round trips;
   - equatorial north/east are +y/+x in the net, centres on y = 0.122008, east/west edges at ±W/2;
@@ -58,19 +64,18 @@ Last updated: 2026-10-29 (after milestone 3). See [`map-editor-plan.md`](map-edi
 - **At n = 24 XL:** d = 0.0846446 edge units; panel edge ≈ 2551.8 mi; equatorial circumference ≈ 26,936.9 mi; equatorial panel width ≈ 4489.5 mi.
 - **Tile counts** (total / partial, build time): n = 4 XL 264 / 180; n = 8 XL 882 / 390; n = 24 XL 6,564 / 1,218 (~0.1 s); n = 4 L 6,570 / 1,224; n = 24 L 218,088 / 7,572 (~1 s). Tile areas sum to the panel areas, and the tile graph is connected in every case.
 
-## Next step: milestone 4 (Terrain table, Model, History)
+## Next step: milestone 5 (Renderer and viewport)
 
-Read plan §5 and `prompt.md` "Terrain" and "Landmarks". Add modules `Terrain`, `Model` and `History` after `Coordinates`, plus `tests/model.test.cjs`:
+Read plan §7 ("Layout", "Viewport", "Global view", "Layers") and `prompt.md` "Map projection". Add a `Renderer` module (`data-dom="true"`) before `App`, keep geometry that can be tested DOM-free (view transforms, culling, hit testing) in a DOM-free helper or in `Renderer`'s pure functions exposed for tests, and extend `App`:
 
-1. **`Terrain`**: the single terrain table (17 types plus reserved `_`): ASCII char, ID, name, colour, `fWater`; lookups by char and ID; the landmark type list (village … dungeon). Embellishment functions come later (milestone 11); leave a slot for them.
-2. **`Model`**: `CreateGlobalMap({ nPanelHexes, szTileScale, szName })` and `CreateLocalMap(...)` (reuse `Coordinates.CreateLocalMap`). Fields:
-   - `Uint8Array` terrain, defaulting to water;
-   - landmarks: a `Map` keyed by tile index, at most one per tile;
-   - overlays: road, trail or river, each a tile path; consecutive tiles must be adjacent (`Topology.AreAdjacent`); several overlays may share a tile;
-   - labels.
-   Add mutators that validate their input and return the change records History needs.
-3. **`History`**: a command-pattern undo/redo stack that stores only changes (tile index, before, after). A brush stroke is one command (begin/commit grouping). Provide `Undo`, `Redo`, `CanUndo`, `CanRedo`, `Clear`; a new command clears the redo stack.
-4. **Tests**: terrain table has unique chars and IDs and matches the plan §5 table; set-terrain/undo/redo round trips; grouped strokes undo as one; at most one landmark per tile; overlay validation rejects non-adjacent paths; labels and overlays round-trip through undo.
+1. **View state:** net-space camera (centre, zoom); screen ↔ net ↔ panel-frame transforms via `Projection.Frames[sz].rgdFrameToNet`. Pan with drag or the arrow keys, wheel zoom around the cursor, *fit net* and *fit panel* buttons.
+2. **Drawing:** for each panel, set the frame→net→screen transform, clip to the panel polygon, fill visible tiles batched by `Terrain` colour (`Topology.TilePolygons`), then panel outlines and Greek names; optional hex grid. Cull tiles by panel bounding box and tile centre. When zoomed far out, fall back to an `ImageData` / coarse fill.
+3. **Panel focus view:** one panel north-up, with neighbouring panels unfolded across seams (`Projection.Seams[...].rgdAToB`).
+4. **Minimap:** a small clickable net that recentres the main view.
+5. **Status bar:** hovered tile → `Coordinates.FormatUniversal(TileToUniversal(...))`, panel name, terrain name; use `Topology.LocateLattice` / a point-in-tile test for hit testing.
+6. **Layer toggles:** terrain, hex grid, panel outlines (overlays/landmarks/labels come in milestone 8).
+7. On start, create `Model.CreateGlobalMap()` (n = 24, XL) and seed a few terrain tiles so colours are visible; keep a `History` instance on the app state for milestone 6.
+8. **Tests:** add `tests/renderer.test.cjs` for the pure parts (screen ↔ net round trips, zoom about a point keeps it fixed, culling keeps every on-screen tile, hit test returns the tile whose centre is nearest). Browser check: no console errors, pan/zoom/fit work, hover shows coordinates.
 
 ## How to continue (for an unattended or auto-mode session)
 
