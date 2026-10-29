@@ -20,7 +20,8 @@ tests/
   scaffold.test.cjs             # enforces the module and no-external-dependency rules   [done]
   util.test.cjs                 #                                                        [done]
   projection-reference.test.cjs # golden JSON structure, Python reproducibility          [done]
-  projection.test.cjs  lattice.test.cjs  topology.test.cjs  coordinates.test.cjs
+  projection.test.cjs           # port vs golden JSON, frames, seams                     [done]
+  lattice.test.cjs  topology.test.cjs  coordinates.test.cjs                               [done]
   model.test.cjs  fileformat.test.cjs  regions.test.cjs  svgexport.test.cjs
   fixtures/sample-global.map.txt  fixtures/sample-local.map.txt
 tools/generate_map_projection.py                                                         [done]
@@ -50,7 +51,7 @@ Every module is an inline block that registers one frozen object:
 - Blocks appear in dependency order; `Util` is first and `App` is last.
 - Blocks that touch the DOM carry `data-dom="true"`. The tests skip these, so every other block must be DOM-free.
 - `tests/_load.cjs` `LoadModules()` blanks out HTML comments, compiles each DOM-free block with `vm.compileFunction` (passing a sandbox object as `globalThis`, with `lineOffset` so errors report `index.html` line numbers), and returns `RpgMap`.
-- **Planned modules, in order:** `Util` ✅ → `Projection` → `Lattice` → `Topology` → `Coordinates` → `Terrain` → `Model` → `History` → `FileFormat` → `Regions` → `SvgExport` → `Renderer`* → `Tools`* → `App`* ✅. Modules marked * use the DOM.
+- **Planned modules, in order:** `Util` ✅ → `Projection` ✅ → `Lattice` ✅ → `Topology` ✅ → `Coordinates` ✅ → `Terrain` → `Model` → `History` → `FileFormat` → `Regions` → `SvgExport` → `Renderer`* → `Tools`* → `App`* ✅. Modules marked * use the DOM.
 
 ## 3. Projection module (port of the Python geometry)
 
@@ -94,7 +95,7 @@ Every module is an inline block that registers one frozen object:
 
 ### 4.3 Equatorial panels (Alpha–Zeta)
 - One continuous lattice runs across all six panels and wraps around.
-  - Panel column `i = 0…k−1`, with centres at `(i+½)·w` east of the panel's west edge. k = n × (216 / tile-scale miles).
+  - Panel column `i = 0…k−1`. k = n × (216 / tile-scale miles). At XL the centres are at `(i+½)·w` east of the panel's west edge. Finer scales are anchored on the XL centres so they nest (§4.2, §11.14): the column at `(i+½)·w` at XL becomes fine column `r·i + r/2`, so at L the first column's centre sits on the west edge.
   - Even columns have hex centres at `north = j·d` from the equator.
   - Odd columns are shifted ½ hex north: `north = (j+½)·d`. So the east-most column sits ½ hex above the first column and lines up with the next panel's first column.
 - **East/west edges:** tiles are whole and belong to their column's panel. The small hex corners that cross the line are ignored; they are **not** partial tiles.
@@ -297,8 +298,8 @@ road r1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Zeta
 ## 10. Milestones (each ends green: `node --test tests/` and `python3 tools/generate_map_projection.py --labels --check`)
 
 1. ✅ **Scaffold:** HTML shell, module convention, `_load.cjs`, Util, projection tool, golden JSON.
-2. **Projection:** JS port, validation, panel frames (north axis, reference point, equator), 48 seam transforms.
-3. **Lattice and Topology:** flat-top lattice, global size and scales, equatorial continuous lattice, partial tiles clipped per panel, adjacency, universal coordinates (miles), local-map lattice.
+2. ✅ **Projection:** JS port, validation, panel frames (north axis, reference point, equator), 48 seam transforms.
+3. ✅ **Lattice and Topology:** flat-top lattice, global size and scales, equatorial continuous lattice, partial tiles clipped per panel, adjacency, universal coordinates (miles), local-map lattice.
 4. **Terrain table, Model, History.**
 5. **Renderer and viewport:** pan, zoom, culling, clipped panels, outlines, minimap, panel focus view, status bar coordinates.
 6. **Terrain tools:** brush, fill, eyedropper, undo/redo.
@@ -322,6 +323,13 @@ road r1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Zeta
 9. **Terrain characters:** as in the §5 table. `_` means "not a tile".
 10. **Embellishments for mangrove, islands, canyon, badlands and farmland:** as in the §8 table.
 11. **True latitude/longitude:** central projection onto the sphere. Used for display only.
+12. **Frame units:** `Projection` frames and seams are in edge units, so `Build()` is independent of panel size. `MilesPerEdge(nHexes)` converts to miles: `nHexes · 216 · √3/2` miles across the equatorial panel width.
+13. **Seam direction:** panel A and B of a seam are the solid edge's `faces[0]` and `faces[1]`. Transforms use the canvas/SVG matrix layout `[a, b, c, d, e, f]`.
+14. **Equatorial lattice anchor at finer scales:** equatorial lattices at every scale are anchored on the XL hex centres, so a coarse hex `(C, J)` is fine hex `(r·C, r·J)` (`prompt.md` nesting rule). This overrides the `(i+½)·w` rule of §4.3 for scales finer than XL.
+15. **Tile numbering:** tiles are ordered by panel (golden JSON face order), then north to south, then west to east. `nRow = 0` is the northernmost lattice row in the panel; `nColumn` counts from the westernmost lattice column (equal to `i` on equatorial panels).
+16. **Partial-tile pieces:** a partial tile stores `rgPieces = [{szPanel, rgrgdPolygon}]` in its own panel's frame (edge units). An equatorial east/west tile can have pieces in the neighbouring panel, mapped through the seam transform. Whole tiles store `rgPieces = null`. A tile is whole if its area is at least (1 − 1e-9) of a hex.
+17. **Adjacency tolerance:** two tiles are adjacent if their shared lattice edge, clipped to the regions they cover, is longer than 1e-6·d. Across non-equatorial seams, the pieces' boundary intervals along the seam edge must overlap by more than that.
+18. **Local-map anchor parity:** a regional local map snaps its anchor to the global lattice of the same scale and records that hex's column parity, so its odd columns shift north exactly like the global lattice. Local (yard) maps are not snapped.
 
 ## 12. Open questions
 
