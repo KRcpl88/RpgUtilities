@@ -17,6 +17,28 @@ The specification is [`prompt.md`](prompt.md), the implementation plan is
 [`doc/map-editor-plan.md`](doc/map-editor-plan.md), and progress is tracked in
 [`doc/map-editor-status.md`](doc/map-editor-status.md).
 
+### Creating and opening maps
+
+**New** creates an all-water global world or local rectangle. Global maps use an
+even panel-hex count and regional L (36 mi) or XL (216 mi) hexes. Local maps take a
+width, height and universal anchor for tile (0, 0), such as `Eta 187.1W 324.0N`.
+
+| Local-map system | S | M | L | XL |
+| --- | --- | --- | --- | --- |
+| Regional | 1 mi | 6 mi | 36 mi | 216 mi |
+| Local | 1 yd | 10 yd | 100 yd | 600 yd |
+
+Regional anchors snap to their same-scale world lattice; the dialog previews the
+result. Yard-scale anchors remain free. Local grids continue flat in the anchor
+panel's frame, without wrapping at panel boundaries. All terrain and feature
+tools work on both map kinds. **Fit all** and the minimap navigate either kind;
+panel focus and net-view controls apply only to global maps.
+
+**Open** accepts either kind of `.map.txt`, including the samples in
+`tests/fixtures/`. **Save** (Ctrl+S) downloads a canonical text file. New maps start
+unsaved and are autosaved even before their first edit. Canceling New or rejecting
+its discard confirmation preserves the current map.
+
 ### Feature editing
 
 Use **Path (O)** to draw a road, trail or river: choose its type, click **New path**,

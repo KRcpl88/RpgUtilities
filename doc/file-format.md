@@ -80,6 +80,16 @@ characters. Grid line *y* is local row *y* (row 0 is the northernmost), and char
 *x* is local column *x*. Odd columns sit half a hex north of even columns, measured
 from the anchor's lattice parity.
 
+Regional anchors snap to the same-scale lattice of their named panel, using
+`panelHexes` for alignment. Yard-scale anchors remain free. Local grids continue
+flat in that panel's frame, even beyond its boundary; their coordinates never
+switch to an adjacent panel.
+
+When writing a yard-scale map, the anchor is rounded to the file's coordinate
+precision (see below). Feature locations are computed from that rounded anchor,
+without changing the document in memory. This keeps write → parse → write
+byte-identical even when the entered free anchor has additional decimal places.
+
 ### `[landmarks]` (optional)
 
 ```

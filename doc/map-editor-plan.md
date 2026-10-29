@@ -27,6 +27,7 @@ tests/
   edit.test.cjs                 # brush, stroke, flood fill, undo of edits               [done]
   features.test.cjs             # A*, feature commands, seam curves, label transforms   [done]
   feature-renderer.test.cjs     # canvas contracts, picking, visibility, raster reuse    [done]
+  localmap.test.cjs             # normalized local geometry, scales, edges, files       [done]
   fileformat.test.cjs           # round trips, fixtures, line-numbered errors           [done]
   fixtures/sample-global.map.txt  fixtures/sample-local.map.txt                         [done]
   regions.test.cjs  svgexport.test.cjs
@@ -227,16 +228,17 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
 - **Global view:** each panel is drawn through its placement transform and clipped to its polygon, with panel outlines and Greek names.
   - A clickable minimap of the net acts as a navigator.
   - A **panel focus view** shows one panel north-up. Neighbouring panels' tiles are unfolded across the seams so editing can continue across edges.
+- **Local view:** one flat rectangle of full hexes, north up, with the same terrain and feature tools. Fit all and the minimap work locally; global panel-focus/net controls and panel names are disabled. Hover shows universal miles, local col/row and the configured mi/yd scale.
 - **Tools:**
   1. Terrain brush (radius 0–5) and flood fill.
   2. Eyedropper.
-  3. Overlay tool (road, trail, river): click tiles to extend a path. Gaps are filled automatically with A* over `Topology`. Supports select, insert/remove point, split, join and delete.
+  3. Overlay tool (road, trail, river): click tiles to extend a path. Gaps are filled automatically with A* over model adjacency. Supports select, insert/remove point, split, join and delete.
   4. Landmark tool: place, replace or edit a landmark (one per tile).
   5. Label tool: text, category, size, rotation and offset in the properties panel, with drag and rotate handles.
   6. Erase/select tool for each layer.
 - **Layers:** toggles for terrain, hex grid, panel outlines, each overlay type, landmarks and labels.
 - **File:**
-  - New dialog: global (n, tile scale) or local (scale, width, height, anchor).
+  - New dialog: name and global (n, L/XL tile scale) or local (regional/yard system, S/M/L/XL size, width, height, anchor, reference n). Validates before replacing the document and previews snapped/free anchors (§11.47).
   - Open with `<input type=file>`; save via a `Blob` download.
   - Export SVG (§8).
   - Autosave to `localStorage`, with a prompt to restore.
@@ -301,6 +303,7 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
 - **model/history:** only one landmark per tile; overlay adjacency is enforced; undo/redo restores exactly.
 - **features:** A* versus BFS, all seams, exclusions/unreachable paths; insert/remove/split/join and feature edits undo and round-trip exactly; matching seam curves and tangents; label transforms and adaptive curve hit geometry.
 - **feature-renderer:** canvas contract tests for drawing/picking visibility, label previews and handles, and terrain raster reuse after feature changes; real browser checks cover pixels and pointer/file interactions.
+- **localmap:** all eight scales, regional anchor parity/nesting, normalized full-hex hits and rectangular bounds, one-row/column maps, large-map camera fitting, bounded strokes/fill/undo, flat feature geometry, arbitrary free-anchor canonical saves and invalid configurations.
 - **fileformat:** global and local round trips; fixtures; line-numbered errors.
 - **regions:** a single hex gives 1 loop; a ring gives an outer ring plus a hole; loops close.
 - **svgexport:** well-formed XML; layer toggles add or remove groups; output is byte-identical across runs; text is escaped; the hex overlay toggles.
@@ -316,7 +319,7 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
 6. ✅ **Terrain tools:** brush, fill, eyedropper, undo/redo.
 7. ✅ **File format:** `doc/file-format.md`, writer, parser, open/save/autosave, fixtures.
 8. ✅ **Overlays, landmarks, labels:** tools, properties panel, A* gap filling, path operations, layer-specific selection/erase, label drag/rotate handles.
-9. **Local maps:** new-map dialog, scales, anchor snapping, conversion to universal coordinates.
+9. ✅ **Local maps:** new-map dialog, all scales, anchor snapping, normalized viewport, every editing tool, universal coordinates, open/save/autosave for either map kind.
 10. **SVG export, part 1:** per-panel options popup, regions, shoreline, colours, hex overlay, overlays, landmarks, labels.
 11. **SVG export, part 2:** an embellishment algorithm for each terrain (§8).
 12. **Polish:** true latitude/longitude, performance at L scale, sample maps, README and manual checklist.
@@ -385,6 +388,11 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
 44. **Feature appearance and picking:** rivers are blue, roads brown and trails dashed. Overlay `style` is preserved metadata for future styling/export; canvas appearance currently follows type. The eleven landmark types carry vector path data in `Terrain.g_rgLandmarkTypes[].szPath` (canvas `Path2D`, reusable for SVG). Labels have a light halo. Selection uses the drawn, clipped geometry: adaptively flattened cubic curves (half-pixel tolerance), glyph hit radii, and inverse-transformed label bounds. Each feature layer has its own visibility toggle; hidden features cannot be picked or erased.
 45. **Label units and handles:** one size/offset unit is 1/48 hex height. Positive dx is right/east, dy is down/south, rotation is clockwise relative to panel north. Labels scale with zoom. The white centre handle changes offsets; the yellow handle rotates. Pointer motion only changes a preview; pointer-up commits one command, while Escape, cancellation or lost capture discards the preview. Property fields commit on change, not per keystroke.
 46. **Feature UI (v0.5.0):** Path (`O`), Landmark (`K`), Label (`T`), Select (`V`) and Erase (`E`) supplement the terrain tools. Path clicks extend until Escape/Finish; New path and New label explicitly start additional items. The properties panel has an overlapping-feature chooser, editable fields, path operations and Delete; Delete/Backspace also removes the selected visible feature. Select/Erase can target terrain, one overlay type, landmarks or labels. Terrain erase resets just that tile to water. The hovered tile's landmark, overlays and labels appear in the status bar. Feature changes/undo/redo use existing dirty/autosave handling and call `MarkTilesChanged` with an empty terrain list to advance cached raster revisions without rebuilding terrain.
+47. **New-map dialog (v0.6.0; replaces the temporary New behavior in §11.40):** a native modal dialog validates names/settings and previews the regional snapped anchor or yard free anchor. Defaults reuse the current map's configuration; a global map supplies a selected/hovered tile, the view-centre tile, or Eta's origin as the initial anchor. A local map reuses its anchor. Width/height default to 32/24 when creating from a global map. The map name starts as Untitled. Hidden fieldsets are disabled, and modal keyboard input never invokes editor shortcuts. Cancel and invalid input leave the map unchanged. Discard confirmation occurs on a valid Create submission, not on opening the dialog.
+48. **Local display geometry:** `Doc.Topo` remains null. `View.MapGeometry(Doc)` returns the actual global topology or a cached rendering-only local adapter, with one full hex per tile and one identity placement named `local`; `View.MapLayout` chooses net/local layout. Local world coordinates are y-up normalized hex heights (d = 1), with tile (0,0) at the origin and column parity from the anchor. Miles/yard magnitudes never enter camera or pointer math. `Model.Neighbors` remains the adjacency authority; `Model.TileToUniversal` and `Model.HexMiles` supply map-kind-aware coordinates/units.
+49. **Local bounds and navigation:** the viewport outline is the rectangle containing every full edge hex, including parity offsets. Gaps in its corners/edges do not own tiles. `Coordinates.LocalPointToTile` tests full hexes, separately from the 0.25-hex file-coordinate snap threshold. Local maps stay flat beyond their anchor panel; no projection seams, wrapping or partial tiles are introduced. Panel focus/net/name controls are disabled; the minimap recentres the local camera. Fit sets a camera-specific minimum of min(4, fit scale / 4), allowing large local rectangles to fit and zoom out further without changing ordinary global zoom behavior.
+50. **Shared local editing:** terrain strokes, raster caches, feature curves, glyphs, label transforms/handles, picking, properties and status all use the same local geometry. Label size/offset units remain 1/48 hex. Open and Restore accept either kind and reset layout, history, hover, selection and draw metadata. New documents are dirty immediately, including untouched all-water maps; creation clears the previous autosave and schedules a fresh one.
+51. **Free-anchor serialization:** yard-scale anchors are rounded to the scale-dependent precision in §11.39 when saved. All saved feature coordinates are calculated against that rounded anchor, without mutating the document, so even arbitrary high-precision free anchors produce byte-identical write → parse → write output. Regional anchors retain their same-scale lattice snapping.
 
 ## 12. Open questions
 

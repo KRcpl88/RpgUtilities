@@ -147,6 +147,16 @@
   .property-actions { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
   .property-actions button:disabled { opacity: 0.45; cursor: default; }
   .tool-help { color: var(--text-dim); font-size: 12px; }
+  #new-map-dialog {
+    width: min(460px, 90vw); max-height: 90vh; overflow: auto;
+    background: var(--panel); color: var(--text); border: 1px solid var(--accent);
+    border-radius: 6px; padding: 18px;
+  }
+  #new-map-dialog::backdrop { background: rgba(0, 0, 0, 0.65); }
+  #new-map-dialog h2 { margin: 0 0 12px; font-size: 18px; }
+  #new-map-dialog fieldset { margin: 8px 0; border: 1px solid var(--panel-border); }
+  #new-map-dialog fieldset[hidden] { display: none; }
+  #new-map-error { color: #ffb4a9; }
   #tool-list { margin-bottom: 12px; }
   .layer-toggle { display: block; margin: 2px 0; cursor: pointer; }
   .legend-row { display: flex; align-items: center; gap: 6px; margin: 1px 0; padding: 1px 4px; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
@@ -196,6 +206,7 @@
   <span id="status-coordinates">&nbsp;</span>
   <span id="status-message"></span>
 </footer>
+<dialog id="new-map-dialog" aria-labelledby="new-map-title"></dialog>
 
 <script data-module="Util">
 (function (Root) {
@@ -1781,6 +1792,7 @@
     Require(szPanel !== null, `Unknown panel name: ${Match[1]}`);
     const dEast = Number(Match[2]) * (Match[3].toUpperCase() === 'W' ? -1 : 1);
     const dNorth = Number(Match[4]) * (Match[5].toUpperCase() === 'S' ? -1 : 1);
+    Require(Number.isFinite(dEast) && Number.isFinite(dNorth), 'Universal distances must be finite');
     return MakeLocation(szPanel, dEast || 0, dNorth || 0);
   }
 
@@ -1790,8 +1802,12 @@
   function CreateLocalMap(Options) {
     const { nWidth, nHeight, szSystem, szScale, Anchor } = Options;
     const nPanelHexes = Options.nPanelHexes === undefined ? Topology.g_nDefaultPanelHexes : Options.nPanelHexes;
-    Require(Number.isInteger(nWidth) && nWidth > 0 && Number.isInteger(nHeight) && nHeight > 0,
+    Require(Number.isSafeInteger(nWidth) && nWidth > 0 && Number.isSafeInteger(nHeight) && nHeight > 0
+      && Number.isSafeInteger(nWidth * nHeight),
       'Local map size must be positive integers');
+    Require(Number.isSafeInteger(nPanelHexes) && nPanelHexes > 0 && nPanelHexes % 2 === 0,
+      'Panel hexes must be a positive even integer');
+    Require(Anchor && Number.isFinite(Anchor.dEast) && Number.isFinite(Anchor.dNorth), 'Local anchor distances must be finite');
     Require(Projection.Build().Panels[Anchor.szPanel] !== undefined, `Unknown panel: ${Anchor.szPanel}`);
     const dHexMiles = Lattice.ScaleMiles(szSystem, szScale);
     let SnappedAnchor = MakeLocation(Anchor.szPanel, Anchor.dEast, Anchor.dNorth);
@@ -1811,13 +1827,27 @@
     });
   }
 
-  function LocalTileToUniversal(Local, nX, nY) {
-    const dW = Lattice.ColumnSpacing(Local.dHexMiles);
+  // Local display coordinates: one hex high, with tile (0, 0) at the origin.
+  // Keeping the anchor out of this space avoids precision loss at yard scales.
+  function LocalTilePoint(Local, nX, nY) {
     const nShift = (Lattice.IsOdd(nX + Local.nParity) ? 1 : 0) - Local.nParity;
+    return [nX * Lattice.ColumnSpacing(1), nShift / 2 - nY];
+  }
+
+  function LocalPointToTile(Local, rgdPoint) {
+    const [nQ, nJ] = Lattice.PointToOffset(
+      rgdPoint[0] + Local.nParity * Lattice.ColumnSpacing(1), rgdPoint[1] + Local.nParity / 2, 1);
+    const nX = nQ - Local.nParity;
+    const nY = -nJ || 0;
+    return nX >= 0 && nY >= 0 && nX < Local.nWidth && nY < Local.nHeight ? [nX, nY] : null;
+  }
+
+  function LocalTileToUniversal(Local, nX, nY) {
+    const [dX, dY] = LocalTilePoint(Local, nX, nY);
     return MakeLocation(
       Local.Anchor.szPanel,
-      Local.Anchor.dEast + nX * dW,
-      Local.Anchor.dNorth + (nShift / 2 - nY) * Local.dHexMiles,
+      Local.Anchor.dEast + dX * Local.dHexMiles,
+      Local.Anchor.dNorth + dY * Local.dHexMiles,
     );
   }
 
@@ -1827,14 +1857,11 @@
       return null;
     }
     const dD = Local.dHexMiles;
-    const dEast = Location.dEast - Local.Anchor.dEast + Local.nParity * Lattice.ColumnSpacing(dD);
-    const dNorth = Location.dNorth - Local.Anchor.dNorth + Local.nParity * dD / 2;
-    const [nQ, nJ] = Lattice.PointToOffset(dEast, dNorth, dD);
-    const nX = nQ - Local.nParity;
-    const nY = -nJ || 0;
-    if (nX < 0 || nX >= Local.nWidth || nY < 0 || nY >= Local.nHeight) {
+    const rgnXY = LocalPointToTile(Local, [(Location.dEast - Local.Anchor.dEast) / dD, (Location.dNorth - Local.Anchor.dNorth) / dD]);
+    if (!rgnXY) {
       return null;
     }
+    const [nX, nY] = rgnXY;
     const Center = LocalTileToUniversal(Local, nX, nY);
     const dDistance = Math.hypot(Center.dEast - Location.dEast, Center.dNorth - Location.dNorth);
     return dDistance > g_dSnapFraction * dD ? null : [nX, nY];
@@ -1849,6 +1876,8 @@
     FormatUniversal,
     ParseUniversal,
     CreateLocalMap,
+    LocalTilePoint,
+    LocalPointToTile,
     LocalTileToUniversal,
     UniversalToLocalTile,
   });
@@ -1998,7 +2027,7 @@
   function CreateGlobalMap(Options = {}) {
     const nPanelHexes = Options.nPanelHexes === undefined ? Topology.g_nDefaultPanelHexes : Options.nPanelHexes;
     const szTileScale = Options.szTileScale === undefined ? 'XL' : Options.szTileScale;
-    Require(Number.isInteger(nPanelHexes) && nPanelHexes > 0 && nPanelHexes % 2 === 0,
+    Require(Number.isSafeInteger(nPanelHexes) && nPanelHexes > 0 && nPanelHexes % 2 === 0,
       'Panel hexes must be a positive even integer');
     Require(Topology.g_rgszTileScales.includes(szTileScale), `Unsupported global tile scale: ${szTileScale}`);
     const Topo = Topology.Build(nPanelHexes, szTileScale);
@@ -2028,6 +2057,16 @@
 
   function LocalTileXY(Doc, nTile) {
     return [nTile % Doc.Local.nWidth, Math.floor(nTile / Doc.Local.nWidth)];
+  }
+
+  function TileToUniversal(Doc, nTile) {
+    CheckTile(Doc, nTile);
+    return Doc.Topo ? Coordinates.TileToUniversal(Doc.Topo, nTile)
+      : Coordinates.LocalTileToUniversal(Doc.Local, ...LocalTileXY(Doc, nTile));
+  }
+
+  function HexMiles(Doc) {
+    return Doc.Topo ? Doc.Topo.dD * Doc.Topo.dMilesPerEdge : Doc.Local.dHexMiles;
   }
 
   function IsTile(Doc, nTile) {
@@ -2295,6 +2334,8 @@
     CreateLocalMap,
     LocalTileIndex,
     LocalTileXY,
+    TileToUniversal,
+    HexMiles,
     IsTile,
     Neighbors,
     AreAdjacent,
@@ -2482,12 +2523,13 @@
 (function (Root) {
   'use strict';
   const RpgMap = Root.RpgMap = Root.RpgMap || {};
-  const { Util, Projection, Lattice, Topology, Terrain } = RpgMap;
+  const { Util, Projection, Lattice, Topology, Coordinates, Terrain } = RpgMap;
   const { Require } = Util;
 
   // DOM-free view geometry for the renderer. "World" space is net space for the net
   // layout and the focus panel's frame for the focus layout (edge units, y north/up).
-  // The camera maps world to CSS pixels (y down).
+  // Local world units are hex heights, relative to the anchor. The camera maps world
+  // to CSS pixels (y down), independent of the map's physical scale.
   const g_dMinScale = 4;
   const g_dMaxScale = 400000;
   const g_rgdIdentity = Object.freeze([1, 0, 0, 1, 0, 0]);
@@ -2495,7 +2537,7 @@
   // Camera -------------------------------------------------------------------------
 
   function CreateCamera(nWidth = 800, nHeight = 600) {
-    return { dCenterX: 0, dCenterY: 0, dScale: 100, nWidth, nHeight };
+    return { dCenterX: 0, dCenterY: 0, dScale: 100, dMinScale: g_dMinScale, nWidth, nHeight };
   }
 
   function ResizeCamera(Camera, nWidth, nHeight) {
@@ -2503,8 +2545,8 @@
     Camera.nHeight = Math.max(1, nHeight);
   }
 
-  function ClampScale(dScale) {
-    return Math.min(g_dMaxScale, Math.max(g_dMinScale, dScale));
+  function ClampScale(dScale, dMinScale = g_dMinScale) {
+    return Math.min(g_dMaxScale, Math.max(dMinScale, dScale));
   }
 
   // [a, b, c, d, e, f] taking world points to screen pixels.
@@ -2536,7 +2578,7 @@
   // Zooms by dFactor, keeping the world point under rgdScreen fixed.
   function ZoomAt(Camera, rgdScreen, dFactor) {
     const rgdBefore = ScreenToWorld(Camera, rgdScreen);
-    Camera.dScale = ClampScale(Camera.dScale * dFactor);
+    Camera.dScale = ClampScale(Camera.dScale * dFactor, Camera.dMinScale);
     const rgdAfter = ScreenToWorld(Camera, rgdScreen);
     Camera.dCenterX += rgdBefore[0] - rgdAfter[0];
     Camera.dCenterY += rgdBefore[1] - rgdAfter[1];
@@ -2553,7 +2595,10 @@
     const dHeight = Math.max(rgdBounds[3] - rgdBounds[1], 1e-9);
     const dAvailableX = Math.max(1, Camera.nWidth - 2 * dMargin);
     const dAvailableY = Math.max(1, Camera.nHeight - 2 * dMargin);
-    Camera.dScale = ClampScale(Math.min(dAvailableX / dWidth, dAvailableY / dHeight));
+    const dFitScale = Math.min(dAvailableX / dWidth, dAvailableY / dHeight);
+    // Large local rectangles must still fit; allow a further fourfold zoom out.
+    Camera.dMinScale = Math.min(g_dMinScale, dFitScale / 4);
+    Camera.dScale = ClampScale(dFitScale, Camera.dMinScale);
     CenterOn(Camera, [(rgdBounds[0] + rgdBounds[2]) / 2, (rgdBounds[1] + rgdBounds[3]) / 2]);
   }
 
@@ -2600,6 +2645,7 @@
       szName: Built.Panels[szPanel].szName,
       rgdFrameToWorld: Object.freeze([...rgdFrameToWorld]),
       rgdWorldToFrame: Object.freeze(Projection.InvertTransform(rgdFrameToWorld)),
+      rgrgdFrameOutline: Built.Frames[szPanel].rgrgdPolygon,
       rgrgdOutline: Object.freeze(rgrgdOutline.map((rgdPoint) => Object.freeze(rgdPoint))),
       rgdBounds: Object.freeze(BoundsOf(rgrgdOutline)),
       rgdCenter: Object.freeze(Projection.ApplyTransform(rgdFrameToWorld, [0, 0])),
@@ -2617,6 +2663,55 @@
 
   let g_NetLayout = null;
   const g_FocusLayouts = new Map();
+  const g_LocalGeometry = new WeakMap();
+
+  // A rendering-only geometry adapter. Local maps keep Doc.Topo null and use Model's
+  // rectangular adjacency; no projection, partial tiles or seam graph is invented.
+  function MapGeometry(Doc) {
+    if (Doc.Topo) {
+      return Doc.Topo;
+    }
+    const Local = Doc.Local;
+    if (!g_LocalGeometry.has(Local)) {
+      const { nWidth, nHeight } = Local;
+      const rgTiles = Array.from({ length: nWidth * nHeight }, (_, nIndex) => {
+        const nColumn = nIndex % nWidth, nRow = Math.floor(nIndex / nWidth);
+        return Object.freeze({
+          nIndex, szPanel: 'local', nColumn, nRow, fPartial: false, rgPieces: null,
+          rgdCenter: Object.freeze(Coordinates.LocalTilePoint(Local, nColumn, nRow)),
+        });
+      });
+      const dRadius = Lattice.HexRadius(1);
+      const dShift = nWidth > 1 ? (Local.nParity ? -0.5 : 0.5) : 0;
+      const rgdBounds = Object.freeze([-dRadius, -(nHeight - 1) + Math.min(0, dShift) - 0.5,
+        (nWidth - 1) * Lattice.ColumnSpacing(1) + dRadius, Math.max(0, dShift) + 0.5]);
+      const [dLeft, dBottom, dRight, dTop] = rgdBounds;
+      const rgrgdOutline = Object.freeze([[dLeft, dBottom], [dRight, dBottom], [dRight, dTop], [dLeft, dTop]]
+        .map((Point) => Object.freeze(Point)));
+      const Placement = Object.freeze({
+        szPanel: 'local', szName: 'Local map', rgdFrameToWorld: g_rgdIdentity, rgdWorldToFrame: g_rgdIdentity,
+        rgrgdFrameOutline: rgrgdOutline, rgrgdOutline, rgdBounds,
+        rgdCenter: Object.freeze([(dLeft + dRight) / 2, (dBottom + dTop) / 2]),
+      });
+      g_LocalGeometry.set(Local, Object.freeze({
+        Local, nTiles: rgTiles.length, dD: 1, dW: Lattice.ColumnSpacing(1), rgTiles: Object.freeze(rgTiles),
+        Panels: Object.freeze({ local: Object.freeze({
+          Lattice: Object.freeze({ fEquatorial: false }), nFirstTile: 0, nTileCount: rgTiles.length,
+        }) }),
+        Layout: MakeLayout('local', null, [Placement]),
+      }));
+    }
+    return g_LocalGeometry.get(Local);
+  }
+
+  function MapLayout(Doc) {
+    return Doc.Topo ? BuildNetLayout() : MapGeometry(Doc).Layout;
+  }
+
+  function FrameOutline(Geometry, szPanel) {
+    return Geometry.Local ? Geometry.Layout.rgPlacements[0].rgrgdFrameOutline
+      : Projection.Build().Frames[szPanel].rgrgdPolygon;
+  }
 
   // Every panel at its place in the net.
   function BuildNetLayout() {
@@ -2654,14 +2749,13 @@
 
   // The topmost placement whose panel polygon contains the world point.
   function PlacementAt(Layout, rgdWorld) {
-    const Built = Projection.Build();
     for (let nIndex = Layout.rgPlacements.length - 1; nIndex >= 0; nIndex--) {
       const Placement = Layout.rgPlacements[nIndex];
       if (!BoundsIntersect(Placement.rgdBounds, [rgdWorld[0], rgdWorld[1], rgdWorld[0], rgdWorld[1]])) {
         continue;
       }
       const rgdFrame = Projection.ApplyTransform(Placement.rgdWorldToFrame, rgdWorld);
-      if (Util.PointInConvex(rgdFrame, Built.Frames[Placement.szPanel].rgrgdPolygon)) {
+      if (Util.PointInConvex(rgdFrame, Placement.rgrgdFrameOutline)) {
         return { Placement, rgdFrame };
       }
     }
@@ -2743,6 +2837,10 @@
       return null;
     }
     const szDrawPanel = Hit.Placement.szPanel;
+    if (Topo.Local) {
+      const rgnXY = Coordinates.LocalPointToTile(Topo.Local, Hit.rgdFrame);
+      return rgnXY ? { nTile: rgnXY[1] * Topo.Local.nWidth + rgnXY[0], szPanel: 'local', rgdFrame: Hit.rgdFrame, szDrawPanel } : null;
+    }
     const [nQ, nJ] = Topology.LatticeNearest(Topo.Panels[szDrawPanel].Lattice, Hit.rgdFrame[0], Hit.rgdFrame[1]);
     const nTile = Topology.LocateLattice(Topo, szDrawPanel, nQ, nJ);
     if (nTile < 0) {
@@ -2831,7 +2929,7 @@
       ];
       for (const Copy of PanelCopies(szA)) {
         const rgrgdMapped = rgrgdControl.map((rgdPoint) => Projection.ApplyTransform(Copy.rgdTransform, rgdPoint));
-        if (BoundsIntersect(BoundsOf(rgrgdMapped), BoundsOf(Projection.Build().Frames[Copy.szPanel].rgrgdPolygon))) {
+        if (BoundsIntersect(BoundsOf(rgrgdMapped), BoundsOf(FrameOutline(Topo, Copy.szPanel)))) {
           rgCurves.push({ szPanel: Copy.szPanel, nPoint: nIndex, rgrgdControl: rgrgdMapped });
         }
       }
@@ -2980,6 +3078,9 @@
     TransformBounds,
     BuildNetLayout,
     BuildFocusLayout,
+    MapGeometry,
+    MapLayout,
+    FrameOutline,
     FindPlacement,
     PlacementAt,
     PanelTileGroups,
@@ -3107,7 +3208,8 @@
   // point). Returns the tiles that changed.
   function StrokeTo(Stroke, Layout, rgdWorld) {
     const Doc = Stroke.History.Doc;
-    const rgnCenters = Stroke.rgdLast ? SegmentTiles(Doc.Topo, Layout, Stroke.rgdLast, rgdWorld) : SegmentTiles(Doc.Topo, Layout, rgdWorld, rgdWorld);
+    const Geometry = View.MapGeometry(Doc);
+    const rgnCenters = SegmentTiles(Geometry, Layout, Stroke.rgdLast || rgdWorld, rgdWorld);
     Stroke.rgdLast = [rgdWorld[0], rgdWorld[1]];
     const fnRecord = (Change) => History.Record(Stroke.History, Change);
     const rgnChanged = [];
@@ -3510,15 +3612,11 @@
   }
 
   function HexMiles(Doc) {
-    return Doc.Topo ? Doc.Topo.dD * Doc.Topo.dMilesPerEdge : Doc.Local.dHexMiles;
+    return Model.HexMiles(Doc);
   }
 
   function TileLocation(Doc, nTile) {
-    if (Doc.Topo) {
-      return Coordinates.TileToUniversal(Doc.Topo, nTile);
-    }
-    const [nX, nY] = Model.LocalTileXY(Doc, nTile);
-    return Coordinates.LocalTileToUniversal(Doc.Local, nX, nY);
+    return Model.TileToUniversal(Doc, nTile);
   }
 
   function LocationTile(Doc, Location) {
@@ -3595,6 +3693,12 @@
   // Writer -------------------------------------------------------------------------
 
   function Write(Doc) {
+    if (Doc.Local && Doc.Local.szSystem === 'local') {
+      // Feature coordinates must use the same rounded free anchor that the reader
+      // will use, or a second save can round those coordinates differently.
+      const Anchor = Coordinates.ParseUniversal(Coordinates.FormatUniversal(Doc.Local.Anchor, CoordinateDecimals(Doc.Local.dHexMiles)));
+      Doc = { ...Doc, Local: Coordinates.CreateLocalMap({ ...Doc.Local, Anchor }) };
+    }
     const rgszLines = [g_szMagic, '', '[map]', `kind = ${Doc.szKind}`, `name = ${Quote(Doc.szName)}`];
     if (Doc.szKind === 'global') {
       rgszLines.push(`panelHexes = ${Doc.Global.nPanelHexes}`, `tileScale = ${Doc.Global.szTileScale}`);
@@ -4092,8 +4196,7 @@
   // Draws terrain fills and/or the hex grid for every visible panel. dScale is screen
   // pixels per world unit (layouts are rigid, so the same in every panel frame).
   function DrawTiles(Context, dRatio, Doc, Layout, rgdWorldToScreen, rgdViewBounds, dScale, Options) {
-    const Topo = Doc.Topo;
-    const Built = Projection.Build();
+    const Topo = View.MapGeometry(Doc);
     const dHexPixels = Topo.dD * dScale;
     const fSmall = dHexPixels < g_dSmallHexPixels;
     const fGrid = Options.fGrid && dHexPixels >= g_dGridMinPixels;
@@ -4108,7 +4211,7 @@
       Context.save();
       SetTransform(Context, dRatio, Projection.ComposeTransforms(Placement.rgdFrameToWorld, rgdWorldToScreen));
       Context.beginPath();
-      TracePolygon(Context, Built.Frames[Placement.szPanel].rgrgdPolygon);
+      TracePolygon(Context, Placement.rgrgdFrameOutline);
       Context.clip();
       for (const Group of View.PanelTileGroups(Topo, Placement.szPanel)) {
         const rgnVisible = View.VisibleTiles(Topo, Group, rgdFrameBounds);
@@ -4209,7 +4312,7 @@
   // boxes are redrawn too, clipped to the boxes, so neighbours stay intact.
   function RepaintRasterTiles(Raster) {
     const { Context, Doc, Layout, dScale, rgdWorldToRaster } = Raster;
-    const Topo = Doc.Topo;
+    const Topo = View.MapGeometry(Doc);
     const dRadius = Lattice.HexRadius(Topo.dD);
     const rgrgnBoxes = [];
     for (const nTile of Raster.DirtyTiles) {
@@ -4238,7 +4341,7 @@
   function MainRasterScale(Doc, Layout) {
     const rgdBounds = Layout.rgdBounds;
     const dExtent = Math.max(rgdBounds[2] - rgdBounds[0], rgdBounds[3] - rgdBounds[1]);
-    return Math.min(g_dRasterHexPixels / Doc.Topo.dD, g_nRasterMaxPixels / dExtent);
+    return Math.min(g_dRasterHexPixels / View.MapGeometry(Doc).dD, g_nRasterMaxPixels / dExtent);
   }
 
   function DrawRaster(Context, dRatio, Raster, rgdWorldToScreen) {
@@ -4281,7 +4384,7 @@
         Context.stroke();
       }
     }
-    if (Layers.fNames) {
+    if (Layers.fNames && Layout.szMode !== 'local') {
       Context.textAlign = 'center';
       Context.textBaseline = 'middle';
       Context.lineJoin = 'round';
@@ -4307,9 +4410,10 @@
   // are skipped).
   function OutlineTiles(Context, dRatio, State, rgdWorldToScreen, rgnTiles, dWidth, szColor) {
     const { Doc, Layout } = State;
+    const Topo = View.MapGeometry(Doc);
     const ByPanel = new Map();
     for (const nTile of rgnTiles) {
-      const szPanel = Doc.Topo.rgTiles[nTile].szPanel;
+      const szPanel = Topo.rgTiles[nTile].szPanel;
       (ByPanel.get(szPanel) || ByPanel.set(szPanel, []).get(szPanel)).push(nTile);
     }
     for (const [szPanel, rgnPanelTiles] of ByPanel) {
@@ -4320,7 +4424,7 @@
       Context.save();
       SetTransform(Context, dRatio, Projection.ComposeTransforms(Placement.rgdFrameToWorld, rgdWorldToScreen));
       Context.beginPath();
-      rgnPanelTiles.forEach((nTile) => TraceTile(Context, Doc.Topo, nTile, false));
+      rgnPanelTiles.forEach((nTile) => TraceTile(Context, Topo, nTile, false));
       Context.lineWidth = dWidth / State.Camera.dScale;
       Context.lineJoin = 'round';
       Context.strokeStyle = szColor;
@@ -4368,7 +4472,7 @@
   function DrawFeatures(Renderer, State, rgdWorldToScreen) {
     const { Context, dRatio } = Renderer;
     const { Doc, Layout, Camera, Layers } = State;
-    const Topo = Doc.Topo;
+    const Topo = View.MapGeometry(Doc);
     Renderer.rgFeatureHits = [];
     const ByPanel = new Map(Layout.rgPlacements.map((Placement) => [Placement.szPanel, []]));
     for (const Overlay of Doc.rgOverlays) {
@@ -4544,7 +4648,7 @@
     Context.fillRect(0, 0, Canvas.width, Canvas.height);
     const rgdWorldToScreen = View.WorldToScreenTransform(Camera);
     const rgdViewBounds = View.VisibleBounds(Camera);
-    const dHexPixels = Doc.Topo.dD * Camera.dScale;
+    const dHexPixels = View.MapGeometry(Doc).dD * Camera.dScale;
     const dRasterScale = MainRasterScale(Doc, Layout);
     const fRaster = Layers.fTerrain && dHexPixels < g_dRasterHexPixels && Camera.dScale <= dRasterScale * 1.5;
     if (fRaster) {
@@ -4559,9 +4663,9 @@
     return { fRaster, dHexPixels };
   }
 
-  // The net navigator: cached terrain image, panel outlines, and the main view's extent.
+  // The map navigator: net or local terrain, outlines, and the main view's extent.
   function DrawMinimap(Renderer, MiniCanvas, State) {
-    const NetLayout = View.BuildNetLayout();
+    const NetLayout = View.MapLayout(State.Doc);
     const MiniCamera = Renderer.MiniCamera || (Renderer.MiniCamera = View.CreateCamera());
     const dRatio = SyncSize(MiniCanvas, MiniCamera);
     View.FitBounds(MiniCamera, NetLayout.rgdBounds, 4);
@@ -4580,7 +4684,7 @@
     Context.stroke();
     Context.lineWidth = 1.5;
     Context.strokeStyle = g_szFocusColor;
-    if (State.Layout.szMode === 'net') {
+    if (State.Layout.szMode !== 'focus') {
       const [dMinX, dMinY, dMaxX, dMaxY] = View.VisibleBounds(State.Camera);
       const [dLeft, dTop] = View.WorldToScreen(MiniCamera, [dMinX, dMaxY]);
       const [dRight, dBottom] = View.WorldToScreen(MiniCamera, [dMaxX, dMinY]);
@@ -4611,9 +4715,9 @@
 (function (Root) {
   'use strict';
   const RpgMap = Root.RpgMap = Root.RpgMap || {};
-  const { Util, Projection, Coordinates, Terrain, Model, History, View, Edit, FileFormat, Renderer } = RpgMap;
+  const { Util, Projection, Lattice, Coordinates, Terrain, Model, History, View, Edit, FileFormat, Renderer } = RpgMap;
 
-  const g_szVersion = '0.5.0';
+  const g_szVersion = '0.6.0';
   const g_szAutosaveKey = 'rpgmap.autosave';
   const g_nAutosaveDelayMs = 2000;
   // [id, label, hotkey, title]
@@ -4698,11 +4802,11 @@
     const Doc = State.Doc;
     let szCoordinates = '\u00a0';
     if (State.nHoverTile >= 0) {
-      const Tile = Doc.Topo.rgTiles[State.nHoverTile];
-      const Panel = Projection.Build().Panels[Tile.szPanel];
+      const Tile = View.MapGeometry(Doc).rgTiles[State.nHoverTile];
+      const szPanel = Doc.Local ? 'Local' : `${Projection.Build().Panels[Tile.szPanel].szName} (${Projection.Build().Panels[Tile.szPanel].szLetter})`;
       szCoordinates = [
-        Coordinates.FormatUniversal(Coordinates.TileToUniversal(Doc.Topo, State.nHoverTile)),
-        `${Panel.szName} (${Panel.szLetter}) col ${Tile.nColumn} row ${Tile.nRow}${Tile.fPartial ? ' partial' : ''}`,
+        TileLocationText(State.nHoverTile),
+        `${szPanel} col ${Tile.nColumn} row ${Tile.nRow}${Tile.fPartial ? ' partial' : ''}`,
         Terrain.ById(Model.GetTerrain(Doc, State.nHoverTile)).szName,
         ...[Model.GetLandmark(Doc, State.nHoverTile)].filter(Boolean).map((Item) => `${Item.szType}: ${Item.szName || '(unnamed)'}`),
         ...Model.OverlaysAt(Doc, State.nHoverTile).map((Item) => `${Item.szType}: ${Item.szName || Item.szId}`),
@@ -4711,17 +4815,22 @@
       ].join(' \u00b7 ');
     }
     Root.document.getElementById('status-coordinates').textContent = szCoordinates;
-    const szView = State.Layout.szMode === 'net' ? 'Net view' : `Focus: ${Projection.Build().Panels[State.Layout.szFocus].szName}`;
+    const szView = Doc.Local ? 'Local view' : State.Layout.szMode === 'net' ? 'Net view' : `Focus: ${Projection.Build().Panels[State.Layout.szFocus].szName}`;
     const Draw = State.LastDraw;
     Root.document.getElementById('status-message').textContent = [
       `${Doc.szName || 'Untitled'}${IsDirty() ? ' *' : ''}`,
       State.szMessage,
       szView,
-      `n=${Doc.Global.nPanelHexes} ${Doc.Global.szTileScale}`,
+      Doc.Local ? `${Doc.Local.nWidth} x ${Doc.Local.nHeight} ${Doc.Local.szSystem} ${Doc.Local.szScale} (${Lattice.ScaleDistance(Doc.Local.szSystem, Doc.Local.szScale)} ${Lattice.g_Scales[Doc.Local.szSystem].szUnit}/hex)`
+        : `n=${Doc.Global.nPanelHexes} ${Doc.Global.szTileScale}`,
       `${Doc.nTiles.toLocaleString('en-US')} tiles`,
       Draw ? `hex ${Util.FormatNumber(Draw.dHexPixels, 1)} px${Draw.fRaster ? ' (raster)' : ''}` : '',
       `v${g_szVersion}`,
     ].filter(Boolean).join(' \u00b7 ');
+  }
+
+  function TileLocationText(nTile) {
+    return Coordinates.FormatUniversal(Model.TileToUniversal(State.Doc, nTile), FileFormat.CoordinateDecimals(Model.HexMiles(State.Doc)));
   }
 
   function SetHover(nTile) {
@@ -4734,7 +4843,7 @@
   }
 
   function HitAt(rgdScreen) {
-    return View.HitTest(State.Doc.Topo, State.Layout, View.ScreenToWorld(State.Camera, rgdScreen));
+    return View.HitTest(View.MapGeometry(State.Doc), State.Layout, View.ScreenToWorld(State.Camera, rgdScreen));
   }
 
   function HoverAt(rgdScreen) {
@@ -4872,9 +4981,12 @@
     State.szPathAction = 'select';
     State.fNewLabel = false;
     State.nSavedRevision = fDirty ? -1 : Doc.nRevision;
-    State.Layout = View.BuildNetLayout();
+    State.Layout = View.MapLayout(Doc);
+    State.LastDraw = null;
+    State.MiniCamera = null;
     Root.document.title = `${Doc.szName || 'Untitled'} \u2013 RPG World Map Editor`;
     SyncUndoButtons();
+    BuildLayerList();
     SyncControls();
     BuildProperties();
     FitNet();
@@ -4882,11 +4994,111 @@
   }
 
   function NewMap() {
-    if (ConfirmDiscard('start a new map')) {
-      const { nPanelHexes, szTileScale } = State.Doc.Global;
-      LoadDocument(Model.CreateGlobalMap({ nPanelHexes, szTileScale, szName: 'Untitled' }), 'New map');
-      ClearAutosave();
+    const Dialog = Root.document.getElementById('new-map-dialog');
+    if (Dialog.open) {
+      return;
     }
+    EndStroke();
+    FinishLabelDrag(true);
+    const Current = State.Doc;
+    const Local = Current.Local;
+    const NumberInput = (nValue, nMin = 1, nStep = 1) => Element('input', {
+      type: 'number', required: true, min: String(nMin), step: String(nStep),
+      max: String(Number.MAX_SAFE_INTEGER), value: String(nValue),
+    });
+    const Kind = SelectControl([['global', 'Global world'], ['local', 'Local rectangle']], Current.szKind, () => UpdateFields());
+    const Name = Element('input', { type: 'text', value: 'Untitled', autofocus: true });
+    const PanelHexes = NumberInput(Local ? Local.nPanelHexes : Current.Global.nPanelHexes, 2, 2);
+    const TileScale = SelectControl([['XL', 'XL - 216 mi per hex'], ['L', 'L - 36 mi per hex']], Current.Global ? Current.Global.szTileScale : 'XL', () => UpdateFields());
+    const Width = NumberInput(Local ? Local.nWidth : 32);
+    const Height = NumberInput(Local ? Local.nHeight : 24);
+    const System = SelectControl([['regional', 'Regional (miles)'], ['local', 'Local (yards)']], Local ? Local.szSystem : 'regional', () => UpdateScales());
+    const Size = SelectControl([], '', () => UpdateFields());
+    const Hit = View.HitTest(View.MapGeometry(Current), State.Layout, [State.Camera.dCenterX, State.Camera.dCenterY]);
+    const nAnchorTile = State.nSelectedTile >= 0 ? State.nSelectedTile : State.nHoverTile >= 0 ? State.nHoverTile : Hit ? Hit.nTile : -1;
+    const AnchorLocation = Local ? Local.Anchor : nAnchorTile >= 0 ? Model.TileToUniversal(Current, nAnchorTile) : Coordinates.ParseUniversal('Eta 0.0E 0.0N');
+    const Anchor = Element('input', { type: 'text', required: true, value: Coordinates.FormatUniversal(AnchorLocation, 10) });
+    const GlobalFields = Element('fieldset', {}, [
+      Element('legend', { textContent: 'Global map' }), Field('new-tile-scale', 'Tile scale', TileScale),
+    ]);
+    const LocalFields = Element('fieldset', {}, [
+      Element('legend', { textContent: 'Local map' }),
+      Field('new-width', 'Width (hexes)', Width), Field('new-height', 'Height (hexes)', Height),
+      Field('new-system', 'Scale system', System), Field('new-size', 'Hex size', Size),
+      Field('new-anchor', 'Anchor of tile (0, 0), in miles', Anchor),
+    ]);
+    const Preview = Element('p', { id: 'new-map-preview', className: 'tool-help' });
+    const ErrorText = Element('p', { id: 'new-map-error', role: 'alert' });
+    const Form = Element('form', { id: 'new-map-form', noValidate: true }, [
+      Element('h2', { id: 'new-map-title', textContent: 'New map' }),
+      Field('new-kind', 'Map type', Kind), Field('new-name', 'Name', Name),
+      Field('new-panel-hexes', 'World panel hexes (even; also sets regional anchor alignment)', PanelHexes),
+      GlobalFields, LocalFields, Preview, ErrorText,
+      Element('div', { className: 'property-actions' }, [
+        Element('button', { id: 'new-create', type: 'submit', className: 'tool-button', textContent: 'Create map' }),
+        ActionButton('new-cancel', 'Cancel', () => Dialog.close()),
+      ]),
+    ]);
+    const LocalOptions = () => ({
+      nWidth: Number(Width.value), nHeight: Number(Height.value), szSystem: System.value, szScale: Size.value,
+      nPanelHexes: Number(PanelHexes.value), Anchor: Coordinates.ParseUniversal(Anchor.value), szName: Name.value,
+    });
+    function UpdateFields() {
+      const fLocal = Kind.value === 'local';
+      LocalFields.hidden = LocalFields.disabled = !fLocal;
+      GlobalFields.hidden = GlobalFields.disabled = fLocal;
+      ErrorText.textContent = '';
+      if (!fLocal) {
+        Preview.textContent = 'New maps start as water. Global panel counts must be positive even integers.';
+        return;
+      }
+      try {
+        const Checked = Coordinates.CreateLocalMap(LocalOptions());
+        const nDecimals = FileFormat.CoordinateDecimals(Checked.dHexMiles);
+        Preview.textContent = `${Checked.szSystem === 'regional' ? 'Snapped anchor' : 'Free anchor'}: ${Coordinates.FormatUniversal(Checked.Anchor, Math.max(5, nDecimals))}. `
+          + 'The local grid stays flat in this panel frame, even beyond its boundary. New maps start as water.';
+      } catch (Caught) {
+        Preview.textContent = `Check local settings: ${Caught.message}`;
+      }
+    }
+    function UpdateScales(szInitial = null) {
+      const szValue = szInitial || Size.value || 'M';
+      const ScaleSystem = Lattice.g_Scales[System.value];
+      Size.replaceChildren(...Lattice.g_rgszSizes.map((szSize) => Element('option', {
+        value: szSize, textContent: `${szSize} - ${ScaleSystem.Sizes[szSize]} ${ScaleSystem.szUnit} per hex`,
+      })));
+      Size.value = szValue;
+      UpdateFields();
+    }
+    Form.addEventListener('input', UpdateFields);
+    Form.addEventListener('submit', (Event) => {
+      Event.preventDefault();
+      ErrorText.textContent = '';
+      if (!Form.reportValidity()) {
+        ErrorText.textContent = 'Check the highlighted map settings.';
+        return;
+      }
+      let Doc;
+      try {
+        Doc = Kind.value === 'local' ? Model.CreateLocalMap(LocalOptions()) : Model.CreateGlobalMap({
+          nPanelHexes: Number(PanelHexes.value), szTileScale: TileScale.value, szName: Name.value,
+        });
+      } catch (Caught) {
+        ErrorText.textContent = Caught.message;
+        return;
+      }
+      if (!ConfirmDiscard('create a new map')) {
+        return;
+      }
+      Dialog.close();
+      LoadDocument(Doc, `Created ${Doc.szKind} map`, true);
+      ClearAutosave();
+      ScheduleAutosave();
+    });
+    Dialog.replaceChildren(Form);
+    UpdateScales(Local ? Local.szScale : 'M');
+    State.fSpaceDown = false;
+    Dialog.showModal();
   }
 
   function OpenMap() {
@@ -4898,12 +5110,7 @@
   // Parses map text; returns the document or null after reporting the error.
   function ParseMap(szText, szSource) {
     try {
-      const Doc = FileFormat.Parse(szText);
-      if (Doc.szKind !== 'global') {
-        SetMessage(`${szSource}: local maps can't be edited yet`);
-        return null;
-      }
-      return Doc;
+      return FileFormat.Parse(szText);
     } catch (Caught) {
       SetMessage(`${szSource}: ${Caught.message}`);
       return null;
@@ -5016,6 +5223,10 @@
 
   // Fits the focus panel, or in the net view the panel under the view centre.
   function FitPanel() {
+    if (State.Doc.Local) {
+      FitNet();
+      return;
+    }
     let szPanel = State.Layout.szFocus;
     if (!szPanel) {
       const Hit = View.PlacementAt(State.Layout, [State.Camera.dCenterX, State.Camera.dCenterY]);
@@ -5032,6 +5243,10 @@
   // Switches to the focus view of szPanel, keeping rgdFrame (a point in that panel's
   // frame) at the view centre, or fitting the panel when rgdFrame is null.
   function ShowFocus(szPanel, rgdFrame = null) {
+    if (State.Doc.Local) {
+      SetMessage('Panel focus is only available for global maps');
+      return;
+    }
     State.Layout = View.BuildFocusLayout(szPanel);
     if (rgdFrame) {
       View.CenterOn(State.Camera, rgdFrame);
@@ -5044,6 +5259,10 @@
 
   // Back to the net, keeping the current view centre where it was on the focus panel.
   function ShowNet() {
+    if (State.Doc.Local) {
+      SetMessage('Local maps have no net view; use Fit all');
+      return;
+    }
     if (State.Layout.szMode === 'focus') {
       const Frame = Projection.Build().Frames[State.Layout.szFocus];
       const rgdCenter = Projection.ApplyTransform(Frame.rgdFrameToNet, [State.Camera.dCenterX, State.Camera.dCenterY]);
@@ -5055,6 +5274,10 @@
   }
 
   function FocusAtViewCenter() {
+    if (State.Doc.Local) {
+      SetMessage('Panel focus is only available for global maps');
+      return;
+    }
     const Hit = View.PlacementAt(State.Layout, [State.Camera.dCenterX, State.Camera.dCenterY]);
     if (Hit) {
       ShowFocus(Hit.Placement.szPanel, Hit.rgdFrame);
@@ -5064,6 +5287,11 @@
   function SyncControls() {
     const Select = Root.document.getElementById('focus-panel');
     Select.value = State.Layout.szFocus || '';
+    const fLocal = State.Doc.szKind === 'local';
+    Select.disabled = fLocal;
+    Root.document.getElementById('view-net').disabled = fLocal;
+    Root.document.getElementById('fit-panel').disabled = fLocal;
+    State.MiniCanvas.setAttribute('aria-label', fLocal ? 'Local map navigator' : 'Net navigator');
     Root.document.getElementById('view-net').setAttribute('aria-pressed', String(State.Layout.szMode === 'net'));
   }
 
@@ -5078,7 +5306,7 @@
     const OpenInput = Element('input', { id: 'open-file', type: 'file', accept: `.txt,${FileFormat.g_szFileExtension},text/plain`, hidden: true });
     OpenInput.addEventListener('change', () => OpenFileChosen(OpenInput));
     const rgButtons = [
-      Element('button', { id: 'file-new', type: 'button', textContent: 'New', title: 'New all-water world of the same size', onclick: NewMap }),
+      Element('button', { id: 'file-new', type: 'button', textContent: 'New', title: 'Create a global or local map', onclick: NewMap }),
       Element('button', { id: 'file-open', type: 'button', textContent: 'Open\u2026', title: 'Open a .map.txt file (Ctrl+O)', onclick: OpenMap }),
       Element('button', { id: 'file-save', type: 'button', textContent: 'Save', title: 'Download the map as a .map.txt file (Ctrl+S)', onclick: SaveMap }),
       OpenInput,
@@ -5097,12 +5325,13 @@
   function BuildLayerList() {
     const rgRows = g_rgLayerToggles.map(([szKey, szLabel]) => {
       const Box = Element('input', { type: 'checkbox', checked: State.Layers[szKey], id: `layer-${szKey}` });
+      Box.disabled = szKey === 'fNames' && State.Doc.szKind === 'local';
       Box.addEventListener('change', () => {
         State.Layers[szKey] = Box.checked;
         BuildProperties();
         RequestDraw();
       });
-      return Element('label', { className: 'layer-toggle' }, [Box, ` ${szLabel}`]);
+      return Element('label', { className: 'layer-toggle' }, [Box, ` ${szKey === 'fOutlines' && State.Doc.Local ? 'Map outline' : szLabel}`]);
     });
     Root.document.getElementById('layer-list').replaceChildren(...rgRows);
   }
@@ -5333,7 +5562,7 @@
       TextField('szName', 'Name');
       TextField('szStyle', 'Style (letters, digits, - or _)');
       rgFields.push(Field('path-point', 'Selected point', SelectControl(Item.rgnTiles.map((nTile, nIndex) => [
-        String(nIndex), `${nIndex + 1}: ${Coordinates.FormatUniversal(Coordinates.TileToUniversal(State.Doc.Topo, nTile))}`,
+        String(nIndex), `${nIndex + 1}: ${TileLocationText(nTile)}`,
       ]), String(Selection.nPoint), (szIndex) => SelectFeature({ ...Selection, nPoint: Number(szIndex) }))));
       const nPoint = Selection.nPoint;
       rgFields.push(Element('div', { className: 'property-actions' }, [
@@ -5496,11 +5725,12 @@
     }
     const rgdPoint = Projection.ApplyTransform(Drag.rgdScreenToFrame, rgdScreen);
     const Label = Drag.Label;
-    const dUnit = State.Doc.Topo.dD / View.g_dLabelUnitsPerHex;
+    const Geometry = View.MapGeometry(State.Doc);
+    const dUnit = Geometry.dD / View.g_dLabelUnitsPerHex;
     if (Drag.szHandle === 'move') {
       State.LabelPreview = { ...Label, dDx: Label.dDx + (rgdPoint[0] - Drag.rgdStart[0]) / dUnit, dDy: Label.dDy - (rgdPoint[1] - Drag.rgdStart[1]) / dUnit };
     } else {
-      const rgdT = View.LabelTransform(State.Doc.Topo, Label);
+      const rgdT = View.LabelTransform(Geometry, Label);
       const Angle = (Point) => Math.atan2(-(Point[1] - rgdT[5]), Point[0] - rgdT[4]);
       const dDelta = Angle(rgdPoint) - Angle(Drag.rgdStart);
       State.LabelPreview = { ...Label, dRotation: Label.dRotation + Math.atan2(Math.sin(dDelta), Math.cos(dDelta)) * 180 / Math.PI };
@@ -5617,7 +5847,7 @@
       RequestDraw();
     }, { passive: false });
     Canvas.addEventListener('dblclick', (Event) => {
-      if (State.szTool !== 'pan') {
+      if (State.szTool !== 'pan' || State.Doc.Local) {
         return;
       }
       const Hit = View.PlacementAt(State.Layout, View.ScreenToWorld(State.Camera, LocalPoint(Event, Canvas)));
@@ -5633,7 +5863,7 @@
         return;
       }
       const rgdNet = View.ScreenToWorld(State.MiniCamera, LocalPoint(Event, MiniCanvas));
-      if (State.Layout.szMode === 'net') {
+      if (State.Layout.szMode !== 'focus') {
         View.CenterOn(State.Camera, rgdNet);
         RequestDraw();
         return;
@@ -5655,6 +5885,9 @@
       State.fSpaceDown = false;
     });
     Root.addEventListener('keydown', (Event) => {
+      if (Root.document.getElementById('new-map-dialog').open) {
+        return;
+      }
       const szTag = Event.target && Event.target.tagName;
       const fTextEntry = szTag === 'TEXTAREA' || (szTag === 'INPUT' && Event.target.type !== 'range' && Event.target.type !== 'checkbox');
       if (State.LabelDrag) {
