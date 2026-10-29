@@ -178,6 +178,84 @@
     return rgItems.map((Item, nIndex) => [Item, rgItems[(nIndex + 1) % rgItems.length]]);
   }
 
+  // Signed shoelace area; positive for counter-clockwise polygons (x right, y up).
+  function PolygonArea(rgrgdPolygon) {
+    let dTwiceArea = 0;
+    for (const [rgdFirst, rgdSecond] of Boundary(rgrgdPolygon)) {
+      dTwiceArea += rgdFirst[0] * rgdSecond[1] - rgdSecond[0] * rgdFirst[1];
+    }
+    return dTwiceArea / 2;
+  }
+
+  function EdgeSide(rgdStart, rgdEnd, rgdPoint) {
+    return (rgdEnd[0] - rgdStart[0]) * (rgdPoint[1] - rgdStart[1])
+      - (rgdEnd[1] - rgdStart[1]) * (rgdPoint[0] - rgdStart[0]);
+  }
+
+  // Sutherland-Hodgman clip of any polygon by a convex counter-clockwise polygon.
+  function ClipPolygonToConvex(rgrgdSubject, rgrgdClip) {
+    let rgrgdOutput = rgrgdSubject;
+    for (const [rgdStart, rgdEnd] of Boundary(rgrgdClip)) {
+      if (rgrgdOutput.length === 0) {
+        break;
+      }
+      const rgrgdInput = rgrgdOutput;
+      rgrgdOutput = [];
+      for (let nIndex = 0; nIndex < rgrgdInput.length; nIndex++) {
+        const rgdPoint = rgrgdInput[nIndex];
+        const rgdNext = rgrgdInput[(nIndex + 1) % rgrgdInput.length];
+        const dPoint = EdgeSide(rgdStart, rgdEnd, rgdPoint);
+        const dNext = EdgeSide(rgdStart, rgdEnd, rgdNext);
+        if (dPoint >= 0) {
+          rgrgdOutput.push(rgdPoint);
+        }
+        if ((dPoint >= 0) !== (dNext >= 0)) {
+          const dT = dPoint / (dPoint - dNext);
+          rgrgdOutput.push([
+            rgdPoint[0] + dT * (rgdNext[0] - rgdPoint[0]),
+            rgdPoint[1] + dT * (rgdNext[1] - rgdPoint[1]),
+          ]);
+        }
+      }
+    }
+    const rgrgdResult = rgrgdOutput.filter((rgdPoint, nIndex) =>
+      Distance(rgdPoint, rgrgdOutput[(nIndex + 1) % rgrgdOutput.length]) > 1e-14);
+    return rgrgdResult.length >= 3 ? rgrgdResult : [];
+  }
+
+  // Cyrus-Beck clip of segment A→B by a convex counter-clockwise polygon.
+  // Returns the parameter interval [t0, t1] inside the polygon, or null.
+  function ClipSegmentToConvex(rgdA, rgdB, rgrgdClip) {
+    let dT0 = 0;
+    let dT1 = 1;
+    const rgdDirection = Subtract(rgdB, rgdA);
+    for (const [rgdStart, rgdEnd] of Boundary(rgrgdClip)) {
+      const dStart = EdgeSide(rgdStart, rgdEnd, rgdA);
+      const dRate = (rgdEnd[0] - rgdStart[0]) * rgdDirection[1] - (rgdEnd[1] - rgdStart[1]) * rgdDirection[0];
+      if (Math.abs(dRate) < 1e-300) {
+        if (dStart < 0) {
+          return null;
+        }
+        continue;
+      }
+      const dT = -dStart / dRate;
+      if (dRate > 0) {
+        dT0 = Math.max(dT0, dT);
+      } else {
+        dT1 = Math.min(dT1, dT);
+      }
+      if (dT0 > dT1) {
+        return null;
+      }
+    }
+    return [dT0, dT1];
+  }
+
+  function PointInConvex(rgdPoint, rgrgdClip, dTolerance = g_dEpsilon) {
+    return Boundary(rgrgdClip).every(([rgdStart, rgdEnd]) =>
+      EdgeSide(rgdStart, rgdEnd, rgdPoint) / Distance(rgdStart, rgdEnd) >= -dTolerance);
+  }
+
   // Mulberry32: small, fast, deterministic PRNG returning floats in [0, 1).
   function CreateRng(nSeed) {
     let nState = nSeed >>> 0;
@@ -220,6 +298,10 @@
     Unit,
     Center,
     Boundary,
+    PolygonArea,
+    ClipPolygonToConvex,
+    ClipSegmentToConvex,
+    PointInConvex,
     CreateRng,
     HashIntegers,
     FormatNumber,
@@ -939,6 +1021,746 @@
     InvertTransform,
     RigidFromSegments,
     InteriorsOverlap,
+  });
+})(globalThis);
+</script>
+
+<script data-module="Lattice">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+  const { Require } = RpgMap.Util;
+
+  // Flat-top hex lattice math, independent of panels and units.
+  // Offset coordinates (q, j): column q runs north-south at x = q·w; odd columns
+  // are shifted half a hex north, so a centre is at (q·w, (j + ½·odd(q))·d),
+  // where d is the distance between adjacent centres and w = d·√3/2.
+  // Axial (q, r) has centre (q·w, (r + q/2)·d); cube is (x, y, z) = (q, −q−r, r).
+  const g_dRootThree = Math.sqrt(3);
+  const g_dYardsPerMile = 1760;
+  const g_rgszSizes = Object.freeze(['S', 'M', 'L', 'XL']);
+  const g_Scales = Object.freeze({
+    regional: Object.freeze({ szUnit: 'mi', Sizes: Object.freeze({ S: 1, M: 6, L: 36, XL: 216 }) }),
+    local: Object.freeze({ szUnit: 'yd', Sizes: Object.freeze({ S: 1, M: 10, L: 100, XL: 600 }) }),
+  });
+  // Axial steps to the six neighbours, in the order N, NE, SE, S, SW, NW.
+  const g_rgrgnDirections = Object.freeze([[0, 1], [1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1]]
+    .map((rgnStep) => Object.freeze(rgnStep)));
+  // HexPolygon vertex indices of the edge shared with each neighbour direction.
+  const g_rgrgnDirectionEdges = Object.freeze([[1, 2], [0, 1], [5, 0], [4, 5], [3, 4], [2, 3]]
+    .map((rgnEdge) => Object.freeze(rgnEdge)));
+
+  function Clean(nValue) {
+    return nValue || 0;
+  }
+
+  function IsOdd(nValue) {
+    return (nValue & 1) !== 0;
+  }
+
+  function ScaleDistance(szSystem, szSize) {
+    const System = g_Scales[szSystem];
+    Require(System && szSize in System.Sizes, `Unknown scale: ${szSystem} ${szSize}`);
+    return System.Sizes[szSize];
+  }
+
+  function ScaleMiles(szSystem, szSize) {
+    const dDistance = ScaleDistance(szSystem, szSize);
+    return szSystem === 'local' ? dDistance / g_dYardsPerMile : dDistance;
+  }
+
+  // Number of fine hexes per coarse hex along a column; 1 or an even integer.
+  function ScaleRatio(szSystem, szCoarse, szFine) {
+    const nRatio = ScaleDistance(szSystem, szCoarse) / ScaleDistance(szSystem, szFine);
+    Require(Number.isInteger(nRatio) && (nRatio === 1 || nRatio % 2 === 0),
+      `Scale ${szCoarse} does not nest ${szFine} by an even ratio`);
+    return nRatio;
+  }
+
+  function ColumnSpacing(dD) {
+    return dD * g_dRootThree / 2;
+  }
+
+  function HexRadius(dD) {
+    return dD / g_dRootThree;
+  }
+
+  function HexArea(dD) {
+    return dD * dD * g_dRootThree / 2;
+  }
+
+  function OffsetToAxial(nQ, nJ) {
+    return [Clean(nQ), Clean(nJ - Math.floor(nQ / 2))];
+  }
+
+  function AxialToOffset(nQ, nR) {
+    return [Clean(nQ), Clean(nR + Math.floor(nQ / 2))];
+  }
+
+  function AxialToCube(nQ, nR) {
+    return [Clean(nQ), Clean(-nQ - nR), Clean(nR)];
+  }
+
+  function CubeToAxial(nX, nY, nZ) {
+    Require(nX + nY + nZ === 0, 'Cube coordinates must sum to zero');
+    return [Clean(nX), Clean(nZ)];
+  }
+
+  function CubeRound(dX, dY, dZ) {
+    let nX = Math.round(dX);
+    let nY = Math.round(dY);
+    let nZ = Math.round(dZ);
+    const dErrorX = Math.abs(nX - dX);
+    const dErrorY = Math.abs(nY - dY);
+    const dErrorZ = Math.abs(nZ - dZ);
+    if (dErrorX > dErrorY && dErrorX > dErrorZ) {
+      nX = -nY - nZ;
+    } else if (dErrorY > dErrorZ) {
+      nY = -nX - nZ;
+    } else {
+      nZ = -nX - nY;
+    }
+    return [Clean(nX), Clean(nY), Clean(nZ)];
+  }
+
+  function OffsetToPoint(nQ, nJ, dD) {
+    return [nQ * ColumnSpacing(dD), (nJ + (IsOdd(nQ) ? 0.5 : 0)) * dD];
+  }
+
+  // Nearest lattice centre (the containing hex) for a point.
+  function PointToOffset(dX, dY, dD) {
+    const dQ = dX / ColumnSpacing(dD);
+    const dR = dY / dD - dQ / 2;
+    const [nX, , nZ] = CubeRound(dQ, -dQ - dR, dR);
+    return AxialToOffset(nX, nZ);
+  }
+
+  // Counter-clockwise vertices, starting due east of the centre.
+  function HexPolygon(rgdCenter, dD) {
+    const dRadius = HexRadius(dD);
+    const rgrgdPolygon = [];
+    for (let nIndex = 0; nIndex < 6; nIndex++) {
+      const dAngle = nIndex * Math.PI / 3;
+      rgrgdPolygon.push([rgdCenter[0] + dRadius * Math.cos(dAngle), rgdCenter[1] + dRadius * Math.sin(dAngle)]);
+    }
+    return rgrgdPolygon;
+  }
+
+  function OffsetNeighbor(nQ, nJ, nDirection) {
+    const [nAxialQ, nAxialR] = OffsetToAxial(nQ, nJ);
+    const rgnStep = g_rgrgnDirections[nDirection];
+    return AxialToOffset(nAxialQ + rgnStep[0], nAxialR + rgnStep[1]);
+  }
+
+  function OffsetNeighbors(nQ, nJ) {
+    return g_rgrgnDirections.map((rgnStep, nDirection) => OffsetNeighbor(nQ, nJ, nDirection));
+  }
+
+  function OppositeDirection(nDirection) {
+    return (nDirection + 3) % 6;
+  }
+
+  // The edge a hex at rgdCenter shares with its neighbour in nDirection.
+  function SharedEdge(rgdCenter, dD, nDirection) {
+    const rgrgdPolygon = HexPolygon(rgdCenter, dD);
+    return g_rgrgnDirectionEdges[nDirection].map((nVertex) => rgrgdPolygon[nVertex]);
+  }
+
+  function OffsetDistance(nQ1, nJ1, nQ2, nJ2) {
+    const rgnFirst = AxialToCube(...OffsetToAxial(nQ1, nJ1));
+    const rgnSecond = AxialToCube(...OffsetToAxial(nQ2, nJ2));
+    return Math.max(...rgnFirst.map((nValue, nAxis) => Math.abs(nValue - rgnSecond[nAxis])));
+  }
+
+  // The fine-lattice hex centred on coarse hex (q, j), for an even ratio.
+  function NestOffset(nQ, nJ, nRatio) {
+    Require(nRatio === 1 || (Number.isInteger(nRatio) && nRatio % 2 === 0), 'Nesting ratio must be 1 or even');
+    if (nRatio === 1) {
+      return [Clean(nQ), Clean(nJ)];
+    }
+    return [Clean(nQ * nRatio), Clean(nJ * nRatio + (IsOdd(nQ) ? nRatio / 2 : 0))];
+  }
+
+  RpgMap.Lattice = Object.freeze({
+    g_dYardsPerMile,
+    g_rgszSizes,
+    g_Scales,
+    g_rgrgnDirections,
+    IsOdd,
+    ScaleDistance,
+    ScaleMiles,
+    ScaleRatio,
+    ColumnSpacing,
+    HexRadius,
+    HexArea,
+    OffsetToAxial,
+    AxialToOffset,
+    AxialToCube,
+    CubeToAxial,
+    CubeRound,
+    OffsetToPoint,
+    PointToOffset,
+    HexPolygon,
+    OffsetNeighbor,
+    OffsetNeighbors,
+    OppositeDirection,
+    SharedEdge,
+    OffsetDistance,
+    NestOffset,
+  });
+})(globalThis);
+</script>
+
+<script data-module="Topology">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+  const { Util, Projection, Lattice } = RpgMap;
+  const { Require } = Util;
+
+  // Global-map tiles: one hex lattice per panel, except that the six equatorial
+  // panels share one continuous lattice that wraps around the strip. Lengths
+  // are in edge units, measured in each panel's frame ([east, north]).
+  const g_nDefaultPanelHexes = 24;
+  const g_rgszTileScales = Object.freeze(['XL', 'L']);
+  const g_dMinAreaFraction = 1e-6;
+  const g_dFullAreaFraction = 1 - 1e-9;
+  const g_nKeyBias = 100000;
+  const g_Cache = new Map();
+
+  function ValidatePanelHexes(nPanelHexes) {
+    Require(Number.isInteger(nPanelHexes) && nPanelHexes > 0 && nPanelHexes % 2 === 0,
+      'Panel size must be a positive even number of XL hexes');
+  }
+
+  // Lattice placement for one panel. Column q is centred at east = dOriginEast + q·dW.
+  // Non-equatorial panels: q = 0 is the north-south bisector and hex (0, 0) is the
+  // panel centre. Equatorial panels: the lattice is anchored on XL hex centres, so
+  // finer scales nest; panel column i = q − nColumnShift runs 0 … nColumns−1 west to east.
+  function PanelLattice(szPanel, nPanelHexes = g_nDefaultPanelHexes, nRatio = 1) {
+    ValidatePanelHexes(nPanelHexes);
+    Require(nRatio === 1 || (Number.isInteger(nRatio) && nRatio > 0 && nRatio % 2 === 0),
+      'Scale ratio must be 1 or an even integer');
+    const Built = Projection.Build();
+    const Panel = Built.Panels[szPanel];
+    Require(Panel !== undefined, `Unknown panel: ${szPanel}`);
+    const dMilesPerEdge = Projection.MilesPerEdge(nPanelHexes);
+    const dD = Projection.g_dXlHexMiles / dMilesPerEdge / nRatio;
+    const dW = Lattice.ColumnSpacing(dD);
+    let dOriginEast = 0;
+    let nColumns = 0;
+    let nColumnShift = 0;
+    if (Panel.fEquatorial) {
+      nColumns = nPanelHexes * nRatio;
+      nColumnShift = nRatio === 1 ? 0 : nRatio / 2;
+      dOriginEast = -Built.dEquatorialWidth / 2 + ((nRatio === 1 ? 0.5 : 0) - nColumnShift) * dW;
+    }
+    return Object.freeze({
+      szPanel, fEquatorial: Panel.fEquatorial, nPanelHexes, nRatio, dMilesPerEdge, dD, dW, dOriginEast, nColumns, nColumnShift,
+    });
+  }
+
+  function LatticeCenter(PanelLatticeInfo, nQ, nJ) {
+    return [
+      PanelLatticeInfo.dOriginEast + nQ * PanelLatticeInfo.dW,
+      (nJ + (Lattice.IsOdd(nQ) ? 0.5 : 0)) * PanelLatticeInfo.dD,
+    ];
+  }
+
+  function LatticeNearest(PanelLatticeInfo, dEast, dNorth) {
+    return Lattice.PointToOffset(dEast - PanelLatticeInfo.dOriginEast, dNorth, PanelLatticeInfo.dD);
+  }
+
+  function Key(nQ, nJ) {
+    return (nQ + g_nKeyBias) * 2 * g_nKeyBias + (nJ + g_nKeyBias);
+  }
+
+  // The clip regions of a panel, in its own frame. Equatorial panels also clip
+  // against their strip neighbours, since tiles there are whole at east/west edges.
+  function BuildRegions(Built, szPanel) {
+    const Frame = Built.Frames[szPanel];
+    const rgRegions = [{ szPanel, rgdToRegion: [1, 0, 0, 1, 0, 0], rgrgdPolygon: Frame.rgrgdPolygon }];
+    if (Frame.fEquatorial) {
+      const rgszStrip = Built.rgszEquatorialWestToEast;
+      const nStrip = rgszStrip.indexOf(szPanel);
+      for (const szOther of [rgszStrip[(nStrip + 5) % 6], rgszStrip[(nStrip + 1) % 6]]) {
+        const Seam = Projection.FindSeam(szPanel, szOther);
+        const rgdToRegion = Seam.szPanelA === szPanel ? Seam.rgdAToB : Seam.rgdBToA;
+        const rgdFromRegion = Projection.InvertTransform(rgdToRegion);
+        rgRegions.push({
+          szPanel: szOther,
+          rgdToRegion,
+          rgrgdPolygon: Built.Frames[szOther].rgrgdPolygon.map((rgdPoint) => Projection.ApplyTransform(rgdFromRegion, rgdPoint)),
+        });
+      }
+    }
+    return rgRegions;
+  }
+
+  function EdgeLines(rgrgdPolygon) {
+    return Util.Boundary(rgrgdPolygon).map(([rgdStart, rgdEnd]) => {
+      const rgdDirection = Util.Unit(Util.Subtract(rgdEnd, rgdStart));
+      return { rgdStart, rgdDirection };
+    });
+  }
+
+  // Signed distance inside the convex polygon (negative outside).
+  function InsideDistance(rgEdgeLines, rgdPoint) {
+    let dMinimum = Infinity;
+    for (const Line of rgEdgeLines) {
+      const dSide = Line.rgdDirection[0] * (rgdPoint[1] - Line.rgdStart[1])
+        - Line.rgdDirection[1] * (rgdPoint[0] - Line.rgdStart[0]);
+      dMinimum = Math.min(dMinimum, dSide);
+    }
+    return dMinimum;
+  }
+
+  function Bounds(rgRegions) {
+    const rgrgdPoints = rgRegions.flatMap((Region) => Region.rgrgdPolygon);
+    return {
+      dMinEast: Math.min(...rgrgdPoints.map((rgdPoint) => rgdPoint[0])),
+      dMaxEast: Math.max(...rgrgdPoints.map((rgdPoint) => rgdPoint[0])),
+      dMinNorth: Math.min(...rgrgdPoints.map((rgdPoint) => rgdPoint[1])),
+      dMaxNorth: Math.max(...rgrgdPoints.map((rgdPoint) => rgdPoint[1])),
+    };
+  }
+
+  // Lattice hexes overlapping the panel (or, for equatorial panels, the strip near
+  // the panel's own columns), with partial tiles clipped into per-region pieces.
+  function CollectPanelTiles(Info, rgRegions, dHexArea) {
+    const PanelLatticeInfo = Info.Lattice;
+    const { dD, dW } = PanelLatticeInfo;
+    const dRadius = Lattice.HexRadius(dD);
+    const Box = Bounds(rgRegions);
+    const rgEdgeLines = EdgeLines(rgRegions[0].rgrgdPolygon);
+    let nQMin;
+    let nQMax;
+    if (PanelLatticeInfo.fEquatorial) {
+      nQMin = PanelLatticeInfo.nColumnShift;
+      nQMax = nQMin + PanelLatticeInfo.nColumns - 1;
+    } else {
+      nQMax = Math.ceil((Math.max(-Box.dMinEast, Box.dMaxEast) + dRadius) / dW) + 1;
+      nQMin = -nQMax;
+    }
+    const nJMin = Math.floor((Box.dMinNorth - dRadius) / dD) - 1;
+    const nJMax = Math.ceil((Box.dMaxNorth + dRadius) / dD) + 1;
+    const rgCandidates = [];
+    for (let nQ = nQMin; nQ <= nQMax; nQ++) {
+      for (let nJ = nJMin; nJ <= nJMax; nJ++) {
+        const rgdCenter = LatticeCenter(PanelLatticeInfo, nQ, nJ);
+        if (rgdCenter[0] + dRadius < Box.dMinEast || rgdCenter[0] - dRadius > Box.dMaxEast
+          || rgdCenter[1] + dRadius < Box.dMinNorth || rgdCenter[1] - dRadius > Box.dMaxNorth) {
+          continue;
+        }
+        const dInside = InsideDistance(rgEdgeLines, rgdCenter);
+        if (dInside >= dRadius) {
+          rgCandidates.push({ nQ, nJ, rgdCenter, dArea: dHexArea, rgPieces: null });
+          continue;
+        }
+        if (!PanelLatticeInfo.fEquatorial && dInside <= -dRadius) {
+          continue;
+        }
+        const rgrgdHex = Lattice.HexPolygon(rgdCenter, dD);
+        const rgPieces = [];
+        let dArea = 0;
+        for (const Region of rgRegions) {
+          const rgrgdPiece = Util.ClipPolygonToConvex(rgrgdHex, Region.rgrgdPolygon);
+          const dPieceArea = rgrgdPiece.length ? Util.PolygonArea(rgrgdPiece) : 0;
+          if (dPieceArea > 1e-12 * dHexArea) {
+            rgPieces.push(Object.freeze({ szPanel: Region.szPanel, rgrgdPolygon: Object.freeze(rgrgdPiece) }));
+            dArea += dPieceArea;
+          }
+        }
+        if (dArea <= g_dMinAreaFraction * dHexArea) {
+          continue;
+        }
+        const fFull = dArea >= g_dFullAreaFraction * dHexArea;
+        rgCandidates.push({ nQ, nJ, rgdCenter, dArea: fFull ? dHexArea : dArea, rgPieces: fFull ? null : rgPieces });
+      }
+    }
+    return rgCandidates;
+  }
+
+  function SegmentLengthInRegions(rgdStart, rgdEnd, rgRegions) {
+    const dLength = Util.Distance(rgdStart, rgdEnd);
+    let dInside = 0;
+    for (const Region of rgRegions) {
+      const rgdInterval = Util.ClipSegmentToConvex(rgdStart, rgdEnd, Region.rgrgdPolygon);
+      if (rgdInterval) {
+        dInside += (rgdInterval[1] - rgdInterval[0]) * dLength;
+      }
+    }
+    return dInside;
+  }
+
+  // Interval of a convex piece's boundary lying on the line through rgdStart (unit direction).
+  function EdgeInterval(rgrgdPolygon, rgdStart, rgdDirection, dTolerance) {
+    let dMin = Infinity;
+    let dMax = -Infinity;
+    let nCount = 0;
+    for (const rgdPoint of rgrgdPolygon) {
+      const rgdRelative = Util.Subtract(rgdPoint, rgdStart);
+      if (Math.abs(rgdDirection[0] * rgdRelative[1] - rgdDirection[1] * rgdRelative[0]) <= dTolerance) {
+        const dAlong = Util.Dot(rgdRelative, rgdDirection);
+        dMin = Math.min(dMin, dAlong);
+        dMax = Math.max(dMax, dAlong);
+        nCount++;
+      }
+    }
+    return nCount >= 2 && dMax > dMin ? [dMin, dMax] : null;
+  }
+
+  function BuildAdjacency(Topo, RegionsByPanel, Built) {
+    const rgNeighborSets = Topo.rgTiles.map(() => new Set());
+    const dEpsilon = 1e-6 * Topo.dD;
+    const Link = (nFirst, nSecond) => {
+      if (nFirst !== nSecond) {
+        rgNeighborSets[nFirst].add(nSecond);
+        rgNeighborSets[nSecond].add(nFirst);
+      }
+    };
+    // Lattice neighbours within a panel, or within the continuous equatorial strip.
+    for (const Tile of Topo.rgTiles) {
+      for (let nDirection = 0; nDirection < 6; nDirection++) {
+        const [nQ, nJ] = Lattice.OffsetNeighbor(Tile.nLatticeColumn, Tile.nLatticeRow, nDirection);
+        const nOther = LocateLattice(Topo, Tile.szPanel, nQ, nJ);
+        if (nOther < 0 || nOther < Tile.nIndex) {
+          continue;
+        }
+        const Other = Topo.rgTiles[nOther];
+        if (!Tile.fPartial && !Other.fPartial) {
+          Link(Tile.nIndex, nOther);
+          continue;
+        }
+        const [rgdStart, rgdEnd] = Lattice.SharedEdge(Tile.rgdCenter, Topo.dD, nDirection);
+        if (SegmentLengthInRegions(rgdStart, rgdEnd, RegionsByPanel[Tile.szPanel]) > dEpsilon) {
+          Link(Tile.nIndex, nOther);
+        }
+      }
+    }
+    // Partial-tile pieces meeting across the other seams, compared along the shared edge.
+    const PiecesByPanel = {};
+    for (const Tile of Topo.rgTiles) {
+      for (const Piece of Tile.rgPieces || []) {
+        const Region = RegionsByPanel[Tile.szPanel].find((Item) => Item.szPanel === Piece.szPanel);
+        (PiecesByPanel[Piece.szPanel] = PiecesByPanel[Piece.szPanel] || []).push({
+          nTile: Tile.nIndex,
+          rgrgdPolygon: Piece.rgrgdPolygon.map((rgdPoint) => Projection.ApplyTransform(Region.rgdToRegion, rgdPoint)),
+        });
+      }
+    }
+    for (const Seam of Built.Seams) {
+      if (Built.Panels[Seam.szPanelA].fEquatorial && Built.Panels[Seam.szPanelB].fEquatorial) {
+        continue;
+      }
+      const rgSides = [Seam.szPanelA, Seam.szPanelB].map((szPanel) => {
+        const Frame = Built.Frames[szPanel];
+        const [rgdStart, rgdEnd] = Seam.rgszVertices.map((szId) => Projection.SolidToFrame(Frame, Built.Vertices[szId]));
+        const rgdDirection = Util.Unit(Util.Subtract(rgdEnd, rgdStart));
+        return (PiecesByPanel[szPanel] || [])
+          .map((Piece) => ({ nTile: Piece.nTile, rgdInterval: EdgeInterval(Piece.rgrgdPolygon, rgdStart, rgdDirection, 1e-9) }))
+          .filter((Piece) => Piece.rgdInterval !== null);
+      });
+      for (const First of rgSides[0]) {
+        for (const Second of rgSides[1]) {
+          const dOverlap = Math.min(First.rgdInterval[1], Second.rgdInterval[1])
+            - Math.max(First.rgdInterval[0], Second.rgdInterval[0]);
+          if (dOverlap > dEpsilon) {
+            Link(First.nTile, Second.nTile);
+          }
+        }
+      }
+    }
+    const rgnOffsets = new Int32Array(rgNeighborSets.length + 1);
+    rgNeighborSets.forEach((Neighbors, nIndex) => {
+      rgnOffsets[nIndex + 1] = rgnOffsets[nIndex] + Neighbors.size;
+    });
+    const rgnNeighbors = new Int32Array(rgnOffsets[rgNeighborSets.length]);
+    rgNeighborSets.forEach((Neighbors, nIndex) => {
+      rgnNeighbors.set([...Neighbors].sort((nLeft, nRight) => nLeft - nRight), rgnOffsets[nIndex]);
+    });
+    return { rgnOffsets, rgnNeighbors };
+  }
+
+  // Builds (and caches) the tiles and adjacency of a global map.
+  function Build(nPanelHexes = g_nDefaultPanelHexes, szTileScale = 'XL') {
+    ValidatePanelHexes(nPanelHexes);
+    Require(g_rgszTileScales.includes(szTileScale), `Global tile scale must be one of ${g_rgszTileScales.join(', ')}`);
+    const szKey = `${nPanelHexes}:${szTileScale}`;
+    if (g_Cache.has(szKey)) {
+      return g_Cache.get(szKey);
+    }
+    const Built = Projection.Build();
+    const nRatio = Lattice.ScaleRatio('regional', 'XL', szTileScale);
+    const rgszPanels = Object.keys(Built.Panels);
+    const rgszStrip = Built.rgszEquatorialWestToEast;
+    const dD = PanelLattice(rgszPanels[0], nPanelHexes, nRatio).dD;
+    const dHexArea = Lattice.HexArea(dD);
+    const rgTiles = [];
+    const Panels = {};
+    const Lookups = {};
+    const RegionsByPanel = {};
+    for (const szPanel of rgszPanels) {
+      const PanelLatticeInfo = PanelLattice(szPanel, nPanelHexes, nRatio);
+      const rgRegions = BuildRegions(Built, szPanel);
+      RegionsByPanel[szPanel] = rgRegions;
+      const rgCandidates = CollectPanelTiles({ Lattice: PanelLatticeInfo }, rgRegions, dHexArea);
+      rgCandidates.sort((Left, Right) => (Right.nJ - Left.nJ) || (Left.nQ - Right.nQ));
+      const nQMin = PanelLatticeInfo.fEquatorial
+        ? PanelLatticeInfo.nColumnShift
+        : Math.min(...rgCandidates.map((Candidate) => Candidate.nQ));
+      const nQMax = Math.max(...rgCandidates.map((Candidate) => Candidate.nQ));
+      const nJMax = rgCandidates[0].nJ;
+      const nJMin = rgCandidates[rgCandidates.length - 1].nJ;
+      const Lookup = new Map();
+      const nFirstTile = rgTiles.length;
+      for (const Candidate of rgCandidates) {
+        const nIndex = rgTiles.length;
+        Lookup.set(Key(Candidate.nQ, Candidate.nJ), nIndex);
+        rgTiles.push(Object.freeze({
+          nIndex,
+          szPanel,
+          nColumn: Candidate.nQ - nQMin,
+          nRow: nJMax - Candidate.nJ,
+          nLatticeColumn: Candidate.nQ,
+          nLatticeRow: Candidate.nJ,
+          rgdCenter: Object.freeze(Candidate.rgdCenter),
+          dArea: Candidate.dArea,
+          fPartial: Candidate.rgPieces !== null,
+          rgPieces: Candidate.rgPieces ? Object.freeze(Candidate.rgPieces) : null,
+        }));
+      }
+      Lookups[szPanel] = Lookup;
+      const nStrip = rgszStrip.indexOf(szPanel);
+      Panels[szPanel] = Object.freeze({
+        szPanel,
+        Lattice: PanelLatticeInfo,
+        nFirstTile,
+        nTileCount: rgTiles.length - nFirstTile,
+        nColumns: nQMax - nQMin + 1,
+        nRows: nJMax - nJMin + 1,
+        nLatticeColumnMin: nQMin,
+        nLatticeRowMax: nJMax,
+        szWest: nStrip >= 0 ? rgszStrip[(nStrip + 5) % 6] : null,
+        szEast: nStrip >= 0 ? rgszStrip[(nStrip + 1) % 6] : null,
+      });
+    }
+    const Topo = {
+      nPanelHexes,
+      szTileScale,
+      nRatio,
+      dMilesPerEdge: Projection.MilesPerEdge(nPanelHexes),
+      dD,
+      dW: Lattice.ColumnSpacing(dD),
+      dHexArea,
+      rgszPanels: Object.freeze(rgszPanels),
+      Panels: Object.freeze(Panels),
+      Lookups: Object.freeze(Lookups),
+      rgTiles: Object.freeze(rgTiles),
+      nTiles: rgTiles.length,
+    };
+    const { rgnOffsets, rgnNeighbors } = BuildAdjacency(Topo, RegionsByPanel, Built);
+    Topo.rgnAdjacencyOffsets = rgnOffsets;
+    Topo.rgnAdjacency = rgnNeighbors;
+    Object.freeze(Topo);
+    g_Cache.set(szKey, Topo);
+    return Topo;
+  }
+
+  function TileAt(Topo, szPanel, nQ, nJ) {
+    const Lookup = Topo.Lookups[szPanel];
+    Require(Lookup !== undefined, `Unknown panel: ${szPanel}`);
+    const nIndex = Lookup.get(Key(nQ, nJ));
+    return nIndex === undefined ? -1 : nIndex;
+  }
+
+  // Like TileAt, but equatorial columns past the panel's east/west edge resolve
+  // to the neighbouring strip panel (the strip lattice is continuous and wraps).
+  function LocateLattice(Topo, szPanel, nQ, nJ) {
+    const Info = Topo.Panels[szPanel];
+    const PanelLatticeInfo = Info.Lattice;
+    if (PanelLatticeInfo.fEquatorial) {
+      const nColumn = nQ - PanelLatticeInfo.nColumnShift;
+      if (nColumn < 0) {
+        return TileAt(Topo, Info.szWest, nQ + PanelLatticeInfo.nColumns, nJ);
+      }
+      if (nColumn >= PanelLatticeInfo.nColumns) {
+        return TileAt(Topo, Info.szEast, nQ - PanelLatticeInfo.nColumns, nJ);
+      }
+    }
+    return TileAt(Topo, szPanel, nQ, nJ);
+  }
+
+  function TileByColumnRow(Topo, szPanel, nColumn, nRow) {
+    const Info = Topo.Panels[szPanel];
+    Require(Info !== undefined, `Unknown panel: ${szPanel}`);
+    return TileAt(Topo, szPanel, nColumn + Info.nLatticeColumnMin, Info.nLatticeRowMax - nRow);
+  }
+
+  function Neighbors(Topo, nTile) {
+    return Topo.rgnAdjacency.subarray(Topo.rgnAdjacencyOffsets[nTile], Topo.rgnAdjacencyOffsets[nTile + 1]);
+  }
+
+  function AreAdjacent(Topo, nFirst, nSecond) {
+    return Neighbors(Topo, nFirst).includes(nSecond);
+  }
+
+  // The tile's drawable outline(s) in its own panel frame.
+  function TilePolygons(Topo, nTile) {
+    const Tile = Topo.rgTiles[nTile];
+    return Tile.rgPieces
+      ? Tile.rgPieces.map((Piece) => Piece.rgrgdPolygon)
+      : [Lattice.HexPolygon(Tile.rgdCenter, Topo.dD)];
+  }
+
+  RpgMap.Topology = Object.freeze({
+    g_nDefaultPanelHexes,
+    g_rgszTileScales,
+    g_dMinAreaFraction,
+    PanelLattice,
+    LatticeCenter,
+    LatticeNearest,
+    Build,
+    TileAt,
+    LocateLattice,
+    TileByColumnRow,
+    Neighbors,
+    AreAdjacent,
+    TilePolygons,
+  });
+})(globalThis);
+</script>
+
+<script data-module="Coordinates">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+  const { Util, Projection, Lattice, Topology } = RpgMap;
+  const { Require } = Util;
+
+  // Universal coordinates: (panel, east, north) in miles, measured in the panel
+  // plane from the panel reference point (on the equator for equatorial panels).
+  const g_dSnapFraction = 0.25;
+
+  function PanelIdByName(szName) {
+    const szLower = String(szName).toLowerCase();
+    const Panel = Object.values(Projection.Build().Panels).find((Item) => Item.szName.toLowerCase() === szLower);
+    return Panel ? Panel.szId : null;
+  }
+
+  function MakeLocation(szPanel, dEast, dNorth) {
+    return Object.freeze({ szPanel, dEast, dNorth });
+  }
+
+  function TileToUniversal(Topo, nTile) {
+    const Tile = Topo.rgTiles[nTile];
+    Require(Tile !== undefined, `Unknown tile: ${nTile}`);
+    return MakeLocation(Tile.szPanel, Tile.rgdCenter[0] * Topo.dMilesPerEdge, Tile.rgdCenter[1] * Topo.dMilesPerEdge);
+  }
+
+  // Nearest tile of the location's panel, or −1 if none lies within 0.25·d.
+  function UniversalToTile(Topo, Location) {
+    const Info = Topo.Panels[Location.szPanel];
+    Require(Info !== undefined, `Unknown panel: ${Location.szPanel}`);
+    const rgdPoint = [Location.dEast / Topo.dMilesPerEdge, Location.dNorth / Topo.dMilesPerEdge];
+    const [nQ, nJ] = Topology.LatticeNearest(Info.Lattice, rgdPoint[0], rgdPoint[1]);
+    const nTile = Topology.TileAt(Topo, Location.szPanel, nQ, nJ);
+    if (nTile < 0 || Util.Distance(Topo.rgTiles[nTile].rgdCenter, rgdPoint) > g_dSnapFraction * Topo.dD) {
+      return -1;
+    }
+    return nTile;
+  }
+
+  function FormatAxis(dValue, nDecimals, szPositive, szNegative) {
+    const szMagnitude = Math.abs(dValue).toFixed(nDecimals);
+    const fZero = Number(szMagnitude) === 0;
+    return szMagnitude + (dValue < 0 && !fZero ? szNegative : szPositive);
+  }
+
+  // For example "Eta 187.1W 324.0N".
+  function FormatUniversal(Location, nDecimals = 1) {
+    const Panel = Projection.Build().Panels[Location.szPanel];
+    Require(Panel !== undefined, `Unknown panel: ${Location.szPanel}`);
+    return `${Panel.szName} ${FormatAxis(Location.dEast, nDecimals, 'E', 'W')} ${FormatAxis(Location.dNorth, nDecimals, 'N', 'S')}`;
+  }
+
+  function ParseUniversal(szText) {
+    const Match = /^\s*([A-Za-z]+)\s+(\d+(?:\.\d+)?)([EWew])\s+(\d+(?:\.\d+)?)([NSns])\s*$/.exec(szText);
+    Require(Match !== null, `Invalid universal coordinate: ${szText}`);
+    const szPanel = PanelIdByName(Match[1]);
+    Require(szPanel !== null, `Unknown panel name: ${Match[1]}`);
+    const dEast = Number(Match[2]) * (Match[3].toUpperCase() === 'W' ? -1 : 1);
+    const dNorth = Number(Match[4]) * (Match[5].toUpperCase() === 'S' ? -1 : 1);
+    return MakeLocation(szPanel, dEast || 0, dNorth || 0);
+  }
+
+  // A flat local map: nWidth × nHeight flat-top hexes, tile (0, 0) in the north-west,
+  // x east and y south, oriented to panel north at the anchor (centre of tile (0, 0)).
+  // Regional anchors snap to the global lattice of the same scale, so local tiles nest.
+  function CreateLocalMap(Options) {
+    const { nWidth, nHeight, szSystem, szScale, Anchor } = Options;
+    const nPanelHexes = Options.nPanelHexes === undefined ? Topology.g_nDefaultPanelHexes : Options.nPanelHexes;
+    Require(Number.isInteger(nWidth) && nWidth > 0 && Number.isInteger(nHeight) && nHeight > 0,
+      'Local map size must be positive integers');
+    Require(Projection.Build().Panels[Anchor.szPanel] !== undefined, `Unknown panel: ${Anchor.szPanel}`);
+    const dHexMiles = Lattice.ScaleMiles(szSystem, szScale);
+    let SnappedAnchor = MakeLocation(Anchor.szPanel, Anchor.dEast, Anchor.dNorth);
+    let nParity = 0;
+    let rgnAnchorLattice = null;
+    if (szSystem === 'regional') {
+      const PanelLatticeInfo = Topology.PanelLattice(Anchor.szPanel, nPanelHexes, Lattice.ScaleRatio('regional', 'XL', szScale));
+      const dMilesPerEdge = PanelLatticeInfo.dMilesPerEdge;
+      const [nQ, nJ] = Topology.LatticeNearest(PanelLatticeInfo, Anchor.dEast / dMilesPerEdge, Anchor.dNorth / dMilesPerEdge);
+      const rgdCenter = Topology.LatticeCenter(PanelLatticeInfo, nQ, nJ);
+      SnappedAnchor = MakeLocation(Anchor.szPanel, rgdCenter[0] * dMilesPerEdge, rgdCenter[1] * dMilesPerEdge);
+      nParity = Lattice.IsOdd(nQ) ? 1 : 0;
+      rgnAnchorLattice = Object.freeze([nQ, nJ]);
+    }
+    return Object.freeze({
+      nWidth, nHeight, szSystem, szScale, nPanelHexes, dHexMiles, Anchor: SnappedAnchor, nParity, rgnAnchorLattice,
+    });
+  }
+
+  function LocalTileToUniversal(Local, nX, nY) {
+    const dW = Lattice.ColumnSpacing(Local.dHexMiles);
+    const nShift = (Lattice.IsOdd(nX + Local.nParity) ? 1 : 0) - Local.nParity;
+    return MakeLocation(
+      Local.Anchor.szPanel,
+      Local.Anchor.dEast + nX * dW,
+      Local.Anchor.dNorth + (nShift / 2 - nY) * Local.dHexMiles,
+    );
+  }
+
+  // Local tile [x, y] nearest the location, or null if outside the map or > 0.25·d away.
+  function UniversalToLocalTile(Local, Location) {
+    if (Location.szPanel !== Local.Anchor.szPanel) {
+      return null;
+    }
+    const dD = Local.dHexMiles;
+    const dEast = Location.dEast - Local.Anchor.dEast + Local.nParity * Lattice.ColumnSpacing(dD);
+    const dNorth = Location.dNorth - Local.Anchor.dNorth + Local.nParity * dD / 2;
+    const [nQ, nJ] = Lattice.PointToOffset(dEast, dNorth, dD);
+    const nX = nQ - Local.nParity;
+    const nY = -nJ || 0;
+    if (nX < 0 || nX >= Local.nWidth || nY < 0 || nY >= Local.nHeight) {
+      return null;
+    }
+    const Center = LocalTileToUniversal(Local, nX, nY);
+    const dDistance = Math.hypot(Center.dEast - Location.dEast, Center.dNorth - Location.dNorth);
+    return dDistance > g_dSnapFraction * dD ? null : [nX, nY];
+  }
+
+  RpgMap.Coordinates = Object.freeze({
+    g_dSnapFraction,
+    PanelIdByName,
+    MakeLocation,
+    TileToUniversal,
+    UniversalToTile,
+    FormatUniversal,
+    ParseUniversal,
+    CreateLocalMap,
+    LocalTileToUniversal,
+    UniversalToLocalTile,
   });
 })(globalThis);
 </script>

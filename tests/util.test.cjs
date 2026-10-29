@@ -63,3 +63,27 @@ test('FormatNumber trims trailing zeros and signed zero', () => {
   assert.equal(Util.FormatNumber(-0.0000001), '0');
   assert.equal(Util.FormatNumber(-2.25, 1), '-2.3');
 });
+
+test('PolygonArea is signed by winding', () => {
+  const rgrgdSquare = [[0, 0], [2, 0], [2, 2], [0, 2]];
+  assert.equal(Util.PolygonArea(rgrgdSquare), 4);
+  assert.equal(Util.PolygonArea([...rgrgdSquare].reverse()), -4);
+});
+
+test('ClipPolygonToConvex and PointInConvex', () => {
+  const rgrgdClip = [[0, 0], [2, 0], [2, 2], [0, 2]];
+  const rgrgdSubject = [[1, 1], [3, 1], [3, 3], [1, 3]];
+  assert.equal(Util.PolygonArea(Util.ClipPolygonToConvex(rgrgdSubject, rgrgdClip)), 1);
+  assert.deepEqual(Util.ClipPolygonToConvex([[5, 5], [6, 5], [6, 6]], rgrgdClip), []);
+  assert.equal(Util.PolygonArea(Util.ClipPolygonToConvex(rgrgdClip, rgrgdClip)), 4);
+  assert.ok(Util.PointInConvex([1, 1], rgrgdClip));
+  assert.ok(Util.PointInConvex([2, 1], rgrgdClip));
+  assert.ok(!Util.PointInConvex([2.1, 1], rgrgdClip));
+});
+
+test('ClipSegmentToConvex returns the inside parameter interval', () => {
+  const rgrgdClip = [[0, 0], [2, 0], [2, 2], [0, 2]];
+  AssertClose(Util.ClipSegmentToConvex([-1, 1], [3, 1], rgrgdClip), [0.25, 0.75]);
+  AssertClose(Util.ClipSegmentToConvex([0.5, 0.5], [1, 1], rgrgdClip), [0, 1]);
+  assert.equal(Util.ClipSegmentToConvex([-1, 3], [3, 3], rgrgdClip), null);
+});
