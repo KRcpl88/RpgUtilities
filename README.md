@@ -64,8 +64,9 @@ browser autosave.
 
 **Export SVG** downloads one selected global panel, north-up, or the entire local
 map. Choose the output width (default 1600 px); height preserves the map's aspect
-ratio. Layer options include terrain colours, smoothed shorelines, hex grid,
-roads, trails, tapered rivers, landmarks, optional landmark names, and labels.
+ratio. Layer options include terrain colours, terrain embellishments, smoothed
+shorelines, hex grid, roads, trails, tapered rivers, landmarks, optional landmark
+names, and labels.
 The initial visibility follows the canvas where applicable, but export settings
 do not change the canvas.
 
@@ -74,7 +75,14 @@ map and where terrain colours are omitted. Regions preserve holes; panel edges
 are clipped without inventing coastlines along the cut. Feature placement and
 rotation follow the editor, including seam copies and partial tiles. Export
 does **not** save the editable map, clear its unsaved indicator, or change undo
-history; use Save for `.map.txt`. Terrain embellishments are milestone 11.
+history; use Save for `.map.txt`.
+
+Terrain embellishments draw a pattern for every terrain except plain and open
+water: hill curves, mountain peaks, dunes, tree crowns with trunks along a
+forest's southern edge, marsh grass, field patchworks, and so on. Patterns
+continue across neighbouring tiles of the same terrain and are clipped to their
+own terrain region. With terrain colours off, filled motifs (crowns, islands,
+fields) are white.
 
 ### Code layout
 

@@ -59,7 +59,7 @@ Every module is an inline block that registers one frozen object:
 - Blocks appear in dependency order; `Util` is first and `App` is last.
 - Blocks that touch the DOM carry `data-dom="true"`. The tests skip these, so every other block must be DOM-free.
 - `tests/_load.cjs` `LoadModules()` blanks out HTML comments, compiles each DOM-free block with `vm.compileFunction` (passing a sandbox object as `globalThis`, with `lineOffset` so errors report `index.html` line numbers), and returns `RpgMap`.
-- **Planned modules, in order:** `Util` ✅ → `Projection` ✅ → `Lattice` ✅ → `Topology` ✅ → `Coordinates` ✅ → `Terrain` ✅ → `Model` ✅ → `History` ✅ → `View` ✅ → `Edit` ✅ → `FileFormat` ✅ → `Regions` ✅ → `SvgExport` ✅ → `Renderer`* ✅ → `App`* ✅. Modules marked * use the DOM. The tool UI (palette, pointer and key handling) lives in `App`; the testable tool logic is the DOM-free `Edit` module (§11.32), so there is no separate `Tools` module.
+- **Planned modules, in order:** `Util` ✅ → `Projection` ✅ → `Lattice` ✅ → `Topology` ✅ → `Coordinates` ✅ → `Terrain` ✅ → `Model` ✅ → `History` ✅ → `View` ✅ → `Edit` ✅ → `FileFormat` ✅ → `Regions` ✅ → `Embellish` ✅ → `SvgExport` ✅ → `Renderer`* ✅ → `App`* ✅. Modules marked * use the DOM. The tool UI (palette, pointer and key handling) lives in `App`; the testable tool logic is the DOM-free `Edit` module (§11.32), so there is no separate `Tools` module.
 
 ## 3. Projection module (port of the Python geometry)
 
@@ -160,7 +160,7 @@ MapDoc {
 ```
 
 - **Overlay paths:** each consecutive pair of tiles must be adjacent (§4.6). One tile may carry several overlays, for example a road crossing a river.
-- **Terrain table:** a single source of truth. Each entry has an ASCII char, ID, name, colour, `isWater`, and an embellishment function (§8). The 17 types from `prompt.md`:
+- **Terrain table:** a single source of truth. Each entry has an ASCII char, ID, name, colour, `isWater`, and an embellishment descriptor (§8, §11.58). The 17 types from `prompt.md`:
 
 | char | terrain | water? | | char | terrain | water? |
 |---|---|---|---|---|---|---|
@@ -267,6 +267,7 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
 - **Embellishments:**
   - Patterns are laid out in panel coordinates, so a pattern continues seamlessly across neighbouring tiles of the same terrain.
   - Each pattern is clipped to its region, so it never spills into a different terrain.
+  - Implemented by the `Embellish` module (between `Regions` and `SvgExport`); descriptors live in the Terrain table and details are in §11.58–61.
 
 | terrain | embellishment |
 |---|---|
@@ -322,7 +323,7 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
 8. ✅ **Overlays, landmarks, labels:** tools, properties panel, A* gap filling, path operations, layer-specific selection/erase, label drag/rotate handles.
 9. ✅ **Local maps:** new-map dialog, all scales, anchor snapping, normalized viewport, every editing tool, universal coordinates, open/save/autosave for either map kind.
 10. ✅ **SVG export, part 1:** per-panel/local options popup, region loops/holes, shoreline, colours, hex overlay, overlays, landmark symbols/names, labels, deterministic XML and download.
-11. **SVG export, part 2:** an embellishment algorithm for each terrain (§8).
+11. ✅ **SVG export, part 2:** an embellishment algorithm for each terrain (§8).
 12. **Polish:** true latitude/longitude, performance at L scale, sample maps, README and manual checklist.
 
 ## 11. Decisions made where `prompt.md` is silent (override by editing `prompt.md` or this list)
@@ -398,8 +399,12 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
 53. **Shorelines:** only shared edges separating water from land are coastal (`Terrain.IsWater`, including islands/lakes/firth). Exterior export edges and boundaries between two land or two water terrains are not stroked. Trace directed open chains and closed loops with land on the left; two Chaikin passes smooth them. Open endpoints remain fixed at the panel/map boundary. Terrain colour regions remain exact clipped hex polygons.
 54. **SVG coordinates and size:** `SvgExport.Write(Doc, { szPanel?, nWidth?, Layers? })` builds UTF-8 SVG 2 strings without DOM APIs. Global calls require a panel id; local calls default to `local`. The viewBox uses 48 units per hex height, north up before the SVG y-axis flip. Width defaults to 1600 px; height is rounded to the nearest positive pixel at the same aspect ratio. Changing width changes only intrinsic dimensions, not geometry/styling. Six-decimal number formatting is deterministic; text/attributes are XML-escaped, and unrepresentable XML characters are explicit errors. No timestamps, external assets or randomness.
 55. **SVG structure and styles:** one scope clip path contains all drawing. Terrain uses reusable even-odd region paths in defs, preserving holes; the grid contains each clipped edge once. Features retain document order and use `View.OverlayCurves`, `FeatureCopies`, `FeatureAnchor` and `LabelTransform`. Road/trail/river colours and widths now live in shared `View.g_OverlayStyles`; glyph paths remain in Terrain. Landmarks use symbol/use with optional names (off by default); labels keep halo, category weight, rotation and 1/48-hex units. Rivers approximate source-to-mouth taper using eight exact cubic sub-curves per original segment (35% to 100% width); source is the first path tile. Seam copies use the original segment index, so taper agrees across cuts. `View.SplitCurve` is shared with adaptive canvas curve flattening; canvas appearance otherwise remains unchanged.
-56. **Export UI (v0.7.0):** a native modal dialog selects one of the 18 global panels or the whole local map, width and layer toggles. Global scope initially uses the focus panel, selected tile's owner, view-centre tile's owner, then Alpha. Terrain/grid/feature visibility initially follows the canvas, with shorelines on and landmark names off; each dialog starts fresh. Unsupported terrain embellishments are explicitly deferred to milestone 11. Cancel, validation failures and successful export leave the document, dirty state, history and canvas layers unchanged. Active stroke/label drags must finish before export. All map shortcuts are suppressed while either modal is open.
+56. **Export UI (v0.7.0):** a native modal dialog selects one of the 18 global panels or the whole local map, width and layer toggles. Global scope initially uses the focus panel, selected tile's owner, view-centre tile's owner, then Alpha. Terrain/grid/feature visibility initially follows the canvas, with shorelines on and landmark names off; each dialog starts fresh. Terrain embellishments (added in milestone 11) default on. Cancel, validation failures and successful export leave the document, dirty state, history and canvas layers unchanged. Active stroke/label drags must finish before export. All map shortcuts are suppressed while either modal is open.
 57. **Download names:** Save and Export share a Blob-download helper. SVG names reuse the `.map.txt` filename sanitizer, followed by `-<PanelName>.svg` globally or `.svg` locally. Export never clears autosave or marks the editable map saved. The viewport outside the map and disabled terrain colour layer are transparent.
+58. **Embellishment data:** each Terrain entry's `Embellish` is a frozen descriptor `{ szLayout, dDx, dDy, dChance, szInk, szAccent, szBody }` (null for water, lakes, firth and plain); the motif generators live in the `Embellish` module, which builds four deterministic variants per terrain (seeded by terrain id and variant). Shapes are hex-unit polylines with a role: body (filled, inked), ink/accent (stroked) and dot (filled with ink). Mangrove, canyon, badlands, islands and farmland follow the §8 table; marsh and mangrove mix grass/crown variants with water-only variants.
+59. **Placement:** `scatter` terrains use a staggered lattice (odd rows offset by half a step) with ±15% jitter in the export frame; a point is kept only inside its own cell and once per region, so patterns continue across same-terrain tiles and never depend on output width. `field` (farmland) uses brick rows with hashed row offsets, relying on the region clip. `tile` (mountain peak) draws one motif per tile at its visible centroid, scaled by √(visible area / hex area) (min 0.3) for partial tiles. Seeds are `HashIntegers(panel-id hash, terrain id, i, j)`.
+60. **Forest edges:** a forest cell's internal edge to non-forest whose outward normal has y ≤ −0.3 (south, SE, SW) gets trunks every 0.08 hex (0.07 hex tall), drawn before the crowns. Export borders and seams never get trunks, matching shoreline rules. Crowns within 0.165 hex of such an edge are removed and replaced by a fringe row along it (0.2 hex spacing on a global x lattice, ≥ 0.15 hex apart), so trunks show beneath a tidy treeline.
+61. **SVG embellishment output:** an `embellishment` layer between terrain and shoreline, independent of terrain colours. Each region's group is clipped by `clip-region-N` (a `<use>` of its even-odd region path); only used variants are defined as `<g id="emb-key-n">` with numbers at two decimals, and instances are `<use x y>` or a scaling matrix. Filled bodies use the descriptor body or terrain colour, or white with colours off. A full mixed n = 24 L panel is ≈ 8 MB (all forest ≈ 14 MB); accepted, revisited for performance in milestone 12.
 
 ## 12. Open questions
 

@@ -1892,7 +1892,7 @@
 
   // The single terrain table: the ID is the index stored in Model terrain arrays and
   // must never be reordered, because saved files and history refer to it by char.
-  // Embellish is filled in by the SVG export (milestone 11).
+  // Embellish describes the SVG terrain pattern (plan §8), or is null for none.
   const g_rgTerrainDefinitions = [
     ['~', 'water', 'Water', '#4a7fb5', true],
     ['i', 'islands', 'Islands', '#6b9cc8', true],
@@ -1913,8 +1913,33 @@
     ['=', 'farmland', 'Farmland', '#d9cf7c', false],
   ];
 
-  const g_rgTerrains = Object.freeze(g_rgTerrainDefinitions.map(([szChar, szKey, szName, szColor, fWater], nId) =>
-    Object.freeze({ nId, szChar, szKey, szName, szColor, fWater, Embellish: null })));
+  // Pattern layouts in hex heights: 'scatter' puts one motif at each staggered lattice
+  // point inside a region, 'tile' one motif per tile and 'field' tiles a brick grid.
+  // Ink strokes motifs, Accent draws water marks, Body fills them (null: terrain colour).
+  const g_EmbellishDefinitions = {
+    islands: ['scatter', 0.34, 0.28, 0.8, '#253c46', null, '#d8c690'],
+    hills: ['scatter', 0.34, 0.22, 1, '#5e592b', null, null],
+    mountains: ['scatter', 0.42, 0.34, 1, '#463a30', null, null],
+    mountainPeak: ['tile', 1, 1, 1, '#3d3229', null, null],
+    desert: ['scatter', 0.3, 0.2, 0.9, '#9c7a3a', null, null],
+    sandDunes: ['scatter', 0.36, 0.22, 1, '#8f6a2c', null, null],
+    forest: ['scatter', 0.24, 0.2, 1, '#2b4824', '#4a3320', null],
+    marsh: ['scatter', 0.22, 0.18, 0.9, '#3f5f2a', '#3d6f8a', null],
+    mangrove: ['scatter', 0.24, 0.2, 0.95, '#2f4a2a', '#3d6f8a', null],
+    tundra: ['scatter', 0.24, 0.16, 0.9, '#5d6f76', null, null],
+    canyon: ['scatter', 0.42, 0.3, 1, '#6a3a22', null, null],
+    badlands: ['scatter', 0.32, 0.24, 1, '#6f472c', null, null],
+    farmland: ['field', 0.3, 0.24, 1, '#7a6a32', '#a39352', null],
+  };
+
+  const g_rgTerrains = Object.freeze(g_rgTerrainDefinitions.map(([szChar, szKey, szName, szColor, fWater], nId) => {
+    const Definition = g_EmbellishDefinitions[szKey];
+    const Embellish = Definition ? Object.freeze({
+      szLayout: Definition[0], dDx: Definition[1], dDy: Definition[2], dChance: Definition[3],
+      szInk: Definition[4], szAccent: Definition[5] || Definition[4], szBody: Definition[6],
+    }) : null;
+    return Object.freeze({ nId, szChar, szKey, szName, szColor, fWater, Embellish });
+  }));
 
   // Marks a cell of a panel's bounding rectangle that is not a tile of that panel.
   const g_szReservedChar = '_';
@@ -4241,6 +4266,9 @@
       Require(Paths.every((Path) => Path.fClosed), 'Unclosed terrain region');
       rgRegions.push({ nTerrainId, rgnTiles: [...Tiles], rgrgrgdLoops: Paths.map((Path) => Path.rgrgdPoints) });
     }
+    rgCells.forEach((Cell, nCell) => {
+      Cell.nRegion = rgnRegions[nCell];
+    });
     const ShoreEdges = [];
     for (const Edge of rgEdges) {
       if (Edge.rgnCells.length !== 2) {
@@ -4278,16 +4306,371 @@
 })(globalThis);
 </script>
 
+<script data-module="Embellish">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+  const { Util, Terrain, Regions } = RpgMap;
+
+  // SVG terrain patterns (plan §8) in normalized export units: hex heights, y north/up.
+  // Motifs are anchored to lattices in the exported panel's frame, so patterns continue
+  // across same-terrain tiles; SvgExport clips each region's motifs to that region.
+  const g_nVariants = 4;
+  const g_dJitter = 0.3;
+  const g_dHexArea = Math.sqrt(3) / 2;
+  const g_dTrunkSpacing = 0.08;
+  const g_dTrunkHeight = 0.07;
+  const g_dSouthFacing = -0.3;
+  // Forest crowns keep this clearance from an exposed south edge so trunks show beneath them;
+  // a row of crowns spaced along the edge replaces those removed.
+  const g_dCrownClearance = 0.165;
+  const g_dFringeSpacing = 0.2;
+  const g_MotifCache = new Map();
+
+  function SegmentDistance(rgdPoint, A, B) {
+    const Direction = Util.Subtract(B, A);
+    const dT = Math.min(1, Math.max(0, Util.Dot(Util.Subtract(rgdPoint, A), Direction) / Util.Dot(Direction, Direction)));
+    const Delta = Util.Subtract(rgdPoint, Util.Add(A, Util.Scale(Direction, dT)));
+    return Math.hypot(Delta[0], Delta[1]);
+  }
+
+  // Roles: body is filled and inked, ink/accent are strokes, dot is filled with ink.
+  function Shape(szRole, rgrgdPoints, fClosed = false) {
+    return Object.freeze({ szRole, fClosed, rgrgdPoints: Object.freeze(rgrgdPoints.map((Point) => Object.freeze(Point))) });
+  }
+
+  function Line(...rgrgdPoints) {
+    return Shape('ink', rgrgdPoints);
+  }
+
+  function Water(...rgrgdPoints) {
+    return Shape('accent', rgrgdPoints);
+  }
+
+  function Bump(dX, dY, dWidth, dHeight, nSteps = 10) {
+    return Array.from({ length: nSteps + 1 }, (_, nIndex) =>
+      [dX + (nIndex / nSteps - 0.5) * dWidth, dY + dHeight * Math.sin(Math.PI * nIndex / nSteps)]);
+  }
+
+  function Quadratic(rgdA, rgdControl, rgdB, nSteps = 8) {
+    return Array.from({ length: nSteps + 1 }, (_, nIndex) => {
+      const dT = nIndex / nSteps, dU = 1 - dT;
+      return [0, 1].map((nAxis) => dU * dU * rgdA[nAxis] + 2 * dU * dT * rgdControl[nAxis] + dT * dT * rgdB[nAxis]);
+    });
+  }
+
+  function Ring(dX, dY, dRadius, nSteps, RadiusAt = () => 1) {
+    return Array.from({ length: nSteps }, (_, nIndex) => {
+      const dAngle = 2 * Math.PI * nIndex / nSteps, dR = dRadius * RadiusAt(dAngle);
+      return [dX + dR * Math.cos(dAngle), dY + dR * Math.sin(dAngle)];
+    });
+  }
+
+  function Dot(dX, dY) {
+    return Shape('dot', Ring(dX, dY, 0.014, 6), true);
+  }
+
+  function Peak(dX, dY, dWidth, dHeight, dApex) {
+    const Apex = [dX + dApex, dY + dHeight];
+    return [
+      Shape('body', [[dX - dWidth / 2, dY], Apex, [dX + dWidth / 2, dY]]),
+      Line(Apex, [Apex[0] + 0.03, dY + dHeight * 0.55], [Apex[0] + 0.012, dY + dHeight * 0.3], [Apex[0] + 0.035, dY + dHeight * 0.08]),
+    ];
+  }
+
+  function Dune(dX, dY, dWidth, dHeight) {
+    const Crest = [dX - dWidth * 0.15, dY + dHeight];
+    return Shape('body', [[dX - dWidth / 2, dY], ...Quadratic(Crest, [dX + dWidth * 0.18, dY + dHeight], [dX + dWidth / 2, dY])]);
+  }
+
+  // Each generator returns the shapes of one variant, back to front.
+  const g_Generators = {
+    islands(R) {
+      const Points = Ring(0, 0, 1, 8).map((Point) => Util.Scale(Point, 0.045 + 0.035 * R()));
+      const Smooth = Regions.SmoothPath({ rgrgdPoints: [...Points, Points[0]], fClosed: true }, 2);
+      return [Shape('body', Smooth.rgrgdPoints.slice(0, -1), true)];
+    },
+    hills(R) {
+      const rgShapes = R() < 0.7 ? [Shape('body', Bump(-0.08 + 0.04 * R(), 0.035, 0.17, 0.06))] : [];
+      return [...rgShapes, Shape('body', Bump(0.02 * R(), 0, 0.24 + 0.05 * R(), 0.08 + 0.025 * R()))];
+    },
+    mountains(R) {
+      const rgShapes = [];
+      for (const dX of R() < 0.5 ? [-0.08, 0.09] : [0.08]) {
+        rgShapes.push(...Peak(dX, 0.05, 0.2, 0.2 + 0.06 * R(), (R() - 0.5) * 0.04));
+      }
+      return [...rgShapes, ...Peak(0, 0, 0.24, 0.25 + 0.07 * R(), (R() - 0.5) * 0.04)];
+    },
+    mountainPeak(R) {
+      const dApex = (R() - 0.5) * 0.08, Apex = [dApex, 0.36], Left = [-0.38, -0.3], Right = [0.38, -0.3];
+      const At = (Side, dY) => [Apex[0] + (Side[0] - Apex[0]) * (Apex[1] - dY) / (Apex[1] - Side[1]), dY];
+      return [
+        Shape('body', [Left, Apex, Right]),
+        Line(At(Left, 0.2), [dApex - 0.05, 0.16], [dApex - 0.01, 0.21], [dApex + 0.04, 0.15], At(Right, 0.19)),
+        Line(Apex, [dApex + 0.07, 0.14], [dApex + 0.03, -0.02], [dApex + 0.1, -0.17], [dApex + 0.08, -0.3]),
+      ];
+    },
+    desert(R) {
+      return [Dot(-0.07, 0), Line([-0.035, 0], [0.05 + 0.03 * R(), 0])];
+    },
+    sandDunes(R) {
+      const rgShapes = R() < 0.6 ? [Dune(0.09, 0.045, 0.18, 0.055)] : [];
+      return [...rgShapes, Dune(0, 0, 0.3 + 0.05 * R(), 0.09 + 0.02 * R())];
+    },
+    forest(R) {
+      const dRadius = 0.105 + 0.02 * R(), dPhase = 2 * Math.PI * R();
+      return [Shape('body', Ring(0, 0, dRadius, 20, (dAngle) => 1 + 0.08 * Math.sin(5 * dAngle + dPhase)), true)];
+    },
+    marsh(R, nVariant) {
+      if (nVariant < 2) {
+        const dHeight = 0.055 + 0.02 * R();
+        return [Line([-0.024, 0], [-0.034, dHeight * 0.7]), Line([0, 0], [0, dHeight]), Line([0.024, 0], [0.034, dHeight * 0.7])];
+      }
+      return [Water([-0.08, 0], [-0.005, 0]), Water([0.02, -0.035], [0.08 + 0.02 * R(), -0.035])];
+    },
+    mangrove(R, nVariant) {
+      if (nVariant === 3) {
+        return [Water([-0.08, 0], [0, 0]), Water([0.02, -0.035], [0.09, -0.035])];
+      }
+      const dRadius = 0.04 + 0.015 * R();
+      return [
+        Water([-0.1, -0.02], [-0.04, -0.02]), Line(...Bump(0, 0, 0.12, 0.05)), Line([0, 0], [0, 0.06]),
+        Shape('body', Ring(0, 0.06 + dRadius * 0.8, dRadius, 12), true),
+      ];
+    },
+    tundra(R) {
+      return [Dot(-0.045, 0.02), Line([-0.02, 0], [0.02 + 0.015 * R(), 0])];
+    },
+    canyon(R) {
+      // Two jagged rims of a short gorge, each hatched toward the canyon floor.
+      const dAngle = (R() - 0.5) * 0.6, dCos = Math.cos(dAngle), dSin = Math.sin(dAngle);
+      const Rotate = ([dX, dY]) => [dX * dCos - dY * dSin, dX * dSin + dY * dCos];
+      const rgShapes = [];
+      for (const dSign of [1, -1]) {
+        const Rim = Array.from({ length: 8 }, (_, nIndex) =>
+          [-0.175 + nIndex * 0.05, dSign * (0.06 + (nIndex % 2 ? 0.016 : 0) + (R() - 0.5) * 0.01)]);
+        rgShapes.push(Line(...Rim.map(Rotate)));
+        for (const Point of Rim.slice(1, -1).filter((_, nIndex) => nIndex % 2 === (dSign > 0 ? 0 : 1))) {
+          rgShapes.push(Line(Rotate(Point), Rotate([Point[0] + 0.006, Point[1] - dSign * 0.03])));
+        }
+      }
+      return rgShapes;
+    },
+    badlands(R, nVariant) {
+      if (nVariant === 3) {
+        return [-0.05, -0.01, 0.03].map((dX) => Line([dX, -0.03], [dX + 0.03, 0.04]));
+      }
+      const dTop = 0.05 + 0.04 * R(), dHeight = 0.06 + 0.02 * R();
+      return [Shape('body', [[-dTop - 0.05, 0], [-dTop, dHeight], [dTop, dHeight], [dTop + 0.05, 0]]),
+        ...[-0.6, 0, 0.6].map((dF) => Line([dF * dTop, dHeight - 0.012], [dF * dTop + 0.008, 0.012]))];
+    },
+    farmland(R, nVariant) {
+      const dW = 0.135, dH = 0.105;
+      const Box = (dX, dY) => [[-dX, -dY], [dX, -dY], [dX, dY], [-dX, dY]];
+      const Inner = Box(dW - 0.02, dH - 0.02);
+      const Furrow = (A, B) => {
+        const Interval = Util.ClipSegmentToConvex(A, B, Inner);
+        return Interval && Interval[1] - Interval[0] > 1e-9
+          ? [Water(...Interval.map((dT) => Util.Add(A, Util.Scale(Util.Subtract(B, A), dT))))] : [];
+      };
+      const rgdOffsets = [-0.2, -0.15, -0.1, -0.05, 0, 0.05, 0.1, 0.15, 0.2];
+      const rgFurrows = nVariant === 0 ? [-0.06, -0.02, 0.02, 0.06].flatMap((dY) => Furrow([-dW, dY], [dW, dY]))
+        : nVariant === 1 ? [-0.09, -0.045, 0, 0.045, 0.09].flatMap((dX) => Furrow([dX, -dH], [dX, dH]))
+          : nVariant === 2 ? rgdOffsets.flatMap((dC) => Furrow([dC - 0.15, -0.15], [dC + 0.15, 0.15])) : [];
+      return [Shape('ink', Box(dW, dH), true), ...rgFurrows];
+    },
+  };
+
+  // The variants for one terrain, deterministic and cached.
+  function Motifs(szKey) {
+    const Type = Terrain.ByKey(szKey);
+    Util.Require(Type && Type.Embellish, `No embellishment for terrain ${szKey}`);
+    if (!g_MotifCache.has(szKey)) {
+      g_MotifCache.set(szKey, Object.freeze(Array.from({ length: g_nVariants }, (_, nVariant) =>
+        Object.freeze(g_Generators[szKey](Util.CreateRng(Util.HashIntegers(Type.nId, nVariant, 0x5eed)), nVariant)))));
+    }
+    return g_MotifCache.get(szKey);
+  }
+
+  function PanelSeed(szPanel) {
+    return Util.HashIntegers(...Array.from(szPanel, (szChar) => szChar.codePointAt(0)));
+  }
+
+  function CellPolygon(Data, Cell) {
+    const Polygon = Cell.rgnVertices.map((nVertex) => Data.rgrgdPoints[nVertex]);
+    return Util.PolygonArea(Polygon) < 0 ? Polygon.reverse() : Polygon;
+  }
+
+  function Bounds(Polygon) {
+    const rgdX = Polygon.map((Point) => Point[0]), rgdY = Polygon.map((Point) => Point[1]);
+    return [Math.min(...rgdX), Math.min(...rgdY), Math.max(...rgdX), Math.max(...rgdY)];
+  }
+
+  // Scatter: one jittered staggered-lattice point is kept if it lies in a cell of the
+  // region. Field: every brick of a fixed grid overlapping the region, clipped later.
+  function LatticeInstances(Data, rgnCells, Type, nSeed) {
+    const Spec = Type.Embellish, fField = Spec.szLayout === 'field';
+    const dMarginX = Spec.dDx * (fField ? 0.5 : g_dJitter / 2), dMarginY = Spec.dDy * (fField ? 0.5 : g_dJitter / 2);
+    const Seen = new Set(), rgInstances = [];
+    for (const nCell of rgnCells) {
+      const Polygon = CellPolygon(Data, Data.rgCells[nCell]), rgdBounds = Bounds(Polygon);
+      const nLastRow = Math.floor((rgdBounds[3] + dMarginY) / Spec.dDy);
+      for (let nJ = Math.ceil((rgdBounds[1] - dMarginY) / Spec.dDy); nJ <= nLastRow; nJ++) {
+        const dOffset = fField ? Util.CreateRng(Util.HashIntegers(nSeed, Type.nId, nJ))() : (nJ & 1) / 2;
+        const nLast = Math.floor((rgdBounds[2] + dMarginX) / Spec.dDx - dOffset);
+        for (let nI = Math.ceil((rgdBounds[0] - dMarginX) / Spec.dDx - dOffset); nI <= nLast; nI++) {
+          const szKey = `${nI},${nJ}`;
+          if (Seen.has(szKey)) {
+            continue;
+          }
+          const R = Util.CreateRng(Util.HashIntegers(nSeed, Type.nId, nI, nJ, 1));
+          let Point = [(nI + dOffset) * Spec.dDx, nJ * Spec.dDy];
+          if (!fField) {
+            Point = [Point[0] + (R() - 0.5) * g_dJitter * Spec.dDx, Point[1] + (R() - 0.5) * g_dJitter * Spec.dDy];
+            if (!Util.PointInConvex(Point, Polygon, 0)) {
+              continue;
+            }
+          }
+          Seen.add(szKey);
+          if (R() < Spec.dChance) {
+            rgInstances.push({ nVariant: Math.floor(R() * g_nVariants), rgdPoint: Point, dScale: 1 });
+          }
+        }
+      }
+    }
+    return rgInstances;
+  }
+
+  // One motif per tile at its visible centroid; partial tiles get a proportionally smaller motif.
+  function TileInstances(Data, rgnCells, Type, nSeed) {
+    const Tiles = new Map();
+    for (const nCell of rgnCells) {
+      const Cell = Data.rgCells[nCell], Polygon = CellPolygon(Data, Cell);
+      const Sum = Tiles.get(Cell.nTile) || Tiles.set(Cell.nTile, { dArea: 0, dX: 0, dY: 0 }).get(Cell.nTile);
+      for (const [rgdA, rgdB] of Util.Boundary(Polygon)) {
+        const dCross = rgdA[0] * rgdB[1] - rgdB[0] * rgdA[1];
+        Sum.dArea += dCross / 2;
+        Sum.dX += (rgdA[0] + rgdB[0]) * dCross / 6;
+        Sum.dY += (rgdA[1] + rgdB[1]) * dCross / 6;
+      }
+    }
+    return [...Tiles].map(([nTile, Sum]) => {
+      const dRatio = Sum.dArea / g_dHexArea, R = Util.CreateRng(Util.HashIntegers(nSeed, Type.nId, nTile, 2));
+      return {
+        nVariant: Math.floor(R() * g_nVariants), rgdPoint: [Sum.dX / Sum.dArea, Sum.dY / Sum.dArea],
+        dScale: dRatio > 0.98 ? 1 : Math.max(0.3, Math.sqrt(dRatio)),
+      };
+    });
+  }
+
+  // Embellishments of Regions.Build output, indexed like its regions (null: no pattern).
+  // Forest regions also get trunks along internal edges whose south side is not forest.
+  function Build(Data) {
+    const nSeed = PanelSeed(Data.szPanel);
+    const rgrgnCells = Data.rgRegions.map(() => []);
+    Data.rgCells.forEach((Cell, nCell) => rgrgnCells[Cell.nRegion].push(nCell));
+    const rgResults = Data.rgRegions.map((Region, nRegion) => {
+      const Type = Terrain.ById(Region.nTerrainId);
+      if (!Type.Embellish) {
+        return null;
+      }
+      const rgInstances = (Type.Embellish.szLayout === 'tile' ? TileInstances : LatticeInstances)(Data, rgrgnCells[nRegion], Type, nSeed);
+      rgInstances.sort((A, B) => B.rgdPoint[1] - A.rgdPoint[1] || A.rgdPoint[0] - B.rgdPoint[0]);
+      return { szKey: Type.szKey, nTerrainId: Type.nId, rgInstances, rgrgrgdTrunks: [] };
+    });
+    const nForest = Terrain.ByKey('forest').nId, SouthEdges = new Map(), SouthByRegion = new Map();
+    for (const Edge of Data.rgEdges) {
+      const rgCells = Edge.rgnCells.map((nCell) => Data.rgCells[nCell]);
+      if (rgCells.length !== 2 || (rgCells[0].nTerrainId === nForest) === (rgCells[1].nTerrainId === nForest)) {
+        continue;
+      }
+      const Forest = rgCells[0].nTerrainId === nForest ? rgCells[0] : rgCells[1];
+      const A = Data.rgrgdPoints[Edge.nA], B = Data.rgrgdPoints[Edge.nB];
+      const Polygon = CellPolygon(Data, Forest);
+      let Normal = Util.Unit([B[1] - A[1], A[0] - B[0]]);
+      if (Util.Dot(Normal, Util.Subtract(Util.Center(Polygon), A)) > 0) {
+        Normal = Util.Scale(Normal, -1);
+      }
+      if (Normal[1] > g_dSouthFacing) {
+        continue;
+      }
+      const dMaxX = Math.max(A[0], B[0]) - 0.02;
+      for (let nK = Math.ceil((Math.min(A[0], B[0]) + 0.02) / g_dTrunkSpacing); nK * g_dTrunkSpacing <= dMaxX; nK++) {
+        const dX = nK * g_dTrunkSpacing, dY = A[1] + (B[1] - A[1]) * (dX - A[0]) / (B[0] - A[0]);
+        rgResults[Forest.nRegion].rgrgrgdTrunks.push([[dX, dY], [dX, dY + g_dTrunkHeight]]);
+      }
+      // Bucket each exposed edge in every 0.5-hex cell its clearance band can reach.
+      const South = { A, B, Normal, nRegion: Forest.nRegion, Polygon };
+      (SouthByRegion.get(Forest.nRegion) || SouthByRegion.set(Forest.nRegion, []).get(Forest.nRegion)).push(South);
+      for (let nX = Math.floor((Math.min(A[0], B[0]) - g_dCrownClearance) * 2); nX <= Math.floor((Math.max(A[0], B[0]) + g_dCrownClearance) * 2); nX++) {
+        for (let nY = Math.floor((Math.min(A[1], B[1]) - g_dCrownClearance) * 2); nY <= Math.floor((Math.max(A[1], B[1]) + g_dCrownClearance) * 2); nY++) {
+          const szKey = `${nX},${nY}`;
+          (SouthEdges.get(szKey) || SouthEdges.set(szKey, []).get(szKey)).push(South);
+        }
+      }
+    }
+    rgResults.forEach((Result, nRegion) => {
+      if (!SouthByRegion.has(nRegion)) {
+        return;
+      }
+      const Clear = (rgdPoint) => (SouthEdges.get(`${Math.floor(rgdPoint[0] * 2)},${Math.floor(rgdPoint[1] * 2)}`) || [])
+        .every((South) => South.nRegion !== nRegion || SegmentDistance(rgdPoint, South.A, South.B) >= g_dCrownClearance - 1e-9);
+      // Crowns inside the clearance band are replaced by one tidy row along the exposed edges.
+      Result.rgInstances = Result.rgInstances.filter((Instance) => Clear(Instance.rgdPoint));
+      const rgFringe = [], Near = new Map();
+      const Bucket = (rgdPoint) => [Math.floor(rgdPoint[0] / g_dFringeSpacing), Math.floor(rgdPoint[1] / g_dFringeSpacing)];
+      const Spaced = (rgdPoint) => {
+        const [nX, nY] = Bucket(rgdPoint);
+        for (let nDx = -1; nDx <= 1; nDx++) {
+          for (let nDy = -1; nDy <= 1; nDy++) {
+            for (const Other of Near.get(`${nX + nDx},${nY + nDy}`) || []) {
+              if (Math.hypot(Other[0] - rgdPoint[0], Other[1] - rgdPoint[1]) < g_dFringeSpacing * 0.75) {
+                return false;
+              }
+            }
+          }
+        }
+        return true;
+      };
+      for (const South of SouthByRegion.get(nRegion)) {
+        const A = South.A, B = South.B, dMaxX = Math.max(A[0], B[0]);
+        for (let nK = Math.ceil(Math.min(A[0], B[0]) / g_dFringeSpacing); nK * g_dFringeSpacing <= dMaxX; nK++) {
+          const dX = nK * g_dFringeSpacing, dY = A[1] + (B[1] - A[1]) * (dX - A[0]) / (B[0] - A[0]);
+          const R = Util.CreateRng(Util.HashIntegers(nSeed, nForest, nK, Math.round(dY * 4096), 3));
+          const Tangent = Util.Unit(Util.Subtract(B, A));
+          const rgdPoint = Util.Subtract(Util.Add([dX, dY], Util.Scale(Tangent, (R() - 0.5) * 0.04)), Util.Scale(South.Normal, g_dCrownClearance + 0.03 * R()));
+          if (Util.PointInConvex(rgdPoint, South.Polygon, 0) && Clear(rgdPoint) && Spaced(rgdPoint)) {
+            const szKey = Bucket(rgdPoint).join(',');
+            (Near.get(szKey) || Near.set(szKey, []).get(szKey)).push(rgdPoint);
+            rgFringe.push({ nVariant: Math.floor(R() * g_nVariants), rgdPoint, dScale: 1 });
+          }
+        }
+      }
+      Result.rgInstances.push(...rgFringe);
+      Result.rgInstances.sort((A, B) => B.rgdPoint[1] - A.rgdPoint[1] || A.rgdPoint[0] - B.rgdPoint[0]);
+      Result.rgrgrgdTrunks.sort((A, B) => A[0][0] - B[0][0] || A[0][1] - B[0][1]);
+    });
+    return rgResults;
+  }
+
+  RpgMap.Embellish = Object.freeze({
+    g_nVariants, g_dJitter, g_dHexArea, g_dTrunkSpacing, g_dTrunkHeight, g_dSouthFacing, g_dCrownClearance, g_dFringeSpacing,
+    Motifs, PanelSeed, Build,
+  });
+})(globalThis);
+</script>
+
 <script data-module="SvgExport">
 (function (Root) {
   'use strict';
   const RpgMap = Root.RpgMap = Root.RpgMap || {};
-  const { Util, Projection, Terrain, View, FileFormat, Regions } = RpgMap;
+  const { Util, Projection, Terrain, View, FileFormat, Regions, Embellish } = RpgMap;
   const { Require } = Util;
   const g_dHexUnits = View.g_dLabelUnitsPerHex;
+  const g_szUncolouredBody = '#ffffff';
   const g_nDefaultWidth = 1600;
   const g_Layers = Object.freeze([
-    ['terrain', 'Terrain colours', true], ['shoreline', 'Shorelines', true], ['grid', 'Hex overlay', false],
+    ['terrain', 'Terrain colours', true], ['embellishment', 'Terrain embellishments', true], ['shoreline', 'Shorelines', true], ['grid', 'Hex overlay', false],
     ['road', 'Roads', true], ['trail', 'Trails', true], ['river', 'Rivers', true],
     ['landmark', 'Landmarks', true], ['landmarkNames', 'Landmark names', false], ['label', 'Labels', true],
   ].map((Layer) => Object.freeze(Layer)));
@@ -4306,6 +4689,21 @@
   function NumberText(dValue) {
     Require(Number.isFinite(dValue), 'SVG geometry must be finite');
     return Util.FormatNumber(dValue);
+  }
+
+  // Motif geometry and placement use 1/100 viewBox unit (1/4800 hex), keeping large exports compact.
+  function MotifNumber(dValue) {
+    Require(Number.isFinite(dValue), 'SVG geometry must be finite');
+    return Util.FormatNumber(dValue, 2);
+  }
+
+  function MotifPath(Shape, Spec, szBody) {
+    const szData = Shape.rgrgdPoints.map((Point, nIndex) =>
+      `${nIndex ? 'L' : 'M'}${MotifNumber(Point[0] * g_dHexUnits)} ${MotifNumber(-Point[1] * g_dHexUnits)}`).join('');
+    const szPaint = Shape.szRole === 'body' ? `fill="${szBody}" stroke="${Spec.szInk}"`
+      : Shape.szRole === 'dot' ? `fill="${Spec.szInk}"`
+        : `fill="none" stroke="${Shape.szRole === 'accent' ? Spec.szAccent : Spec.szInk}"`;
+    return `<path d="${szData}${Shape.fClosed ? 'Z' : ''}" ${szPaint}/>`;
   }
 
   function Matrix(rgdTransform) {
@@ -4358,10 +4756,29 @@
       '<defs>',
       `<clipPath id="map-clip"><path d="${PathData(Outline, rgdHexToSvg)}"/></clipPath>`,
     ];
-    if (Layers.terrain) {
+    const rgEmbellishments = (Layers.embellishment ? Embellish.Build(RegionsData) : [])
+      .map((Item) => Item && (Item.rgInstances.length || Item.rgrgrgdTrunks.length) ? Item : null);
+    if (Layers.terrain || Layers.embellishment) {
       RegionsData.rgRegions.forEach((Region, nIndex) => {
         const szPath = Region.rgrgrgdLoops.map((Points) => PathData({ rgrgdPoints: Points, fClosed: true }, rgdHexToSvg)).join('');
-        Lines.push(`<path id="region-${nIndex}" fill-rule="evenodd" d="${szPath}"/>`);
+        Lines.push(`<path id="region-${nIndex}" fill-rule="evenodd" clip-rule="evenodd" d="${szPath}"/>`);
+      });
+    }
+    const UsedVariants = new Map();
+    rgEmbellishments.forEach((Item, nIndex) => {
+      if (Item) {
+        Lines.push(`<clipPath id="clip-region-${nIndex}"><use href="#region-${nIndex}"/></clipPath>`);
+        const Variants = UsedVariants.get(Item.nTerrainId) || UsedVariants.set(Item.nTerrainId, new Set()).get(Item.nTerrainId);
+        Item.rgInstances.forEach((Instance) => Variants.add(Instance.nVariant));
+      }
+    });
+    for (const Type of Terrain.g_rgTerrains.filter((Item) => UsedVariants.has(Item.nId))) {
+      const Spec = Type.Embellish;
+      const szBody = Layers.terrain ? Spec.szBody || Type.szColor : g_szUncolouredBody;
+      Embellish.Motifs(Type.szKey).forEach((rgShapes, nVariant) => {
+        if (UsedVariants.get(Type.nId).has(nVariant)) {
+          Lines.push(`<g id="emb-${Type.szKey}-${nVariant}">${rgShapes.map((Shape) => MotifPath(Shape, Spec, szBody)).join('')}</g>`);
+        }
       });
     }
     if (Layers.landmark) {
@@ -4375,6 +4792,30 @@
       Lines.push('<g id="layer-terrain">');
       RegionsData.rgRegions.forEach((Region, nIndex) =>
         Lines.push(`<use href="#region-${nIndex}" fill="${Terrain.ById(Region.nTerrainId).szColor}"/>`));
+      Lines.push('</g>');
+    }
+    if (Layers.embellishment) {
+      Lines.push('<g id="layer-embellishment" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round">');
+      rgEmbellishments.forEach((Item, nIndex) => {
+        if (!Item) {
+          return;
+        }
+        Lines.push(`<g data-terrain="${Item.szKey}" clip-path="url(#clip-region-${nIndex})">`);
+        if (Item.rgrgrgdTrunks.length) {
+          const szTrunks = Item.rgrgrgdTrunks.map(([rgdBase, rgdTop]) => {
+            const Base = Projection.ApplyTransform(rgdHexToSvg, rgdBase), Top = Projection.ApplyTransform(rgdHexToSvg, rgdTop);
+            return `M${MotifNumber(Base[0])} ${MotifNumber(Base[1])}V${MotifNumber(Top[1])}`;
+          }).join('');
+          Lines.push(`<path class="trunks" fill="none" stroke="${Terrain.ById(Item.nTerrainId).Embellish.szAccent}" stroke-width="1.4" d="${szTrunks}"/>`);
+        }
+        for (const Instance of Item.rgInstances) {
+          const Point = Projection.ApplyTransform(rgdHexToSvg, Instance.rgdPoint).map(MotifNumber);
+          const szHref = `href="#emb-${Item.szKey}-${Instance.nVariant}"`;
+          Lines.push(Instance.dScale === 1 ? `<use ${szHref} x="${Point[0]}" y="${Point[1]}"/>`
+            : `<use ${szHref} transform="matrix(${Util.FormatNumber(Instance.dScale, 4)} 0 0 ${Util.FormatNumber(Instance.dScale, 4)} ${Point[0]} ${Point[1]})"/>`);
+        }
+        Lines.push('</g>');
+      });
       Lines.push('</g>');
     }
     if (Layers.shoreline) {
@@ -5081,7 +5522,7 @@
   const RpgMap = Root.RpgMap = Root.RpgMap || {};
   const { Util, Projection, Lattice, Coordinates, Terrain, Model, History, View, Edit, FileFormat, SvgExport, Renderer } = RpgMap;
 
-  const g_szVersion = '0.7.0';
+  const g_szVersion = '0.8.0';
   const g_szAutosaveKey = 'rpgmap.autosave';
   const g_nAutosaveDelayMs = 2000;
   // [id, label, hotkey, title]
@@ -5548,7 +5989,7 @@
       Element('h2', { id: 'export-map-title', textContent: 'Export SVG' }),
       Field('export-panel', 'Scope', Panel), Field('export-width', 'Width (pixels; height keeps aspect ratio)', Width),
       Element('fieldset', {}, [Element('legend', { textContent: 'Include layers' }), ...LayerRows]),
-      Element('p', { className: 'tool-help', textContent: 'Exports north-up, clipped to this panel or the whole local map. Transparent where terrain colours are omitted. Terrain embellishments arrive in milestone 11.' }),
+      Element('p', { className: 'tool-help', textContent: 'Exports north-up, clipped to this panel or the whole local map. Transparent where terrain colours are omitted. Embellishments draw terrain patterns in their own regions; with terrain colours off, filled motifs are white.' }),
       Preview, ErrorText,
       Element('div', { className: 'property-actions' }, [
         Element('button', { id: 'export-download', type: 'submit', className: 'tool-button', textContent: 'Download SVG' }),

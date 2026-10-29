@@ -50,8 +50,11 @@ test('every export layer can be excluded independently without altering other la
     if (szKey !== 'label') assert.ok(Text.includes('id="layer-label"'));
     if (szKey !== 'terrain') assert.ok(Text.includes('id="layer-terrain"'));
     if (szKey === 'landmark') assert.ok(!Text.includes('<symbol'));
-    if (szKey === 'terrain') assert.ok(!Text.includes('id="region-'));
+    if (szKey === 'terrain') assert.ok(Text.includes('id="region-'), 'embellishments still clip to regions');
+    if (szKey === 'embellishment') assert.ok(!Text.includes('<clipPath id="clip-region-'));
   }
+  const NoTerrain = SvgExport.Write(Doc, { Layers: { terrain: false, embellishment: false } });
+  assert.ok(!NoTerrain.includes('id="region-'));
   const Empty = SvgExport.Write(Doc, { Layers: Object.fromEntries(SvgExport.g_Layers.map(([szKey]) => [szKey, false])) });
   assert.doesNotMatch(Empty, /id="layer-|data-layer=|<text|<symbol/);
 });
@@ -70,8 +73,15 @@ test('XML escaping handles text and attributes and rejects unrepresentable chara
 test('SVG is well-formed XML with unique ids and resolved internal references', (Context) => {
   const Doc = LocalMap();
   const Global = Model.CreateGlobalMap({ nPanelHexes: 4 });
+  const Rich = Model.CreateGlobalMap({ nPanelHexes: 8 });
+  Rich.rgnTerrain.set(View.DemoTerrain(Rich.Topo, 3));
+  for (let nTile = 0; nTile < Doc.nTiles; nTile++) {
+    Model.SetTerrain(Doc, nTile, nTile % 17);
+  }
   const Texts = [SvgExport.Write(Doc), SvgExport.Write(Doc, { Layers: { grid: true, landmarkNames: true } }),
-    SvgExport.Write(Global, { szPanel: Coordinates.PanelIdByName('Eta') })];
+    SvgExport.Write(Doc, { Layers: { terrain: false } }),
+    SvgExport.Write(Global, { szPanel: Coordinates.PanelIdByName('Eta') }),
+    ...['Beta', 'Gamma', 'Delta', 'Iota'].map((szName) => SvgExport.Write(Rich, { szPanel: Coordinates.PanelIdByName(szName) }))];
   const Check = spawnSync('python3', ['-c', `
 import json, sys, re, xml.etree.ElementTree as ET
 for text in json.load(sys.stdin):
