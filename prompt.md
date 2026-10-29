@@ -3,15 +3,15 @@ Please create a plan to build a HTML based javascript global outdoor map editor 
 
 # Features
 
-The implementation shall use native javascript controls and not rely on any external JS framewroks like node.js.  All the controls and functionality will use raw native JS embedded directly in the HTML page.
-Unit tests may be implemented as external cjs files.
-The map will be represented as standard hexagonal tiles, each tile shall have an internally defined terrain type
-The map will support overlays for roads, rivers and water courses.  Each layer shall be represented as a connected sequence of coordinates indicating a contiguous connected feature.
-The map will support attaching text labels for regions, locations, and cities.  Labels can be attached to any hex tile and the size and rotation of the text will be configurable for each label individually
-The map will support adding location features such as cities, towns, villages, etc, which will be attached to a map tile but will be distinct from the terrain type for that tile.  Hoever, no more than one feature may be added per tile, so the feature layer will be a distinct data layer in the internal map representation
-The map can be saved in a human readable ASCII text file.  Terrain tiles will be a sequence of lines of ASCII text the width of a map section, and each ASCII char will represent  a unique terrain type for that map hex tile.  Other layers like labels, features, rivers, and roads will be appended to the bottom of the file annotated with the locations of the data element in the universal map coordinate system.
-The map editor will support exporting the map as an SVG, allowing an optional selection of which data layers to include on the SVG at the time of SVG export.  The SVG export will render the outline of contiguous land tiles using an algorithm to represent the shorelines as a line.  Other terrain tiles will be rendered using a terrain color as well as a terrain specific SVG representation, which will be rendered at the time of export.  For example, for a forest, individual trees will be rendered across contiguous forest tiles using an algorithm defined in the code.  Likewise, hills, mountains, and other terrain types will be rendered using an SVG output algorithm for each type of terrain.
-The map editor will support local maps at different scales, which can be defined using rectanfular width and height as well as a global anchor point for location reference, or as a global map.  The global map includes 18 panels as defined in the Map Projection section,
+1. The implementation shall use native javascript controls and not rely on any external JS framewroks like node.js.  All the controls and functionality will use raw native JS embedded directly in the HTML page.
+1. Unit tests may be implemented as external cjs files.
+1. The map will be represented as standard hexagonal tiles, each tile shall have an internally defined terrain type
+1. The map will support overlays for roads, rivers and water courses.  Each layer shall be represented as a connected sequence of coordinates indicating a contiguous connected feature.
+1. The map will support attaching text labels for regions, locations, and cities.  Labels can be attached to any hex tile and the size and rotation of the text will be configurable for each label individually
+1. The map will support adding location features such as cities, towns, villages, etc, which will be attached to a map tile but will be distinct from the terrain type for that tile.  Hoever, no more than one feature may be added per tile, so the feature layer will be a distinct data layer in the internal map representation
+1. The map can be saved in a human readable ASCII text file.  Terrain tiles will be a sequence of lines of ASCII text the width of a map section, and each ASCII char will represent  a unique terrain type for that map hex tile.  Other layers like labels, features, rivers, and roads will be appended to the bottom of the file annotated with the locations of the data element in the universal map coordinate system.
+1. The map editor will support exporting the map as an SVG, allowing an optional selection of which data layers to include on the SVG at the time of SVG export.  The SVG export will render the outline of contiguous land tiles using an algorithm to represent the shorelines as a line.  Other terrain tiles will be rendered using a terrain color as well as a terrain specific SVG representation, which will be rendered at the time of export.  For example, for a forest, individual trees will be rendered across contiguous forest tiles using an algorithm defined in the code.  Likewise, hills, mountains, and other terrain types will be rendered using an SVG output algorithm for each type of terrain.
+1. The map editor will support local maps at different scales, which can be defined using rectanfular width and height as well as a global anchor point for location reference, or as a global map.  The global map includes 18 panels as defined in the Map Projection section,
 
  # Map projection
 
@@ -798,16 +798,75 @@ For all other panels, the reference point is the exact center of each panel alon
 For true coordinates, these are simply the lat lon coordinates derived by projecting the map tile location back onto the spherical globe and computing the normal lat lon coordinates on the globe.   But the true coordinates, aka polar coordinates, are rarely used, at all times use panel coordinates unless otherwise specified 
  
 
+#Terrain types
 
-# terrain types
+The map shall support the following terrain types for each hexagon map tile:
 
- 
+```
+water
+islands
+lakes
+firth
+plain
+hills
+mountains
+mountains peak
+desert 
+sand dunes 
+forest
+marsh
+mangrove
+tundra 
+canyon
+badlands 
+farmland
+```
+
+**Addditional layer types**
+
+Each layer shall be represented as a connected sequence of coordinates indicating a contiguous connected feature.  Each hex map tile may simultaneous have multiple features in addition to the underlying terrain, for example a road crossing a river in a plane.
+
+Each of the following layer types are supported:
+
+- road
+- trail 
+- river
+
+
+**landmarks**
+
+In addition to the underlying terrain, each hex map tile may contain a unique landmark type.  Only one landmark is allowed in each map tile.
+
+- village
+- town
+- city
+- castle 
+- fortress
+- tower
+- ruins 
+- mine
+- temple
+- cave
+- dungeon 
 
 # SVG Export
 
+For the SVG export, if this is a global map, the SVG will be exported one panel at a time.  A popup will allow selecting options for the export, including which layers will be visible, if a hex overlay is included, and other options.
+
+Each terrain type will have an optional hex coloring, in addition to custom rendered embellishments representing each type of terrain.  Most terrain types will be represented by a repeating patterns of some graphical element indicative of the particular type of terrain, and if adjacent map tiles have the same terrain type, the pattern will be contiguous across all contiguous map tiles of the same type, but when the terrain type changes from tile to tile the pattern will not overlap.
+
+- plains and open water are always shown with no embelishments
+- hills are represented by small overlaping curves representing the outline of small hills.
+- mountains are indicated by a collection of steep angular peaks 
+- a mountains peak is a single, larger angular peak filling the ntire hex tile.
+- desert is a dot and a dash
+- sand dunes are similar to hills but more in a dune shape, the left side is a straight slop and the right side is a gently curving slope. 
+- forests are overlapping tree foliage, showing only the crowns and foliage, but along the south edge of the forest the tree trunks are visbile as small, short vertical lines 
+- marsh is a series of horizontal dashes indicating water and collections of 3 shrt vertical lines indicating marsh grass
+mangrove
+- tundra will be shown as a dot and short horizontal dash 
 
 
 
  
 
-yard scale
