@@ -147,16 +147,16 @@
   .property-actions { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
   .property-actions button:disabled { opacity: 0.45; cursor: default; }
   .tool-help { color: var(--text-dim); font-size: 12px; }
-  #new-map-dialog {
+  .map-dialog {
     width: min(460px, 90vw); max-height: 90vh; overflow: auto;
     background: var(--panel); color: var(--text); border: 1px solid var(--accent);
     border-radius: 6px; padding: 18px;
   }
-  #new-map-dialog::backdrop { background: rgba(0, 0, 0, 0.65); }
-  #new-map-dialog h2 { margin: 0 0 12px; font-size: 18px; }
-  #new-map-dialog fieldset { margin: 8px 0; border: 1px solid var(--panel-border); }
-  #new-map-dialog fieldset[hidden] { display: none; }
-  #new-map-error { color: #ffb4a9; }
+  .map-dialog::backdrop { background: rgba(0, 0, 0, 0.65); }
+  .map-dialog h2 { margin: 0 0 12px; font-size: 18px; }
+  .map-dialog fieldset { margin: 8px 0; border: 1px solid var(--panel-border); }
+  .map-dialog fieldset[hidden] { display: none; }
+  .dialog-error { color: #ffb4a9; }
   #tool-list { margin-bottom: 12px; }
   .layer-toggle { display: block; margin: 2px 0; cursor: pointer; }
   .legend-row { display: flex; align-items: center; gap: 6px; margin: 1px 0; padding: 1px 4px; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
@@ -206,7 +206,8 @@
   <span id="status-coordinates">&nbsp;</span>
   <span id="status-message"></span>
 </footer>
-<dialog id="new-map-dialog" aria-labelledby="new-map-title"></dialog>
+<dialog id="new-map-dialog" class="map-dialog" aria-labelledby="new-map-title"></dialog>
+<dialog id="export-map-dialog" class="map-dialog" aria-labelledby="export-map-title"></dialog>
 
 <script data-module="Util">
 (function (Root) {
@@ -2959,15 +2960,26 @@
         rgPoints.push(rg[3]);
         return;
       }
-      const Mid = (A, B) => Util.Scale(Util.Add(A, B), 0.5);
-      const A = Mid(rg[0], rg[1]), B = Mid(rg[1], rg[2]), C = Mid(rg[2], rg[3]);
-      const D = Mid(A, B), E = Mid(B, C), F = Mid(D, E);
-      Subdivide([rg[0], A, D, F], nDepth + 1);
-      Subdivide([F, E, C, rg[3]], nDepth + 1);
+      const [First, Second] = SplitCurve(rg);
+      Subdivide(First, nDepth + 1);
+      Subdivide(Second, nDepth + 1);
     };
     Subdivide(rgrgdControl, 0);
     return rgPoints;
   }
+
+  function SplitCurve(rg) {
+    const Mid = (A, B) => Util.Scale(Util.Add(A, B), 0.5);
+    const A = Mid(rg[0], rg[1]), B = Mid(rg[1], rg[2]), C = Mid(rg[2], rg[3]);
+    const D = Mid(A, B), E = Mid(B, C), F = Mid(D, E);
+    return [[rg[0], A, D, F], [F, E, C, rg[3]]];
+  }
+
+  const g_OverlayStyles = Object.freeze({
+    river: Object.freeze({ szColor: '#236eae', dWidth: 3, rgDash: Object.freeze([]) }),
+    road: Object.freeze({ szColor: '#704224', dWidth: 2.5, rgDash: Object.freeze([]) }),
+    trail: Object.freeze({ szColor: '#805e3b', dWidth: 1.8, rgDash: Object.freeze([4, 3]) }),
+  });
 
   const g_dLabelUnitsPerHex = 48;
 
@@ -3093,6 +3105,8 @@
     CubicPoint,
     DistanceToSegment,
     FlattenCurve,
+    SplitCurve,
+    g_OverlayStyles,
     g_dLabelUnitsPerHex,
     LabelTransform,
     DemoTerrain,
@@ -4100,6 +4114,360 @@
 })(globalThis);
 </script>
 
+<script data-module="Regions">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+  const { Util, Projection, Lattice, Terrain, Model, View } = RpgMap;
+  const { Require } = Util;
+  const g_dTolerance = 1e-8;
+
+  // Export geometry is in hex heights, y north/up, regardless of physical scale.
+  function Outline(Doc, szPanel) {
+    const Geometry = View.MapGeometry(Doc);
+    Require(Doc.Local ? szPanel === 'local' : Object.hasOwn(Geometry.Panels, szPanel), 'Choose a valid export panel');
+    return View.FrameOutline(Geometry, szPanel).map((Point) => Util.Scale(Point, 1 / Geometry.dD));
+  }
+
+  // Trace directed edges, keeping the region/land on the left. Open chains are
+  // visited first; remaining edges are closed outer rings or holes.
+  function TracePaths(rgEdges, rgrgdPoints) {
+    const Outgoing = new Map(), Incoming = new Map();
+    for (const Edge of rgEdges) {
+      Require(!Outgoing.has(Edge.nA) && !Incoming.has(Edge.nB), 'Ambiguous region boundary');
+      Outgoing.set(Edge.nA, Edge);
+      Incoming.set(Edge.nB, Edge);
+    }
+    const Seen = new Set(), rgPaths = [];
+    for (const First of [...rgEdges.filter((Edge) => !Incoming.has(Edge.nA)), ...rgEdges]) {
+      if (Seen.has(First)) {
+        continue;
+      }
+      const Points = [rgrgdPoints[First.nA]];
+      let Edge = First;
+      while (Edge && !Seen.has(Edge)) {
+        Seen.add(Edge);
+        Points.push(rgrgdPoints[Edge.nB]);
+        Edge = Outgoing.get(Edge.nB);
+      }
+      Require(!Edge || Edge === First, 'Region boundary joins a different chain');
+      rgPaths.push({ rgrgdPoints: Points, fClosed: Edge === First });
+    }
+    return rgPaths;
+  }
+
+  function Build(Doc, szPanel = Doc.Local ? 'local' : null) {
+    const Geometry = View.MapGeometry(Doc);
+    const rgrgdOutline = Outline(Doc, szPanel);
+    const rgrgdPoints = [], rgCells = [], rgEdges = [];
+    const Buckets = new Map(), Edges = new Map();
+    // Adjacent hexes and clipped seam copies can differ in their last float bits.
+    // Check neighbouring buckets too, rather than relying on rounded string equality.
+    const Vertex = (Point) => {
+      const nX = Math.floor(Point[0] / g_dTolerance), nY = Math.floor(Point[1] / g_dTolerance);
+      for (let nDx = -1; nDx <= 1; nDx++) {
+        for (let nDy = -1; nDy <= 1; nDy++) {
+          for (const nVertex of Buckets.get(`${nX + nDx},${nY + nDy}`) || []) {
+            if (Util.Distance(Point, rgrgdPoints[nVertex]) <= g_dTolerance) {
+              return nVertex;
+            }
+          }
+        }
+      }
+      const nVertex = rgrgdPoints.length;
+      rgrgdPoints.push(Point);
+      const szKey = `${nX},${nY}`;
+      (Buckets.get(szKey) || Buckets.set(szKey, []).get(szKey)).push(nVertex);
+      return nVertex;
+    };
+    for (const Group of View.PanelTileGroups(Geometry, szPanel)) {
+      for (const nTile of Group.rgnTiles) {
+        const Tile = Geometry.rgTiles[nTile];
+        const rgPolygons = Tile.rgPieces
+          ? Tile.rgPieces.filter((Piece) => Piece.szPanel === szPanel).map((Piece) => Piece.rgrgdPolygon)
+          : [Lattice.HexPolygon(Tile.rgdCenter, Geometry.dD)];
+        for (const Polygon of rgPolygons) {
+          const Mapped = Polygon.map((Point) => Util.Scale(Projection.ApplyTransform(Group.rgdToPanel, Point), 1 / Geometry.dD));
+          const Clipped = Util.ClipPolygonToConvex(Mapped, rgrgdOutline);
+          if (Clipped.length < 3 || Math.abs(Util.PolygonArea(Clipped)) < 1e-12) {
+            continue;
+          }
+          const Vertices = Clipped.map(Vertex);
+          const rgnVertices = Vertices.filter((nVertex, nIndex) => nVertex !== Vertices[(nIndex + 1) % Vertices.length]);
+          if (rgnVertices.length < 3) {
+            continue;
+          }
+          const Cell = { nTile, nTerrainId: Model.GetTerrain(Doc, nTile), rgnVertices, rgEdges: [] };
+          const nCell = rgCells.length;
+          rgCells.push(Cell);
+          for (const [nA, nB] of Util.Boundary(rgnVertices)) {
+            const szKey = nA < nB ? `${nA}:${nB}` : `${nB}:${nA}`;
+            let Edge = Edges.get(szKey);
+            if (!Edge) {
+              Edge = { nA, nB, rgnCells: [] };
+              Edges.set(szKey, Edge);
+              rgEdges.push(Edge);
+            } else {
+              Require(Edge.rgnCells.length === 1 && Edge.nA === nB && Edge.nB === nA, 'Overlapping export tiles');
+            }
+            Edge.rgnCells.push(nCell);
+            Cell.rgEdges.push(Edge);
+          }
+        }
+      }
+    }
+    const rgnRegions = new Int32Array(rgCells.length).fill(-1), rgRegions = [];
+    for (let nStart = 0; nStart < rgCells.length; nStart++) {
+      if (rgnRegions[nStart] !== -1) {
+        continue;
+      }
+      const nRegion = rgRegions.length, nTerrainId = rgCells[nStart].nTerrainId;
+      const rgnQueue = [nStart], Tiles = new Set(), Boundary = [];
+      rgnRegions[nStart] = nRegion;
+      for (let nHead = 0; nHead < rgnQueue.length; nHead++) {
+        const nCell = rgnQueue[nHead], Cell = rgCells[nCell];
+        Tiles.add(Cell.nTile);
+        for (const Edge of Cell.rgEdges) {
+          const nOther = Edge.rgnCells.find((nIndex) => nIndex !== nCell);
+          if (nOther === undefined || rgCells[nOther].nTerrainId !== nTerrainId) {
+            Boundary.push(Edge.rgnCells[0] === nCell ? Edge : { nA: Edge.nB, nB: Edge.nA });
+          } else if (rgnRegions[nOther] === -1) {
+            rgnRegions[nOther] = nRegion;
+            rgnQueue.push(nOther);
+          }
+        }
+      }
+      const Paths = TracePaths(Boundary, rgrgdPoints);
+      Require(Paths.every((Path) => Path.fClosed), 'Unclosed terrain region');
+      rgRegions.push({ nTerrainId, rgnTiles: [...Tiles], rgrgrgdLoops: Paths.map((Path) => Path.rgrgdPoints) });
+    }
+    const ShoreEdges = [];
+    for (const Edge of rgEdges) {
+      if (Edge.rgnCells.length !== 2) {
+        continue; // An export boundary has no water on its other side.
+      }
+      const fFirstWater = Terrain.IsWater(rgCells[Edge.rgnCells[0]].nTerrainId);
+      const fSecondWater = Terrain.IsWater(rgCells[Edge.rgnCells[1]].nTerrainId);
+      if (fFirstWater !== fSecondWater) {
+        ShoreEdges.push(fFirstWater ? { nA: Edge.nB, nB: Edge.nA } : Edge);
+      }
+    }
+    return {
+      szPanel, rgrgdOutline, rgdBounds: View.BoundsOf(rgrgdOutline), rgrgdPoints, rgCells, rgEdges, rgRegions,
+      rgShorelines: TracePaths(ShoreEdges, rgrgdPoints),
+    };
+  }
+
+  // Chaikin corner cutting, preserving the endpoints of panel-clipped coastlines.
+  function SmoothPath(Path, nPasses = 2) {
+    Require(Number.isInteger(nPasses) && nPasses >= 0 && nPasses <= 3, 'Shoreline smoothing needs 0 to 3 passes');
+    let Points = Path.rgrgdPoints.map((Point) => [...Point]);
+    for (let nPass = 0; nPass < nPasses; nPass++) {
+      const Next = Path.fClosed ? [] : [Points[0]];
+      for (let nIndex = 0; nIndex + 1 < Points.length; nIndex++) {
+        Next.push(Util.Add(Util.Scale(Points[nIndex], 0.75), Util.Scale(Points[nIndex + 1], 0.25)),
+          Util.Add(Util.Scale(Points[nIndex], 0.25), Util.Scale(Points[nIndex + 1], 0.75)));
+      }
+      Next.push(Path.fClosed ? Next[0] : Points.at(-1));
+      Points = Next;
+    }
+    return { rgrgdPoints: Points, fClosed: Path.fClosed };
+  }
+
+  RpgMap.Regions = Object.freeze({ g_dTolerance, Outline, Build, TracePaths, SmoothPath });
+})(globalThis);
+</script>
+
+<script data-module="SvgExport">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+  const { Util, Projection, Terrain, View, FileFormat, Regions } = RpgMap;
+  const { Require } = Util;
+  const g_dHexUnits = View.g_dLabelUnitsPerHex;
+  const g_nDefaultWidth = 1600;
+  const g_Layers = Object.freeze([
+    ['terrain', 'Terrain colours', true], ['shoreline', 'Shorelines', true], ['grid', 'Hex overlay', false],
+    ['road', 'Roads', true], ['trail', 'Trails', true], ['river', 'Rivers', true],
+    ['landmark', 'Landmarks', true], ['landmarkNames', 'Landmark names', false], ['label', 'Labels', true],
+  ].map((Layer) => Object.freeze(Layer)));
+
+  function Escape(szText) {
+    for (const szChar of szText) {
+      const nCode = szChar.codePointAt(0);
+      Require(nCode === 9 || nCode === 10 || nCode === 13 || (nCode >= 32 && nCode <= 0xd7ff)
+        || (nCode >= 0xe000 && nCode <= 0xfffd) || (nCode >= 0x10000 && nCode <= 0x10ffff),
+      'Text contains a character that XML cannot represent');
+    }
+    return szText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+  }
+
+  function NumberText(dValue) {
+    Require(Number.isFinite(dValue), 'SVG geometry must be finite');
+    return Util.FormatNumber(dValue);
+  }
+
+  function Matrix(rgdTransform) {
+    return `matrix(${rgdTransform.map(NumberText).join(' ')})`;
+  }
+
+  function Dimensions(Doc, szPanel = Doc.Local ? 'local' : null, nWidth = g_nDefaultWidth) {
+    Require(Number.isSafeInteger(nWidth) && nWidth > 0, 'SVG width must be a positive integer');
+    const rgdBounds = View.BoundsOf(Regions.Outline(Doc, szPanel));
+    const dWidth = (rgdBounds[2] - rgdBounds[0]) * g_dHexUnits;
+    const dHeight = (rgdBounds[3] - rgdBounds[1]) * g_dHexUnits;
+    const nHeight = Math.max(1, Math.round(nWidth * dHeight / dWidth));
+    Require(Number.isSafeInteger(nHeight), 'SVG height exceeds the supported range');
+    return { nWidth, nHeight, dWidth, dHeight, rgdBounds };
+  }
+
+  function PathData(Path, Transform) {
+    const Points = Path.fClosed ? Path.rgrgdPoints.slice(0, -1) : Path.rgrgdPoints;
+    return Points.map((Point, nIndex) =>
+      `${nIndex ? 'L' : 'M'}${Projection.ApplyTransform(Transform, Point).map(NumberText).join(' ')}`).join('')
+      + (Path.fClosed ? 'Z' : '');
+  }
+
+  function CurveData(Points, Transform) {
+    const Mapped = Points.map((Point) => Projection.ApplyTransform(Transform, Point).map(NumberText).join(' '));
+    return `M${Mapped[0]}C${Mapped.slice(1).join(' ')}`;
+  }
+
+  function Write(Doc, Options = {}) {
+    const szPanel = Options.szPanel === undefined && Doc.Local ? 'local' : Options.szPanel;
+    const Size = Dimensions(Doc, szPanel, Options.nWidth === undefined ? g_nDefaultWidth : Options.nWidth);
+    const Layers = Object.fromEntries(g_Layers.map(([szKey, , fDefault]) => [szKey, fDefault]));
+    Require(Options.Layers === undefined || (Options.Layers !== null && typeof Options.Layers === 'object'
+      && !Array.isArray(Options.Layers)), 'SVG layers must be an object of boolean options');
+    for (const [szKey, fValue] of Object.entries(Options.Layers || {})) {
+      Require(Object.hasOwn(Layers, szKey) && typeof fValue === 'boolean', `Invalid SVG layer option: ${szKey}`);
+      Layers[szKey] = fValue;
+    }
+    const Geometry = View.MapGeometry(Doc);
+    const RegionsData = Regions.Build(Doc, szPanel);
+    const Layout = { rgPlacements: [View.FindPlacement(Doc.Local ? View.MapLayout(Doc) : View.BuildFocusLayout(szPanel), szPanel)] };
+    const rgdHexToSvg = [g_dHexUnits, 0, 0, -g_dHexUnits, -Size.rgdBounds[0] * g_dHexUnits, Size.rgdBounds[3] * g_dHexUnits];
+    const rgdFrameToSvg = Projection.ComposeTransforms([1 / Geometry.dD, 0, 0, 1 / Geometry.dD, 0, 0], rgdHexToSvg);
+    const Outline = { rgrgdPoints: [...RegionsData.rgrgdOutline, RegionsData.rgrgdOutline[0]], fClosed: true };
+    const szScope = Doc.Local ? 'Local map' : Projection.Build().Panels[szPanel].szName;
+    const Lines = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${Size.nWidth}" height="${Size.nHeight}" viewBox="0 0 ${NumberText(Size.dWidth)} ${NumberText(Size.dHeight)}" role="img" aria-labelledby="map-title">`,
+      `<title id="map-title">${Escape(Doc.szName || 'Untitled')} - ${Escape(szScope)}</title>`,
+      '<defs>',
+      `<clipPath id="map-clip"><path d="${PathData(Outline, rgdHexToSvg)}"/></clipPath>`,
+    ];
+    if (Layers.terrain) {
+      RegionsData.rgRegions.forEach((Region, nIndex) => {
+        const szPath = Region.rgrgrgdLoops.map((Points) => PathData({ rgrgdPoints: Points, fClosed: true }, rgdHexToSvg)).join('');
+        Lines.push(`<path id="region-${nIndex}" fill-rule="evenodd" d="${szPath}"/>`);
+      });
+    }
+    if (Layers.landmark) {
+      const Types = new Set([...Doc.Landmarks.values()].map((Landmark) => Landmark.szType));
+      for (const Type of Terrain.g_rgLandmarkTypes.filter((Item) => Types.has(Item.szKey))) {
+        Lines.push(`<symbol id="landmark-${Type.szKey}" viewBox="-12 -12 24 24" overflow="visible"><path d="${Type.szPath}" fill="#f9edcc" stroke="#28221b" stroke-width="1.8" stroke-linejoin="round"/></symbol>`);
+      }
+    }
+    Lines.push('</defs>', '<g clip-path="url(#map-clip)">');
+    if (Layers.terrain) {
+      Lines.push('<g id="layer-terrain">');
+      RegionsData.rgRegions.forEach((Region, nIndex) =>
+        Lines.push(`<use href="#region-${nIndex}" fill="${Terrain.ById(Region.nTerrainId).szColor}"/>`));
+      Lines.push('</g>');
+    }
+    if (Layers.shoreline) {
+      Lines.push('<g id="layer-shoreline" fill="none" stroke="#253c46" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">');
+      for (const Path of RegionsData.rgShorelines) {
+        Lines.push(`<path d="${PathData(Regions.SmoothPath(Path), rgdHexToSvg)}"/>`);
+      }
+      Lines.push('</g>');
+    }
+    if (Layers.grid) {
+      const szGrid = RegionsData.rgEdges.map((Edge) => PathData({
+        rgrgdPoints: [RegionsData.rgrgdPoints[Edge.nA], RegionsData.rgrgdPoints[Edge.nB]], fClosed: false,
+      }, rgdHexToSvg)).join('');
+      Lines.push(`<g id="layer-grid" fill="none" stroke="#10151c" stroke-opacity="0.35" stroke-width="0.75"><path d="${szGrid}"/></g>`);
+    }
+    for (const Overlay of Doc.rgOverlays) {
+      if (!Layers[Overlay.szType]) {
+        continue;
+      }
+      const Style = View.g_OverlayStyles[Overlay.szType];
+      Lines.push(`<g id="overlay-${Escape(Overlay.szId)}" data-layer="${Overlay.szType}" fill="none" stroke="${Style.szColor}" stroke-width="${NumberText(Style.dWidth * 1.5)}" stroke-linecap="round" stroke-linejoin="round"${Style.rgDash.length ? ` stroke-dasharray="${Style.rgDash.join(' ')}"` : ''}>`);
+      if (Overlay.rgnTiles.length === 1) {
+        const nTile = Overlay.rgnTiles[0], Copy = View.FeatureCopies(Geometry, Layout, nTile)[0];
+        if (Copy) {
+          const Point = Projection.ApplyTransform(Projection.ComposeTransforms(Copy.rgdFrameToWorld, rgdFrameToSvg), View.FeatureAnchor(Geometry, nTile));
+          Lines.push(`<circle cx="${NumberText(Point[0])}" cy="${NumberText(Point[1])}" r="3" fill="${Style.szColor}" stroke="none"/>`);
+        }
+      }
+      for (const Curve of View.OverlayCurves(Geometry, Overlay).filter((Item) => Item.szPanel === szPanel)) {
+        if (Overlay.szType !== 'river') {
+          Lines.push(`<path data-point="${Curve.nPoint}" d="${CurveData(Curve.rgrgdControl, rgdFrameToSvg)}"/>`);
+          continue;
+        }
+        // Eight exact sub-curves per segment approximate a continuous source-to-mouth
+        // taper. Using the original point index keeps widths identical at panel seams.
+        let Parts = [Curve.rgrgdControl];
+        for (let nPass = 0; nPass < 3; nPass++) {
+          Parts = Parts.flatMap(View.SplitCurve);
+        }
+        Parts.forEach((Part, nPart) => {
+          const dProgress = (Curve.nPoint + (nPart + 0.5) / Parts.length) / (Overlay.rgnTiles.length - 1);
+          const dWidth = Style.dWidth * 1.5 * (0.35 + 0.65 * dProgress);
+          Lines.push(`<path data-point="${Curve.nPoint}" stroke-width="${NumberText(dWidth)}" d="${CurveData(Part, rgdFrameToSvg)}"/>`);
+        });
+      }
+      Lines.push('</g>');
+    }
+    if (Layers.landmark) {
+      Lines.push('<g id="layer-landmark">');
+      for (const [nTile, Landmark] of [...Doc.Landmarks].sort((A, B) => A[0] - B[0])) {
+        const Copy = View.FeatureCopies(Geometry, Layout, nTile)[0];
+        if (!Copy) {
+          continue;
+        }
+        const Point = View.FeatureAnchor(Geometry, nTile);
+        const dUnit = Geometry.dD / g_dHexUnits;
+        const Glyph = [26 / 24 * dUnit, 0, 0, -26 / 24 * dUnit, Point[0], Point[1]];
+        const Transform = Projection.ComposeTransforms(Glyph, Projection.ComposeTransforms(Copy.rgdFrameToWorld, rgdFrameToSvg));
+        Lines.push(`<g data-tile="${nTile}" transform="${Matrix(Transform)}"><use href="#landmark-${Landmark.szType}" x="-12" y="-12" width="24" height="24"/>`);
+        if (Layers.landmarkNames && Landmark.szName) {
+          Lines.push(`<text x="0" y="21" text-anchor="middle" font-family="system-ui, sans-serif" font-size="12" fill="#201c19" stroke="#f9edcc" stroke-width="1.5" paint-order="stroke">${Escape(Landmark.szName)}</text>`);
+        }
+        Lines.push('</g>');
+      }
+      Lines.push('</g>');
+    }
+    if (Layers.label) {
+      Lines.push('<g id="layer-label" text-anchor="middle" dominant-baseline="central" font-family="system-ui, sans-serif" fill="#201c19" stroke="#f9edcc" stroke-linejoin="round" paint-order="stroke">');
+      for (const Label of Doc.rgLabels) {
+        const Copy = View.FeatureCopies(Geometry, Layout, Label.nTile)[0];
+        if (!Copy) {
+          continue;
+        }
+        const Transform = Projection.ComposeTransforms(View.LabelTransform(Geometry, Label),
+          Projection.ComposeTransforms(Copy.rgdFrameToWorld, rgdFrameToSvg));
+        Lines.push(`<text data-id="${Escape(Label.szId)}" transform="${Matrix(Transform)}" font-size="${NumberText(Label.dSize)}" font-weight="${Label.szCategory === 'region' ? '600' : '400'}" stroke-width="${NumberText(Math.max(1, Label.dSize / 8))}">${Escape(Label.szText)}</text>`);
+      }
+      Lines.push('</g>');
+    }
+    Lines.push('</g>', '</svg>', '');
+    return Lines.join('\n');
+  }
+
+  function FileName(Doc, szPanel = Doc.Local ? 'local' : null) {
+    Regions.Outline(Doc, szPanel);
+    const szBase = FileFormat.FileName(Doc).slice(0, -FileFormat.g_szFileExtension.length);
+    return `${szBase}${Doc.Local ? '' : '-' + Projection.Build().Panels[szPanel].szName}.svg`;
+  }
+
+  RpgMap.SvgExport = Object.freeze({ g_dHexUnits, g_nDefaultWidth, g_Layers, Escape, Dimensions, Write, FileName });
+})(globalThis);
+</script>
+
 <script data-module="Renderer" data-dom="true">
 (function (Root) {
   'use strict';
@@ -4444,11 +4812,7 @@
     }
   }
 
-  const g_OverlayStyles = Object.freeze({
-    river: { szColor: '#236eae', dWidth: 3, rgDash: [] },
-    road: { szColor: '#704224', dWidth: 2.5, rgDash: [] },
-    trail: { szColor: '#805e3b', dWidth: 1.8, rgDash: [4, 3] },
-  });
+  const g_OverlayStyles = View.g_OverlayStyles;
   const g_LandmarkPaths = new Map();
 
   function FeatureVisible(Layers, szLayer, Item) {
@@ -4715,9 +5079,9 @@
 (function (Root) {
   'use strict';
   const RpgMap = Root.RpgMap = Root.RpgMap || {};
-  const { Util, Projection, Lattice, Coordinates, Terrain, Model, History, View, Edit, FileFormat, Renderer } = RpgMap;
+  const { Util, Projection, Lattice, Coordinates, Terrain, Model, History, View, Edit, FileFormat, SvgExport, Renderer } = RpgMap;
 
-  const g_szVersion = '0.6.0';
+  const g_szVersion = '0.7.0';
   const g_szAutosaveKey = 'rpgmap.autosave';
   const g_nAutosaveDelayMs = 2000;
   // [id, label, hotkey, title]
@@ -5028,7 +5392,7 @@
       Field('new-anchor', 'Anchor of tile (0, 0), in miles', Anchor),
     ]);
     const Preview = Element('p', { id: 'new-map-preview', className: 'tool-help' });
-    const ErrorText = Element('p', { id: 'new-map-error', role: 'alert' });
+    const ErrorText = Element('p', { id: 'new-map-error', className: 'dialog-error', role: 'alert' });
     const Form = Element('form', { id: 'new-map-form', noValidate: true }, [
       Element('h2', { id: 'new-map-title', textContent: 'New map' }),
       Field('new-kind', 'Map type', Kind), Field('new-name', 'Name', Name),
@@ -5131,19 +5495,101 @@
     }
   }
 
-  function SaveMap() {
-    EndStroke();
-    FinishLabelDrag(false);
-    const szName = FileFormat.FileName(State.Doc);
-    const Url = Root.URL.createObjectURL(new Root.Blob([FileFormat.Write(State.Doc)], { type: 'text/plain' }));
+  function Download(szText, szType, szName) {
+    const Url = Root.URL.createObjectURL(new Root.Blob([szText], { type: szType }));
     const Link = Element('a', { href: Url, download: szName });
     Root.document.body.append(Link);
     Link.click();
     Link.remove();
     Root.setTimeout(() => Root.URL.revokeObjectURL(Url), 0);
+  }
+
+  function SaveMap() {
+    EndStroke();
+    FinishLabelDrag(false);
+    const szName = FileFormat.FileName(State.Doc);
+    Download(FileFormat.Write(State.Doc), 'text/plain', szName);
     State.nSavedRevision = State.Doc.nRevision;
     ClearAutosave();
     SetMessage(`Saved ${szName}`);
+  }
+
+  function ExportMap() {
+    const Dialog = Root.document.getElementById('export-map-dialog');
+    if (Dialog.open) {
+      return;
+    }
+    if (State.Stroke || State.LabelDrag) {
+      SetMessage('Finish the current edit before exporting');
+      return;
+    }
+    const Doc = State.Doc;
+    const Geometry = View.MapGeometry(Doc);
+    const Hit = View.HitTest(Geometry, State.Layout, [State.Camera.dCenterX, State.Camera.dCenterY]);
+    const szPanel = Doc.Local ? 'local' : State.Layout.szFocus
+      || (State.nSelectedTile >= 0 ? Geometry.rgTiles[State.nSelectedTile].szPanel : null)
+      || (Hit ? Hit.szPanel : Object.keys(Projection.g_SectorLabels)[0]);
+    const Panel = SelectControl(Doc.Local ? [['local', 'Whole local map']]
+      : Object.keys(Projection.g_SectorLabels).map((szId) => [szId, Projection.Build().Panels[szId].szName]), szPanel, () => UpdatePreview());
+    Panel.disabled = !!Doc.Local;
+    const Width = Element('input', { type: 'number', required: true, min: '1', max: String(Number.MAX_SAFE_INTEGER),
+      step: '1', value: String(SvgExport.g_nDefaultWidth) });
+    const Boxes = {};
+    const LayerRows = SvgExport.g_Layers.map(([szKey, szName, fDefault]) => {
+      const fChecked = szKey === 'terrain' ? State.Layers.fTerrain : szKey === 'grid' ? State.Layers.fGrid
+        : Object.hasOwn(State.Layers, szKey) ? State.Layers[szKey] : fDefault;
+      const Box = Element('input', { id: `export-${szKey}`, type: 'checkbox', checked: fChecked });
+      Boxes[szKey] = Box;
+      return Element('label', { className: 'layer-toggle', htmlFor: Box.id }, [Box, ` ${szName}`]);
+    });
+    const Preview = Element('p', { id: 'export-map-preview', className: 'tool-help' });
+    const ErrorText = Element('p', { id: 'export-map-error', className: 'dialog-error', role: 'alert' });
+    const Form = Element('form', { id: 'export-map-form', noValidate: true }, [
+      Element('h2', { id: 'export-map-title', textContent: 'Export SVG' }),
+      Field('export-panel', 'Scope', Panel), Field('export-width', 'Width (pixels; height keeps aspect ratio)', Width),
+      Element('fieldset', {}, [Element('legend', { textContent: 'Include layers' }), ...LayerRows]),
+      Element('p', { className: 'tool-help', textContent: 'Exports north-up, clipped to this panel or the whole local map. Transparent where terrain colours are omitted. Terrain embellishments arrive in milestone 11.' }),
+      Preview, ErrorText,
+      Element('div', { className: 'property-actions' }, [
+        Element('button', { id: 'export-download', type: 'submit', className: 'tool-button', textContent: 'Download SVG' }),
+        ActionButton('export-cancel', 'Cancel', () => Dialog.close()),
+      ]),
+    ]);
+    function UpdatePreview() {
+      Boxes.landmarkNames.disabled = !Boxes.landmark.checked;
+      ErrorText.textContent = '';
+      try {
+        const Size = SvgExport.Dimensions(Doc, Panel.value, Number(Width.value));
+        Preview.textContent = `${Size.nWidth} x ${Size.nHeight} px - ${SvgExport.FileName(Doc, Panel.value)}. Export does not save or change the map.`;
+      } catch (Caught) {
+        Preview.textContent = `Check export settings: ${Caught.message}`;
+      }
+    }
+    Form.addEventListener('input', UpdatePreview);
+    Form.addEventListener('submit', (Event) => {
+      Event.preventDefault();
+      ErrorText.textContent = '';
+      if (!Form.reportValidity()) {
+        ErrorText.textContent = 'Check the highlighted export settings.';
+        return;
+      }
+      try {
+        const szText = SvgExport.Write(Doc, {
+          szPanel: Panel.value, nWidth: Number(Width.value),
+          Layers: Object.fromEntries(Object.entries(Boxes).map(([szKey, Box]) => [szKey, Box.checked])),
+        });
+        const szName = SvgExport.FileName(Doc, Panel.value);
+        Download(szText, 'image/svg+xml;charset=utf-8', szName);
+        Dialog.close();
+        SetMessage(`Exported ${szName}`);
+      } catch (Caught) {
+        ErrorText.textContent = `Export failed: ${Caught.message}`;
+      }
+    });
+    Dialog.replaceChildren(Form);
+    UpdatePreview();
+    State.fSpaceDown = false;
+    Dialog.showModal();
   }
 
   // Autosave keeps unsaved work in localStorage; it is cleared on save, open and new.
@@ -5309,6 +5755,7 @@
       Element('button', { id: 'file-new', type: 'button', textContent: 'New', title: 'Create a global or local map', onclick: NewMap }),
       Element('button', { id: 'file-open', type: 'button', textContent: 'Open\u2026', title: 'Open a .map.txt file (Ctrl+O)', onclick: OpenMap }),
       Element('button', { id: 'file-save', type: 'button', textContent: 'Save', title: 'Download the map as a .map.txt file (Ctrl+S)', onclick: SaveMap }),
+      Element('button', { id: 'file-export', type: 'button', textContent: 'Export SVG', title: 'Export one panel or a local map as SVG', onclick: ExportMap }),
       OpenInput,
       Element('span', { className: 'toolbar-gap' }),
       Element('button', { id: 'view-net', type: 'button', textContent: 'Net view', title: 'Show the whole net (N)', onclick: ShowNet }),
@@ -5885,7 +6332,7 @@
       State.fSpaceDown = false;
     });
     Root.addEventListener('keydown', (Event) => {
-      if (Root.document.getElementById('new-map-dialog').open) {
+      if (Root.document.querySelector('dialog[open]')) {
         return;
       }
       const szTag = Event.target && Event.target.tagName;
@@ -6000,7 +6447,7 @@
     RequestDraw();
   }
 
-  RpgMap.App = Object.freeze({ g_szVersion, State, Start, ShowFocus, ShowNet, FitNet, FitPanel, SetTool, SetTerrain, SetBrushRadius, UndoOrRedo, NewMap, SaveMap, Autosave, IsDirty });
+  RpgMap.App = Object.freeze({ g_szVersion, State, Start, ShowFocus, ShowNet, FitNet, FitPanel, SetTool, SetTerrain, SetBrushRadius, UndoOrRedo, NewMap, SaveMap, ExportMap, Autosave, IsDirty });
 
   if (Root.document.readyState === 'loading') {
     Root.document.addEventListener('DOMContentLoaded', Start);

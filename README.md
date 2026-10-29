@@ -60,6 +60,22 @@ visible feature. Each property change, path operation and completed label drag i
 one undo step (Ctrl+Z; Ctrl+Y to redo). Changes are included in Save (Ctrl+S) and
 browser autosave.
 
+### SVG export
+
+**Export SVG** downloads one selected global panel, north-up, or the entire local
+map. Choose the output width (default 1600 px); height preserves the map's aspect
+ratio. Layer options include terrain colours, smoothed shorelines, hex grid,
+roads, trails, tapered rivers, landmarks, optional landmark names, and labels.
+The initial visibility follows the canvas where applicable, but export settings
+do not change the canvas.
+
+The SVG is self-contained and deterministic, with transparent space outside the
+map and where terrain colours are omitted. Regions preserve holes; panel edges
+are clipped without inventing coastlines along the cut. Feature placement and
+rotation follow the editor, including seam copies and partial tiles. Export
+does **not** save the editable map, clear its unsaved indicator, or change undo
+history; use Save for `.map.txt`. Terrain embellishments are milestone 11.
+
 ### Code layout
 
 | Path | Purpose |
@@ -75,7 +91,9 @@ browser autosave.
 Module blocks appear in dependency order. Blocks marked `data-dom="true"` use
 the browser DOM and are skipped by `LoadModules`; all other blocks must be
 DOM-free. Renderer contract tests load that module separately with canvas doubles;
-browser smoke checks verify actual rendering and interaction.
+browser smoke checks verify actual rendering and interaction. SVG tests also use
+Python's standard-library XML parser when available; the browser checks parse
+and render SVGs independently.
 
 ### Tests
 
