@@ -2668,16 +2668,31 @@
     return rgnVisible;
   }
 
-  // The tile drawn at a world point, or null.
+  // The tile that owns a world point, or null. Returns { nTile, szPanel, rgdFrame } with
+  // szPanel the tile's own panel and rgdFrame the point in that panel's frame. The point
+  // can lie inside a neighbouring panel's outline: on the east/west seams between
+  // equatorial panels, edge hexes belong wholly to their own panel, so the tip of a hex
+  // that pokes across the seam still belongs to that hex (prompt.md, "Map projection").
+  // Partial tiles on the other seams are clipped to their panel, so there the panel
+  // containing the point owns it. szDrawPanel is the panel whose outline contains the point.
   function HitTest(Topo, Layout, rgdWorld) {
     const Hit = PlacementAt(Layout, rgdWorld);
     if (Hit === null) {
       return null;
     }
-    const szPanel = Hit.Placement.szPanel;
-    const [nQ, nJ] = Topology.LatticeNearest(Topo.Panels[szPanel].Lattice, Hit.rgdFrame[0], Hit.rgdFrame[1]);
-    const nTile = Topology.LocateLattice(Topo, szPanel, nQ, nJ);
-    return nTile < 0 ? null : { nTile, szPanel, rgdFrame: Hit.rgdFrame };
+    const szDrawPanel = Hit.Placement.szPanel;
+    const [nQ, nJ] = Topology.LatticeNearest(Topo.Panels[szDrawPanel].Lattice, Hit.rgdFrame[0], Hit.rgdFrame[1]);
+    const nTile = Topology.LocateLattice(Topo, szDrawPanel, nQ, nJ);
+    if (nTile < 0) {
+      return null;
+    }
+    const szPanel = Topo.rgTiles[nTile].szPanel;
+    let rgdFrame = Hit.rgdFrame;
+    if (szPanel !== szDrawPanel) {
+      const Seam = Projection.FindSeam(szDrawPanel, szPanel);
+      rgdFrame = Projection.ApplyTransform(Seam.szPanelA === szDrawPanel ? Seam.rgdAToB : Seam.rgdBToA, rgdFrame);
+    }
+    return { nTile, szPanel, rgdFrame, szDrawPanel };
   }
 
   // Demo terrain -------------------------------------------------------------------------

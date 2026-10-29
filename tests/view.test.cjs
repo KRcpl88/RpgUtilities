@@ -197,13 +197,8 @@ test('HitTest of random points lands in a tile containing the point', () => {
       continue;
     }
     const Tile = g_Topo.rgTiles[Hit.nTile];
-    // The point may lie in a neighbour of the owning panel (pieces, equatorial overhang).
-    let rgdTileFrame = Hit.rgdFrame;
-    if (Hit.szPanel !== Tile.szPanel) {
-      const Seam = Projection.FindSeam(Hit.szPanel, Tile.szPanel);
-      assert.ok(Seam, `${Hit.szPanel} → ${Tile.szPanel} not adjacent`);
-      rgdTileFrame = Projection.ApplyTransform(Seam.szPanelA === Hit.szPanel ? Seam.rgdAToB : Seam.rgdBToA, Hit.rgdFrame);
-    }
+    assert.equal(Hit.szPanel, Tile.szPanel, 'hit is reported in the owning panel');
+    const rgdTileFrame = Hit.rgdFrame;
     const fInside = Tile.rgPieces
       ? Tile.rgPieces.some((Piece) => Util.PointInConvex(rgdTileFrame, Piece.rgrgdPolygon))
       : Math.hypot(rgdTileFrame[0] - Tile.rgdCenter[0], rgdTileFrame[1] - Tile.rgdCenter[1]) <= Lattice.HexRadius(g_Topo.dD) + 1e-9;
@@ -211,6 +206,85 @@ test('HitTest of random points lands in a tile containing the point', () => {
     nHits++;
   }
   assert.ok(nHits > 500, `${nHits} hits`);
+});
+
+// prompt.md "Map projection": on the east/west seams of the equatorial panels, edge hexes
+// belong wholly to their own panel, so the tip that pokes into the neighbouring panel
+// belongs to that hex. Elsewhere, partial tiles are clipped to their panel, so the panel
+// containing the point owns it.
+test('points across an equatorial seam belong to the neighbouring panel\'s edge hex', () => {
+  const Built = Projection.Build();
+  const Layout = View.BuildNetLayout();
+  const dHalfWidth = Built.dEquatorialWidth / 2;
+  const dRadius = Lattice.HexRadius(g_Topo.dD);
+  let nAcross = 0;
+  let nOwn = 0;
+  for (const [szPanel, Info] of Object.entries(g_Topo.Panels)) {
+    if (!Info.Lattice.fEquatorial) {
+      continue;
+    }
+    const Placement = View.FindPlacement(Layout, szPanel);
+    for (const [szOther, dSide] of [[Info.szWest, -1], [Info.szEast, 1]]) {
+      // Probe a vertical line just inside this panel's west/east edge.
+      for (let dNorth = -0.4; dNorth <= 0.4; dNorth += 0.003) {
+        const rgdFrame = [dSide * (dHalfWidth - 0.02 * g_Topo.dW), dNorth];
+        if (!Util.PointInConvex(rgdFrame, Built.Frames[szPanel].rgrgdPolygon)) {
+          continue;
+        }
+        const Hit = View.HitTest(g_Topo, Layout, Projection.ApplyTransform(Placement.rgdFrameToWorld, rgdFrame));
+        assert.ok(Hit, `${szPanel} ${rgdFrame} missed`);
+        assert.equal(Hit.szDrawPanel, szPanel);
+        const Tile = g_Topo.rgTiles[Hit.nTile];
+        assert.equal(Hit.szPanel, Tile.szPanel);
+        assert.ok(Hit.szPanel === szPanel || Hit.szPanel === szOther, `${szPanel}: owner ${Hit.szPanel}`);
+        // The owner is the hex of the continuous strip lattice containing the point,
+        // and the point is reported in the owner's frame.
+        if (!Tile.rgPieces) {
+          assert.ok(Math.hypot(Hit.rgdFrame[0] - Tile.rgdCenter[0], Hit.rgdFrame[1] - Tile.rgdCenter[1]) <= dRadius + 1e-9);
+        }
+        if (Hit.szPanel === szOther) {
+          nAcross++;
+          assert.ok(Math.abs(Hit.rgdFrame[0]) > dHalfWidth - 1e-9, `${Hit.rgdFrame}`);
+        } else {
+          nOwn++;
+        }
+      }
+    }
+  }
+  assert.ok(nAcross > 0 && nOwn > 0, `${nAcross} across, ${nOwn} own`);
+});
+
+test('points just inside any other panel edge belong to that panel', () => {
+  const Built = Projection.Build();
+  const Layout = View.BuildNetLayout();
+  const dHalfWidth = Built.dEquatorialWidth / 2;
+  let nChecked = 0;
+  for (const [szPanel, Info] of Object.entries(g_Topo.Panels)) {
+    const Placement = View.FindPlacement(Layout, szPanel);
+    const rgrgdPolygon = Built.Frames[szPanel].rgrgdPolygon;
+    rgrgdPolygon.forEach((rgdStart, nIndex) => {
+      const rgdEnd = rgrgdPolygon[(nIndex + 1) % rgrgdPolygon.length];
+      const fStripSeam = Info.Lattice.fEquatorial
+        && Math.abs(Math.abs(rgdStart[0]) - dHalfWidth) < 1e-9 && Math.abs(Math.abs(rgdEnd[0]) - dHalfWidth) < 1e-9;
+      if (fStripSeam) {
+        return;
+      }
+      for (let dT = 0.03; dT < 1; dT += 0.02) {
+        const rgdOnEdge = [rgdStart[0] + dT * (rgdEnd[0] - rgdStart[0]), rgdStart[1] + dT * (rgdEnd[1] - rgdStart[1])];
+        const rgdFrame = [rgdOnEdge[0] * (1 - 1e-4), rgdOnEdge[1] * (1 - 1e-4)];
+        // Equatorial corners: the strip neighbour's edge hex may reach this far.
+        if (Info.Lattice.fEquatorial && Math.abs(rgdFrame[0]) > dHalfWidth - g_Topo.dW) {
+          continue;
+        }
+        const Hit = View.HitTest(g_Topo, Layout, Projection.ApplyTransform(Placement.rgdFrameToWorld, rgdFrame));
+        assert.ok(Hit, `${szPanel} edge ${nIndex} missed`);
+        assert.equal(Hit.szPanel, szPanel, `${szPanel} edge ${nIndex} at ${dT}`);
+        assert.equal(Hit.szDrawPanel, szPanel);
+        nChecked++;
+      }
+    });
+  }
+  assert.ok(nChecked > 1000, `${nChecked}`);
 });
 
 test('PanelTileGroups adds strip-neighbour edge columns only for equatorial panels', () => {
