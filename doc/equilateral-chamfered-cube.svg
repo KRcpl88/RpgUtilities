@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="934.749848" height="471.259204" viewBox="0 0 934.749848 471.259204">
+  <g id="faces" fill="none" stroke="#000000" stroke-width="1" stroke-linejoin="round">
+    <polygon id="Hxy++" points="864.466699,205.39028 799.146972,159.202258 723.722249,185.868925 723.722249,265.868925 789.041975,312.056946 864.466699,285.39028"/>
+    <polygon id="Hyz+-" points="648.297526,159.202258 582.977799,205.39028 582.977799,285.39028 658.402523,312.056946 723.722249,265.868925 723.722249,185.868925"/>
+    <polygon id="Hxz--" points="582.977799,205.39028 517.658073,159.202258 442.233349,185.868925 442.233349,265.868925 507.553076,312.056946 582.977799,285.39028"/>
+    <polygon id="Hxy--" points="376.913623,312.056946 442.233349,265.868925 442.233349,185.868925 366.808626,159.202258 301.4889,205.39028 301.4889,285.39028"/>
+    <polygon id="Hyz-+" points="160.74445,265.868925 226.064176,312.056946 301.4889,285.39028 301.4889,205.39028 236.169173,159.202258 160.74445,185.868925"/>
+    <polygon id="Hxz++" points="95.424723,312.056946 160.74445,265.868925 160.74445,185.868925 85.319726,159.202258 20,205.39028 20,285.39028"/>
+    <polygon id="Sx+" points="910.65472,140.070553 845.334994,93.882532 799.146972,159.202258 864.466699,205.39028"/>
+    <polygon id="Hxz+-" points="799.146972,159.202258 820.920214,82.222222 770.637066,20 695.212342,46.666667 673.4391,123.646703 723.722249,185.868925"/>
+    <polygon id="Hyz++" points="789.041975,312.056946 767.268733,389.036982 817.551882,451.259204 892.976606,424.592538 914.749848,347.612502 864.466699,285.39028"/>
+    <polygon id="Sy+" points="723.722249,265.868925 677.534227,331.188651 742.853954,377.376673 789.041975,312.056946"/>
+    <polygon id="Sz-" points="563.846094,93.882532 517.658073,159.202258 582.977799,205.39028 629.165821,140.070553"/>
+    <polygon id="Hyz--" points="413.723443,46.666667 391.950201,123.646703 442.233349,185.868925 517.658073,159.202258 539.431315,82.222222 489.148166,20"/>
+    <polygon id="Hxy-+" points="611.487706,424.592538 633.260948,347.612502 582.977799,285.39028 507.553076,312.056946 485.779834,389.036982 536.062983,451.259204"/>
+    <polygon id="Sx-" points="507.553076,312.056946 442.233349,265.868925 396.045328,331.188651 461.365054,377.376673"/>
+    <polygon id="Sy-" points="301.4889,205.39028 347.676921,140.070553 282.357195,93.882532 236.169173,159.202258"/>
+    <polygon id="Hxy+-" points="236.169173,159.202258 257.942415,82.222222 207.659266,20 132.234543,46.666667 110.461301,123.646703 160.74445,185.868925"/>
+    <polygon id="Hxz-+" points="329.998806,424.592538 351.772048,347.612502 301.4889,285.39028 226.064176,312.056946 204.290934,389.036982 254.574083,451.259204"/>
+    <polygon id="Sz+" points="179.876155,377.376673 226.064176,312.056946 160.74445,265.868925 114.556428,331.188651"/>
+  </g>
+  <g id="labels" fill="#c0c0c0" font-family="serif" text-anchor="middle" dominant-baseline="central">
+    <text class="sector" data-face="Hxy++" x="794.094474" y="235.629602" font-size="26.666667">ζ</text>
+    <text class="sector-name" data-face="Hxy++" x="794.094474" y="256.962936" font-size="10.666667">Zeta</text>
+    <text class="sector" data-face="Hyz+-" x="653.350024" y="235.629602" font-size="26.666667">α</text>
+    <text class="sector-name" data-face="Hyz+-" x="653.350024" y="256.962936" font-size="10.666667">Alpha</text>
+    <text class="sector" data-face="Hxz--" x="512.605574" y="235.629602" font-size="26.666667">β</text>
+    <text class="sector-name" data-face="Hxz--" x="512.605574" y="256.962936" font-size="10.666667">Beta</text>
+    <text class="sector" data-face="Hxy--" x="371.861125" y="235.629602" font-size="26.666667">γ</text>
+    <text class="sector-name" data-face="Hxy--" x="371.861125" y="256.962936" font-size="10.666667">Gamma</text>
+    <text class="sector" data-face="Hyz-+" x="231.116675" y="235.629602" font-size="26.666667">δ</text>
+    <text class="sector-name" data-face="Hyz-+" x="231.116675" y="256.962936" font-size="10.666667">Delta</text>
+    <text class="sector" data-face="Hxz++" x="90.372225" y="235.629602" font-size="26.666667">ε</text>
+    <text class="sector-name" data-face="Hxz++" x="90.372225" y="256.962936" font-size="10.666667">Epsilon</text>
+    <text class="sector" data-face="Sx+" x="854.900846" y="149.636406" font-size="26.666667">ο</text>
+    <text class="sector-name" data-face="Sx+" x="854.900846" y="170.969739" font-size="10.666667">Omicron</text>
+    <text class="sector" data-face="Hxz+-" x="747.179657" y="102.934462" font-size="26.666667">η</text>
+    <text class="sector-name" data-face="Hxz+-" x="747.179657" y="124.267796" font-size="10.666667">Eta</text>
+    <text class="sector" data-face="Hyz++" x="841.009291" y="368.324742" font-size="26.666667">μ</text>
+    <text class="sector-name" data-face="Hyz++" x="841.009291" y="389.658075" font-size="10.666667">Mu</text>
+    <text class="sector" data-face="Sy+" x="733.288101" y="321.622799" font-size="26.666667">σ</text>
+    <text class="sector-name" data-face="Sy+" x="733.288101" y="342.956132" font-size="10.666667">Sigma</text>
+    <text class="sector" data-face="Sz-" x="573.411947" y="149.636406" font-size="26.666667">ν</text>
+    <text class="sector-name" data-face="Sz-" x="573.411947" y="170.969739" font-size="10.666667">Nu</text>
+    <text class="sector" data-face="Hyz--" x="465.690758" y="102.934462" font-size="26.666667">θ</text>
+    <text class="sector-name" data-face="Hyz--" x="465.690758" y="124.267796" font-size="10.666667">Theta</text>
+    <text class="sector" data-face="Hxy-+" x="559.520391" y="368.324742" font-size="26.666667">κ</text>
+    <text class="sector-name" data-face="Hxy-+" x="559.520391" y="389.658075" font-size="10.666667">Kappa</text>
+    <text class="sector" data-face="Sx-" x="451.799202" y="321.622799" font-size="26.666667">π</text>
+    <text class="sector-name" data-face="Sx-" x="451.799202" y="342.956132" font-size="10.666667">Pi</text>
+    <text class="sector" data-face="Sy-" x="291.923047" y="149.636406" font-size="26.666667">ξ</text>
+    <text class="sector-name" data-face="Sy-" x="291.923047" y="170.969739" font-size="10.666667">Xi</text>
+    <text class="sector" data-face="Hxy+-" x="184.201858" y="102.934462" font-size="26.666667">ι</text>
+    <text class="sector-name" data-face="Hxy+-" x="184.201858" y="124.267796" font-size="10.666667">Iota</text>
+    <text class="sector" data-face="Hxz-+" x="278.031491" y="368.324742" font-size="26.666667">λ</text>
+    <text class="sector-name" data-face="Hxz-+" x="278.031491" y="389.658075" font-size="10.666667">Lambda</text>
+    <text class="sector" data-face="Sz+" x="170.310302" y="321.622799" font-size="26.666667">ρ</text>
+    <text class="sector-name" data-face="Sz+" x="170.310302" y="342.956132" font-size="10.666667">Rho</text>
+  </g>
+</svg>

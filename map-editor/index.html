@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RPG World Map Editor</title>
+<!--
+  Single-file, framework-free hex map editor.
+
+  Module convention: every <script data-module="Name"> block is a self-contained
+  IIFE that registers exactly one object on globalThis.RpgMap[Name] and reads its
+  dependencies from globalThis.RpgMap. Blocks appear in dependency order.
+  Blocks marked data-dom="true" touch the browser DOM and are skipped by the
+  Node unit tests (tests/_load.cjs); all other blocks must be DOM-free.
+-->
+<style>
+  :root {
+    --bg: #1e1f22;
+    --panel: #2b2d31;
+    --panel-border: #3c3f45;
+    --text: #e6e6e6;
+    --text-dim: #9a9ca3;
+    --accent: #6ea8fe;
+    --canvas-bg: #10151c;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    grid-template-columns: 220px 1fr 260px;
+    grid-template-areas:
+      "toolbar toolbar toolbar"
+      "tools viewport properties"
+      "status status status";
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  #toolbar {
+    grid-area: toolbar;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 12px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--panel-border);
+  }
+  #toolbar h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  #toolbar-actions { display: flex; gap: 6px; }
+  aside {
+    overflow: auto;
+    padding: 10px;
+    background: var(--panel);
+  }
+  #tool-panel { grid-area: tools; border-right: 1px solid var(--panel-border); }
+  #properties-panel { grid-area: properties; border-left: 1px solid var(--panel-border); }
+  aside h2 {
+    margin: 0 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+  #viewport {
+    grid-area: viewport;
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--canvas-bg);
+  }
+  #map-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #status-bar {
+    grid-area: status;
+    display: flex;
+    gap: 18px;
+    padding: 3px 12px;
+    background: var(--panel);
+    border-top: 1px solid var(--panel-border);
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<header id="toolbar">
+  <h1>RPG World Map Editor</h1>
+  <div id="toolbar-actions"></div>
+</header>
+<aside id="tool-panel" aria-label="Tools">
+  <h2>Tools</h2>
+  <div id="tool-list"></div>
+  <h2>Layers</h2>
+  <div id="layer-list"></div>
+</aside>
+<main id="viewport">
+  <canvas id="map-canvas" aria-label="Map"></canvas>
+</main>
+<aside id="properties-panel" aria-label="Properties">
+  <h2>Properties</h2>
+  <div id="property-list"></div>
+</aside>
+<footer id="status-bar">
+  <span id="status-coordinates">&nbsp;</span>
+  <span id="status-message"></span>
+</footer>
+
+<script data-module="Util">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+
+  const g_dEpsilon = 1e-9;
+
+  function Require(fCondition, szMessage) {
+    if (!fCondition) {
+      throw new Error(szMessage);
+    }
+  }
+
+  function Add(rgdLeft, rgdRight) {
+    return rgdLeft.map((dValue, nIndex) => dValue + rgdRight[nIndex]);
+  }
+
+  function Subtract(rgdLeft, rgdRight) {
+    return rgdLeft.map((dValue, nIndex) => dValue - rgdRight[nIndex]);
+  }
+
+  function Scale(rgdVector, dFactor) {
+    return rgdVector.map((dValue) => dValue * dFactor);
+  }
+
+  function Dot(rgdLeft, rgdRight) {
+    let dSum = 0;
+    for (let nIndex = 0; nIndex < rgdLeft.length; nIndex++) {
+      dSum += rgdLeft[nIndex] * rgdRight[nIndex];
+    }
+    return dSum;
+  }
+
+  function Cross(rgdLeft, rgdRight) {
+    return [
+      rgdLeft[1] * rgdRight[2] - rgdLeft[2] * rgdRight[1],
+      rgdLeft[2] * rgdRight[0] - rgdLeft[0] * rgdRight[2],
+      rgdLeft[0] * rgdRight[1] - rgdLeft[1] * rgdRight[0],
+    ];
+  }
+
+  function Length(rgdVector) {
+    return Math.sqrt(Dot(rgdVector, rgdVector));
+  }
+
+  function Distance(rgdLeft, rgdRight) {
+    return Length(Subtract(rgdLeft, rgdRight));
+  }
+
+  function Unit(rgdVector) {
+    const dLength = Length(rgdVector);
+    Require(dLength > 0, 'Cannot normalize a zero-length vector');
+    return Scale(rgdVector, 1 / dLength);
+  }
+
+  function Center(rgrgdPoints) {
+    Require(rgrgdPoints.length > 0, 'Cannot center an empty point set');
+    const rgdSum = rgrgdPoints[0].map(() => 0);
+    for (const rgdPoint of rgrgdPoints) {
+      for (let nAxis = 0; nAxis < rgdSum.length; nAxis++) {
+        rgdSum[nAxis] += rgdPoint[nAxis];
+      }
+    }
+    return Scale(rgdSum, 1 / rgrgdPoints.length);
+  }
+
+  // Consecutive pairs around a closed boundary, including the closing pair.
+  function Boundary(rgItems) {
+    return rgItems.map((Item, nIndex) => [Item, rgItems[(nIndex + 1) % rgItems.length]]);
+  }
+
+  // Mulberry32: small, fast, deterministic PRNG returning floats in [0, 1).
+  function CreateRng(nSeed) {
+    let nState = nSeed >>> 0;
+    return function () {
+      nState = (nState + 0x6D2B79F5) >>> 0;
+      let nValue = nState;
+      nValue = Math.imul(nValue ^ (nValue >>> 15), nValue | 1);
+      nValue ^= nValue + Math.imul(nValue ^ (nValue >>> 7), nValue | 61);
+      return ((nValue ^ (nValue >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // Order-sensitive 32-bit hash of integers, used to seed per-tile randomness.
+  function HashIntegers(...rgnValues) {
+    let nHash = 0x811C9DC5;
+    for (const nValue of rgnValues) {
+      nHash = Math.imul(nHash ^ (nValue | 0), 0x01000193) >>> 0;
+      nHash ^= nHash >>> 13;
+    }
+    return Math.imul(nHash ^ (nHash >>> 16), 0x85EBCA6B) >>> 0;
+  }
+
+  // Fixed-precision number text without trailing zeros or a signed zero.
+  function FormatNumber(dValue, nDecimals = 6) {
+    const szFixed = dValue.toFixed(nDecimals);
+    const szText = szFixed.includes('.') ? szFixed.replace(/\.?0+$/, '') : szFixed;
+    return (szText === '-0' || szText === '') ? '0' : szText;
+  }
+
+  RpgMap.Util = Object.freeze({
+    g_dEpsilon,
+    Require,
+    Add,
+    Subtract,
+    Scale,
+    Dot,
+    Cross,
+    Length,
+    Distance,
+    Unit,
+    Center,
+    Boundary,
+    CreateRng,
+    HashIntegers,
+    FormatNumber,
+  });
+})(globalThis);
+</script>
+
+<script data-module="App" data-dom="true">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+
+  const g_szVersion = '0.1.0';
+
+  function ResizeCanvas(Canvas) {
+    const dRatio = Root.devicePixelRatio || 1;
+    const Rect = Canvas.getBoundingClientRect();
+    const nWidth = Math.max(1, Math.round(Rect.width * dRatio));
+    const nHeight = Math.max(1, Math.round(Rect.height * dRatio));
+    if (Canvas.width !== nWidth || Canvas.height !== nHeight) {
+      Canvas.width = nWidth;
+      Canvas.height = nHeight;
+    }
+    return dRatio;
+  }
+
+  function DrawPlaceholder(Canvas) {
+    const dRatio = ResizeCanvas(Canvas);
+    const Context = Canvas.getContext('2d');
+    Context.setTransform(dRatio, 0, 0, dRatio, 0, 0);
+    const dWidth = Canvas.width / dRatio;
+    const dHeight = Canvas.height / dRatio;
+    Context.clearRect(0, 0, dWidth, dHeight);
+    Context.fillStyle = '#5b6270';
+    Context.font = '14px system-ui, sans-serif';
+    Context.textAlign = 'center';
+    Context.textBaseline = 'middle';
+    Context.fillText('No map loaded', dWidth / 2, dHeight / 2);
+  }
+
+  function Start() {
+    const Canvas = Root.document.getElementById('map-canvas');
+    const Redraw = () => DrawPlaceholder(Canvas);
+    new Root.ResizeObserver(Redraw).observe(Canvas);
+    Redraw();
+    const rgszModules = Object.keys(RpgMap).filter((szName) => szName !== 'App');
+    Root.document.getElementById('status-message').textContent =
+      `v${g_szVersion} \u2014 modules: ${rgszModules.join(', ')}`;
+  }
+
+  RpgMap.App = Object.freeze({ g_szVersion, Start });
+
+  if (Root.document.readyState === 'loading') {
+    Root.document.addEventListener('DOMContentLoaded', Start);
+  } else {
+    Start();
+  }
+})(globalThis);
+</script>
+</body>
+</html>
