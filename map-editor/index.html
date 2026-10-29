@@ -71,7 +71,34 @@
     overflow: hidden;
     background: var(--canvas-bg);
   }
-  #map-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #map-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+  #map-canvas.dragging { cursor: grabbing; }
+  #minimap {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    width: 240px;
+    height: 120px;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    background: var(--canvas-bg);
+    cursor: pointer;
+  }
+  #toolbar button, #toolbar select {
+    padding: 3px 10px;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    background: #383a40;
+    color: var(--text);
+    font: inherit;
+  }
+  #toolbar button:hover, #toolbar select:hover { border-color: var(--accent); }
+  #toolbar button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  .layer-toggle { display: block; margin: 2px 0; cursor: pointer; }
+  .legend-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+  .legend-row code { width: 1.2em; text-align: center; color: var(--text-dim); }
+  .swatch { width: 14px; height: 14px; border-radius: 2px; border: 1px solid rgba(0, 0, 0, 0.4); }
+  #layer-list { margin-bottom: 12px; }
   #status-bar {
     grid-area: status;
     display: flex;
@@ -97,6 +124,7 @@
 </aside>
 <main id="viewport">
   <canvas id="map-canvas" aria-label="Map"></canvas>
+  <canvas id="minimap" aria-label="Net navigator" title="Click to move the view"></canvas>
 </main>
 <aside id="properties-panel" aria-label="Properties">
   <h2>Properties</h2>
@@ -2388,14 +2416,405 @@
 })(globalThis);
 </script>
 
-<script data-module="App" data-dom="true">
+<script data-module="View">
 (function (Root) {
   'use strict';
   const RpgMap = Root.RpgMap = Root.RpgMap || {};
+  const { Util, Projection, Lattice, Topology, Terrain } = RpgMap;
+  const { Require } = Util;
 
-  const g_szVersion = '0.1.0';
+  // DOM-free view geometry for the renderer. "World" space is net space for the net
+  // layout and the focus panel's frame for the focus layout (edge units, y north/up).
+  // The camera maps world to CSS pixels (y down).
+  const g_dMinScale = 4;
+  const g_dMaxScale = 400000;
+  const g_rgdIdentity = Object.freeze([1, 0, 0, 1, 0, 0]);
 
-  function ResizeCanvas(Canvas) {
+  // Camera -------------------------------------------------------------------------
+
+  function CreateCamera(nWidth = 800, nHeight = 600) {
+    return { dCenterX: 0, dCenterY: 0, dScale: 100, nWidth, nHeight };
+  }
+
+  function ResizeCamera(Camera, nWidth, nHeight) {
+    Camera.nWidth = Math.max(1, nWidth);
+    Camera.nHeight = Math.max(1, nHeight);
+  }
+
+  function ClampScale(dScale) {
+    return Math.min(g_dMaxScale, Math.max(g_dMinScale, dScale));
+  }
+
+  // [a, b, c, d, e, f] taking world points to screen pixels.
+  function WorldToScreenTransform(Camera) {
+    const dScale = Camera.dScale;
+    return [dScale, 0, 0, -dScale, Camera.nWidth / 2 - Camera.dCenterX * dScale, Camera.nHeight / 2 + Camera.dCenterY * dScale];
+  }
+
+  function WorldToScreen(Camera, rgdWorld) {
+    return [
+      Camera.nWidth / 2 + (rgdWorld[0] - Camera.dCenterX) * Camera.dScale,
+      Camera.nHeight / 2 - (rgdWorld[1] - Camera.dCenterY) * Camera.dScale,
+    ];
+  }
+
+  function ScreenToWorld(Camera, rgdScreen) {
+    return [
+      Camera.dCenterX + (rgdScreen[0] - Camera.nWidth / 2) / Camera.dScale,
+      Camera.dCenterY - (rgdScreen[1] - Camera.nHeight / 2) / Camera.dScale,
+    ];
+  }
+
+  // Moves the content by (dDx, dDy) screen pixels.
+  function Pan(Camera, dDx, dDy) {
+    Camera.dCenterX -= dDx / Camera.dScale;
+    Camera.dCenterY += dDy / Camera.dScale;
+  }
+
+  // Zooms by dFactor, keeping the world point under rgdScreen fixed.
+  function ZoomAt(Camera, rgdScreen, dFactor) {
+    const rgdBefore = ScreenToWorld(Camera, rgdScreen);
+    Camera.dScale = ClampScale(Camera.dScale * dFactor);
+    const rgdAfter = ScreenToWorld(Camera, rgdScreen);
+    Camera.dCenterX += rgdBefore[0] - rgdAfter[0];
+    Camera.dCenterY += rgdBefore[1] - rgdAfter[1];
+  }
+
+  function CenterOn(Camera, rgdWorld) {
+    Camera.dCenterX = rgdWorld[0];
+    Camera.dCenterY = rgdWorld[1];
+  }
+
+  // Bounds are [minX, minY, maxX, maxY] in world units.
+  function FitBounds(Camera, rgdBounds, dMargin = 24) {
+    const dWidth = Math.max(rgdBounds[2] - rgdBounds[0], 1e-9);
+    const dHeight = Math.max(rgdBounds[3] - rgdBounds[1], 1e-9);
+    const dAvailableX = Math.max(1, Camera.nWidth - 2 * dMargin);
+    const dAvailableY = Math.max(1, Camera.nHeight - 2 * dMargin);
+    Camera.dScale = ClampScale(Math.min(dAvailableX / dWidth, dAvailableY / dHeight));
+    CenterOn(Camera, [(rgdBounds[0] + rgdBounds[2]) / 2, (rgdBounds[1] + rgdBounds[3]) / 2]);
+  }
+
+  function VisibleBounds(Camera) {
+    const [dMinX, dMaxY] = ScreenToWorld(Camera, [0, 0]);
+    const [dMaxX, dMinY] = ScreenToWorld(Camera, [Camera.nWidth, Camera.nHeight]);
+    return [dMinX, dMinY, dMaxX, dMaxY];
+  }
+
+  function BoundsOf(rgrgdPoints) {
+    const rgdBounds = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const [dX, dY] of rgrgdPoints) {
+      rgdBounds[0] = Math.min(rgdBounds[0], dX);
+      rgdBounds[1] = Math.min(rgdBounds[1], dY);
+      rgdBounds[2] = Math.max(rgdBounds[2], dX);
+      rgdBounds[3] = Math.max(rgdBounds[3], dY);
+    }
+    return rgdBounds;
+  }
+
+  function BoundsIntersect(rgdFirst, rgdSecond) {
+    return rgdFirst[0] <= rgdSecond[2] && rgdSecond[0] <= rgdFirst[2]
+      && rgdFirst[1] <= rgdSecond[3] && rgdSecond[1] <= rgdFirst[3];
+  }
+
+  function UnionBounds(rgrgdBounds) {
+    return BoundsOf(rgrgdBounds.flatMap((rgdBounds) => [[rgdBounds[0], rgdBounds[1]], [rgdBounds[2], rgdBounds[3]]]));
+  }
+
+  // The axis-aligned box, in the other space, of a box mapped through rgdTransform.
+  function TransformBounds(rgdTransform, rgdBounds) {
+    const [dMinX, dMinY, dMaxX, dMaxY] = rgdBounds;
+    return BoundsOf([[dMinX, dMinY], [dMaxX, dMinY], [dMaxX, dMaxY], [dMinX, dMaxY]]
+      .map((rgdPoint) => Projection.ApplyTransform(rgdTransform, rgdPoint)));
+  }
+
+  // Layouts: where each panel's frame sits in world space -----------------------------
+
+  function MakePlacement(szPanel, rgdFrameToWorld) {
+    const Built = Projection.Build();
+    const rgrgdOutline = Built.Frames[szPanel].rgrgdPolygon.map((rgdPoint) => Projection.ApplyTransform(rgdFrameToWorld, rgdPoint));
+    return Object.freeze({
+      szPanel,
+      szName: Built.Panels[szPanel].szName,
+      rgdFrameToWorld: Object.freeze([...rgdFrameToWorld]),
+      rgdWorldToFrame: Object.freeze(Projection.InvertTransform(rgdFrameToWorld)),
+      rgrgdOutline: Object.freeze(rgrgdOutline.map((rgdPoint) => Object.freeze(rgdPoint))),
+      rgdBounds: Object.freeze(BoundsOf(rgrgdOutline)),
+      rgdCenter: Object.freeze(Projection.ApplyTransform(rgdFrameToWorld, [0, 0])),
+    });
+  }
+
+  function MakeLayout(szMode, szFocus, rgPlacements) {
+    return Object.freeze({
+      szMode,
+      szFocus,
+      rgPlacements: Object.freeze(rgPlacements),
+      rgdBounds: Object.freeze(UnionBounds(rgPlacements.map((Placement) => Placement.rgdBounds))),
+    });
+  }
+
+  let g_NetLayout = null;
+  const g_FocusLayouts = new Map();
+
+  // Every panel at its place in the net.
+  function BuildNetLayout() {
+    if (!g_NetLayout) {
+      const Built = Projection.Build();
+      g_NetLayout = MakeLayout('net', null,
+        Object.keys(Built.Panels).map((szPanel) => MakePlacement(szPanel, Built.Frames[szPanel].rgdFrameToNet)));
+    }
+    return g_NetLayout;
+  }
+
+  // One panel north-up (world = its frame) with every edge-neighbour unfolded across
+  // the shared seam. Neighbours come first so the focus panel draws on top.
+  function BuildFocusLayout(szFocus) {
+    if (!g_FocusLayouts.has(szFocus)) {
+      const Built = Projection.Build();
+      Require(Built.Panels[szFocus] !== undefined, `Unknown panel: ${szFocus}`);
+      const rgPlacements = [];
+      for (const Seam of Built.Seams) {
+        if (Seam.szPanelA === szFocus) {
+          rgPlacements.push(MakePlacement(Seam.szPanelB, Seam.rgdBToA));
+        } else if (Seam.szPanelB === szFocus) {
+          rgPlacements.push(MakePlacement(Seam.szPanelA, Seam.rgdAToB));
+        }
+      }
+      rgPlacements.push(MakePlacement(szFocus, g_rgdIdentity));
+      g_FocusLayouts.set(szFocus, MakeLayout('focus', szFocus, rgPlacements));
+    }
+    return g_FocusLayouts.get(szFocus);
+  }
+
+  function FindPlacement(Layout, szPanel) {
+    return Layout.rgPlacements.find((Placement) => Placement.szPanel === szPanel) || null;
+  }
+
+  // The topmost placement whose panel polygon contains the world point.
+  function PlacementAt(Layout, rgdWorld) {
+    const Built = Projection.Build();
+    for (let nIndex = Layout.rgPlacements.length - 1; nIndex >= 0; nIndex--) {
+      const Placement = Layout.rgPlacements[nIndex];
+      if (!BoundsIntersect(Placement.rgdBounds, [rgdWorld[0], rgdWorld[1], rgdWorld[0], rgdWorld[1]])) {
+        continue;
+      }
+      const rgdFrame = Projection.ApplyTransform(Placement.rgdWorldToFrame, rgdWorld);
+      if (Util.PointInConvex(rgdFrame, Built.Frames[Placement.szPanel].rgrgdPolygon)) {
+        return { Placement, rgdFrame };
+      }
+    }
+    return null;
+  }
+
+  // Tiles drawn per panel ----------------------------------------------------------------
+
+  const g_GroupCache = new WeakMap();
+
+  // Groups of tiles to draw inside a panel's polygon, each with the transform from the
+  // owning panel's frame to this panel's frame. Equatorial panels also draw the edge
+  // columns of their strip neighbours, whose whole hexes overhang this panel slightly.
+  function PanelTileGroups(Topo, szPanel) {
+    let ByPanel = g_GroupCache.get(Topo);
+    if (!ByPanel) {
+      ByPanel = new Map();
+      g_GroupCache.set(Topo, ByPanel);
+    }
+    if (ByPanel.has(szPanel)) {
+      return ByPanel.get(szPanel);
+    }
+    const Info = Topo.Panels[szPanel];
+    Require(Info !== undefined, `Unknown panel: ${szPanel}`);
+    const rgGroups = [{
+      szOwner: szPanel,
+      rgdToPanel: g_rgdIdentity,
+      rgnTiles: Int32Array.from({ length: Info.nTileCount }, (_, nIndex) => Info.nFirstTile + nIndex),
+    }];
+    if (Info.Lattice.fEquatorial) {
+      const Built = Projection.Build();
+      const dHalfWidth = Built.dEquatorialWidth / 2;
+      const dRadius = Lattice.HexRadius(Topo.dD);
+      for (const szOther of [Info.szWest, Info.szEast]) {
+        const Seam = Projection.FindSeam(szOther, szPanel);
+        const rgdToPanel = Seam.szPanelA === szOther ? Seam.rgdAToB : Seam.rgdBToA;
+        const Other = Topo.Panels[szOther];
+        const rgnTiles = [];
+        for (let nTile = Other.nFirstTile; nTile < Other.nFirstTile + Other.nTileCount; nTile++) {
+          const dEast = Projection.ApplyTransform(rgdToPanel, Topo.rgTiles[nTile].rgdCenter)[0];
+          if (dEast + dRadius > -dHalfWidth && dEast - dRadius < dHalfWidth) {
+            rgnTiles.push(nTile);
+          }
+        }
+        rgGroups.push({ szOwner: szOther, rgdToPanel, rgnTiles: Int32Array.from(rgnTiles) });
+      }
+    }
+    const rgFrozen = Object.freeze(rgGroups.map((Group) => Object.freeze(Group)));
+    ByPanel.set(szPanel, rgFrozen);
+    return rgFrozen;
+  }
+
+  // Tiles of a group that may touch rgdFrameBounds (the view box in the panel's frame).
+  function VisibleTiles(Topo, Group, rgdFrameBounds) {
+    const dRadius = Lattice.HexRadius(Topo.dD);
+    const [dMinX, dMinY, dMaxX, dMaxY] = rgdFrameBounds;
+    const fIdentity = Group.rgdToPanel === g_rgdIdentity;
+    const rgnVisible = [];
+    for (const nTile of Group.rgnTiles) {
+      const rgdCenter = fIdentity ? Topo.rgTiles[nTile].rgdCenter : Projection.ApplyTransform(Group.rgdToPanel, Topo.rgTiles[nTile].rgdCenter);
+      if (rgdCenter[0] + dRadius >= dMinX && rgdCenter[0] - dRadius <= dMaxX
+        && rgdCenter[1] + dRadius >= dMinY && rgdCenter[1] - dRadius <= dMaxY) {
+        rgnVisible.push(nTile);
+      }
+    }
+    return rgnVisible;
+  }
+
+  // The tile drawn at a world point, or null.
+  function HitTest(Topo, Layout, rgdWorld) {
+    const Hit = PlacementAt(Layout, rgdWorld);
+    if (Hit === null) {
+      return null;
+    }
+    const szPanel = Hit.Placement.szPanel;
+    const [nQ, nJ] = Topology.LatticeNearest(Topo.Panels[szPanel].Lattice, Hit.rgdFrame[0], Hit.rgdFrame[1]);
+    const nTile = Topology.LocateLattice(Topo, szPanel, nQ, nJ);
+    return nTile < 0 ? null : { nTile, szPanel, rgdFrame: Hit.rgdFrame };
+  }
+
+  // Demo terrain -------------------------------------------------------------------------
+
+  function CreateWaves(Random, nCount) {
+    const rgWaves = [];
+    for (let nIndex = 0; nIndex < nCount; nIndex++) {
+      const dZ = 2 * Random() - 1;
+      const dAngle = 2 * Math.PI * Random();
+      const dRing = Math.sqrt(1 - dZ * dZ);
+      const dFrequency = 1 + 5 * Random();
+      rgWaves.push({ rgdDirection: [dRing * Math.cos(dAngle), dRing * Math.sin(dAngle), dZ], dFrequency, dPhase: 2 * Math.PI * Random(), dAmplitude: 1 / dFrequency });
+    }
+    const dTotal = rgWaves.reduce((dSum, Wave) => dSum + Wave.dAmplitude, 0);
+    rgWaves.forEach((Wave) => { Wave.dAmplitude /= dTotal; });
+    return rgWaves;
+  }
+
+  function SampleWaves(rgWaves, rgdPoint) {
+    return rgWaves.reduce((dSum, Wave) => dSum + Wave.dAmplitude * Math.sin(Wave.dFrequency * Util.Dot(Wave.rgdDirection, rgdPoint) + Wave.dPhase), 0);
+  }
+
+  // A deterministic sample world (terrain ids per tile) so the renderer has something to
+  // show before the terrain tools exist. Uses only Util.CreateRng / Util.HashIntegers.
+  function DemoTerrain(Topo, nSeed = 1) {
+    const Built = Projection.Build();
+    const Random = Util.CreateRng(nSeed);
+    const rgElevationWaves = CreateWaves(Random, 14);
+    const rgMoistureWaves = CreateWaves(Random, 8);
+    const rgdNorth = Util.Unit(Projection.g_North);
+    const Id = (szKey) => Terrain.ByKey(szKey).nId;
+    const rgnTerrain = new Uint8Array(Topo.nTiles);
+    for (const Tile of Topo.rgTiles) {
+      const rgdPoint = Util.Unit(Projection.FrameToSolid(Built.Frames[Tile.szPanel], Tile.rgdCenter));
+      const dElevation = SampleWaves(rgElevationWaves, rgdPoint) * 2.2 - 0.05;
+      const dMoisture = SampleWaves(rgMoistureWaves, rgdPoint) * 2.5;
+      const dLatitude = Math.abs(Math.asin(Math.max(-1, Math.min(1, Util.Dot(rgdPoint, rgdNorth))))) * 180 / Math.PI;
+      const dRoll = Util.HashIntegers(nSeed, Tile.nIndex) / 4294967296;
+      let szKey = 'plain';
+      if (dElevation < -0.02) {
+        szKey = dElevation > -0.06 && dRoll < 0.08 ? 'islands' : 'water';
+      } else if (dLatitude > 66) {
+        szKey = dElevation > 0.4 ? 'mountains' : 'tundra';
+      } else if (dElevation > 0.62) {
+        szKey = 'mountainPeak';
+      } else if (dElevation > 0.45) {
+        szKey = 'mountains';
+      } else if (dElevation > 0.3) {
+        szKey = dMoisture < -0.45 ? 'badlands' : (dMoisture < -0.2 && dRoll < 0.35 ? 'canyon' : 'hills');
+      } else if (dElevation < 0.04 && dMoisture > 0.35) {
+        szKey = dLatitude < 25 ? 'mangrove' : 'marsh';
+      } else if (dMoisture > 0.55 && dRoll < 0.15) {
+        szKey = 'lakes';
+      } else if (dMoisture > 0.15) {
+        szKey = 'forest';
+      } else if (dLatitude < 35 && dMoisture < -0.3) {
+        szKey = dMoisture < -0.55 ? 'sandDunes' : 'desert';
+      } else if (dRoll < 0.12) {
+        szKey = 'farmland';
+      }
+      rgnTerrain[Tile.nIndex] = Id(szKey);
+    }
+    // Inlets: open water mostly enclosed by land becomes firth.
+    const nWater = Id('water');
+    const rgnResult = rgnTerrain.slice();
+    for (let nTile = 0; nTile < Topo.nTiles; nTile++) {
+      if (rgnTerrain[nTile] === nWater) {
+        const rgnNeighbors = Topology.Neighbors(Topo, nTile);
+        const nLand = rgnNeighbors.filter((nOther) => !Terrain.IsWater(rgnTerrain[nOther])).length;
+        if (nLand >= 4) {
+          rgnResult[nTile] = Id('firth');
+        }
+      }
+    }
+    return rgnResult;
+  }
+
+  RpgMap.View = Object.freeze({
+    g_dMinScale,
+    g_dMaxScale,
+    g_rgdIdentity,
+    CreateCamera,
+    ResizeCamera,
+    ClampScale,
+    WorldToScreenTransform,
+    WorldToScreen,
+    ScreenToWorld,
+    Pan,
+    ZoomAt,
+    CenterOn,
+    FitBounds,
+    VisibleBounds,
+    BoundsOf,
+    BoundsIntersect,
+    UnionBounds,
+    TransformBounds,
+    BuildNetLayout,
+    BuildFocusLayout,
+    FindPlacement,
+    PlacementAt,
+    PanelTileGroups,
+    VisibleTiles,
+    HitTest,
+    DemoTerrain,
+  });
+})(globalThis);
+</script>
+
+<script data-module="Renderer" data-dom="true">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+  const { Projection, Lattice, Terrain, View } = RpgMap;
+
+  // Canvas drawing for a global map in a View layout. Tiles are drawn per panel through
+  // the frame → world → screen transform, clipped to the panel polygon, batched by colour.
+  const g_dRasterHexPixels = 3;
+  const g_nRasterMaxPixels = 4096;
+  const g_dSmallHexPixels = 4;
+  const g_dSeamPixels = 0.5;
+  const g_dGridMinPixels = 6;
+  // Canvas path fills slow down superlinearly with subpath count, so long tile lists are
+  // filled or stroked in chunks.
+  const g_nPathChunk = 512;
+  const g_szBackground = '#10151c';
+  const g_szGridColor = 'rgba(16, 21, 28, 0.35)';
+  const g_szOutlineColor = 'rgba(230, 230, 230, 0.8)';
+  const g_szFocusColor = '#ffd166';
+  const g_szHoverColor = '#ffd166';
+  const g_rgrgdHexUnit = [0, 1, 2, 3, 4, 5].map((nIndex) => [Math.cos(nIndex * Math.PI / 3), Math.sin(nIndex * Math.PI / 3)]);
+
+  function Create(Canvas) {
+    return { Canvas, Context: Canvas.getContext('2d'), dRatio: 1, Rasters: new Map(), MiniCamera: null };
+  }
+
+  // Matches the canvas backing store to its CSS size and resizes the camera.
+  function SyncSize(Canvas, Camera) {
     const dRatio = Root.devicePixelRatio || 1;
     const Rect = Canvas.getBoundingClientRect();
     const nWidth = Math.max(1, Math.round(Rect.width * dRatio));
@@ -2404,34 +2823,590 @@
       Canvas.width = nWidth;
       Canvas.height = nHeight;
     }
+    View.ResizeCamera(Camera, Rect.width, Rect.height);
     return dRatio;
   }
 
-  function DrawPlaceholder(Canvas) {
-    const dRatio = ResizeCanvas(Canvas);
-    const Context = Canvas.getContext('2d');
+  function SetTransform(Context, dRatio, rgdT) {
+    Context.setTransform(dRatio * rgdT[0], dRatio * rgdT[1], dRatio * rgdT[2], dRatio * rgdT[3], dRatio * rgdT[4], dRatio * rgdT[5]);
+  }
+
+  function TracePolygon(Context, rgrgdPolygon) {
+    Context.moveTo(rgrgdPolygon[0][0], rgrgdPolygon[0][1]);
+    for (let nIndex = 1; nIndex < rgrgdPolygon.length; nIndex++) {
+      Context.lineTo(rgrgdPolygon[nIndex][0], rgrgdPolygon[nIndex][1]);
+    }
+    Context.closePath();
+  }
+
+  // Adds a tile's outline to the current path, in its own panel frame. Small hexes are
+  // traced as their w × d cell, which tessellates and is much cheaper. dInflate grows
+  // whole hexes so neighbouring fills overlap and hide anti-aliasing seams.
+  function TraceTile(Context, Topo, nTile, fSmall, dInflate = 0) {
+    const Tile = Topo.rgTiles[nTile];
+    const [dX, dY] = Tile.rgdCenter;
+    if (fSmall) {
+      Context.rect(dX - Topo.dW / 2 - dInflate, dY - Topo.dD / 2 - dInflate, Topo.dW + 2 * dInflate, Topo.dD + 2 * dInflate);
+    } else if (Tile.rgPieces) {
+      Tile.rgPieces.forEach((Piece) => TracePolygon(Context, Piece.rgrgdPolygon));
+    } else {
+      const dRadius = Lattice.HexRadius(Topo.dD) + dInflate;
+      Context.moveTo(dX + dRadius, dY);
+      for (let nIndex = 1; nIndex < 6; nIndex++) {
+        Context.lineTo(dX + dRadius * g_rgrgdHexUnit[nIndex][0], dY + dRadius * g_rgrgdHexUnit[nIndex][1]);
+      }
+      Context.closePath();
+    }
+  }
+
+  // Traces rgnTiles in chunks, calling fnPaint after each chunk's path is built.
+  function PaintTiles(Context, Topo, rgnTiles, fSmall, dInflate, fnPaint) {
+    for (let nStart = 0; nStart < rgnTiles.length; nStart += g_nPathChunk) {
+      Context.beginPath();
+      const nEnd = Math.min(rgnTiles.length, nStart + g_nPathChunk);
+      for (let nIndex = nStart; nIndex < nEnd; nIndex++) {
+        TraceTile(Context, Topo, rgnTiles[nIndex], fSmall, dInflate);
+      }
+      fnPaint();
+    }
+  }
+
+  function IntersectBounds(rgdFirst, rgdSecond) {
+    return [Math.max(rgdFirst[0], rgdSecond[0]), Math.max(rgdFirst[1], rgdSecond[1]),
+      Math.min(rgdFirst[2], rgdSecond[2]), Math.min(rgdFirst[3], rgdSecond[3])];
+  }
+
+  // Draws terrain fills and/or the hex grid for every visible panel. dScale is screen
+  // pixels per world unit (layouts are rigid, so the same in every panel frame).
+  function DrawTiles(Context, dRatio, Doc, Layout, rgdWorldToScreen, rgdViewBounds, dScale, Options) {
+    const Topo = Doc.Topo;
+    const Built = Projection.Build();
+    const dHexPixels = Topo.dD * dScale;
+    const fSmall = dHexPixels < g_dSmallHexPixels;
+    const fGrid = Options.fGrid && dHexPixels >= g_dGridMinPixels;
+    if (!Options.fTerrain && !fGrid) {
+      return;
+    }
+    for (const Placement of Layout.rgPlacements) {
+      if (!View.BoundsIntersect(Placement.rgdBounds, rgdViewBounds)) {
+        continue;
+      }
+      const rgdFrameBounds = View.TransformBounds(Placement.rgdWorldToFrame, IntersectBounds(Placement.rgdBounds, rgdViewBounds));
+      Context.save();
+      SetTransform(Context, dRatio, Projection.ComposeTransforms(Placement.rgdFrameToWorld, rgdWorldToScreen));
+      Context.beginPath();
+      TracePolygon(Context, Built.Frames[Placement.szPanel].rgrgdPolygon);
+      Context.clip();
+      for (const Group of View.PanelTileGroups(Topo, Placement.szPanel)) {
+        const rgnVisible = View.VisibleTiles(Topo, Group, rgdFrameBounds);
+        if (rgnVisible.length === 0) {
+          continue;
+        }
+        Context.save();
+        const rgdT = Group.rgdToPanel;
+        Context.transform(rgdT[0], rgdT[1], rgdT[2], rgdT[3], rgdT[4], rgdT[5]);
+        if (Options.fTerrain) {
+          const Buckets = new Map();
+          for (const nTile of rgnVisible) {
+            const nId = Doc.rgnTerrain[nTile];
+            (Buckets.get(nId) || Buckets.set(nId, []).get(nId)).push(nTile);
+          }
+          const dInflate = g_dSeamPixels / dScale;
+          for (const [nId, rgnTiles] of Buckets) {
+            Context.fillStyle = Terrain.ById(nId).szColor;
+            PaintTiles(Context, Topo, rgnTiles, fSmall, dInflate, () => Context.fill());
+          }
+        }
+        if (fGrid) {
+          Context.lineWidth = 1 / dScale;
+          Context.strokeStyle = g_szGridColor;
+          PaintTiles(Context, Topo, rgnVisible, false, 0, () => Context.stroke());
+        }
+        Context.restore();
+      }
+      Context.restore();
+    }
+  }
+
+  // A cached terrain image of a whole layout, used when hexes are too small to draw.
+  function GetRaster(Renderer, szKey, Doc, Layout, dScale) {
+    const Cached = Renderer.Rasters.get(szKey);
+    if (Cached && Cached.Doc === Doc && Cached.Layout === Layout && Cached.nRevision === Doc.nRevision && Cached.dScale === dScale) {
+      return Cached;
+    }
+    const rgdBounds = Layout.rgdBounds;
+    const Canvas = Root.document.createElement('canvas');
+    Canvas.width = Math.max(1, Math.ceil((rgdBounds[2] - rgdBounds[0]) * dScale));
+    Canvas.height = Math.max(1, Math.ceil((rgdBounds[3] - rgdBounds[1]) * dScale));
+    const rgdWorldToRaster = [dScale, 0, 0, -dScale, -rgdBounds[0] * dScale, rgdBounds[3] * dScale];
+    DrawTiles(Canvas.getContext('2d'), 1, Doc, Layout, rgdWorldToRaster, rgdBounds, dScale, { fTerrain: true, fGrid: false });
+    const Raster = { Canvas, Doc, Layout, nRevision: Doc.nRevision, dScale, rgdBounds };
+    Renderer.Rasters.set(szKey, Raster);
+    return Raster;
+  }
+
+  function MainRasterScale(Doc, Layout) {
+    const rgdBounds = Layout.rgdBounds;
+    const dExtent = Math.max(rgdBounds[2] - rgdBounds[0], rgdBounds[3] - rgdBounds[1]);
+    return Math.min(g_dRasterHexPixels / Doc.Topo.dD, g_nRasterMaxPixels / dExtent);
+  }
+
+  function DrawRaster(Context, dRatio, Raster, rgdWorldToScreen) {
+    const rgdRasterToWorld = [1 / Raster.dScale, 0, 0, -1 / Raster.dScale, Raster.rgdBounds[0], Raster.rgdBounds[3]];
+    Context.save();
+    SetTransform(Context, dRatio, Projection.ComposeTransforms(rgdRasterToWorld, rgdWorldToScreen));
+    Context.imageSmoothingEnabled = true;
+    Context.drawImage(Raster.Canvas, 0, 0);
+    Context.restore();
+  }
+
+  function TraceScreenOutline(Context, Camera, Placement) {
+    TracePolygon(Context, Placement.rgrgdOutline.map((rgdPoint) => View.WorldToScreen(Camera, rgdPoint)));
+  }
+
+  // Panel shading, outlines and names, drawn in CSS pixels.
+  function DrawPanelDecorations(Context, dRatio, State) {
+    const { Camera, Layout, Layers } = State;
+    Context.save();
     Context.setTransform(dRatio, 0, 0, dRatio, 0, 0);
-    const dWidth = Canvas.width / dRatio;
-    const dHeight = Canvas.height / dRatio;
-    Context.clearRect(0, 0, dWidth, dHeight);
-    Context.fillStyle = '#5b6270';
-    Context.font = '14px system-ui, sans-serif';
-    Context.textAlign = 'center';
-    Context.textBaseline = 'middle';
-    Context.fillText('No map loaded', dWidth / 2, dHeight / 2);
+    if (Layout.szMode === 'focus') {
+      Context.beginPath();
+      Layout.rgPlacements.filter((Placement) => Placement.szPanel !== Layout.szFocus)
+        .forEach((Placement) => TraceScreenOutline(Context, Camera, Placement));
+      Context.fillStyle = 'rgba(16, 21, 28, 0.4)';
+      Context.fill();
+    }
+    if (Layers.fOutlines) {
+      Context.beginPath();
+      Layout.rgPlacements.forEach((Placement) => TraceScreenOutline(Context, Camera, Placement));
+      Context.lineWidth = 1.25;
+      Context.strokeStyle = g_szOutlineColor;
+      Context.lineJoin = 'round';
+      Context.stroke();
+      if (Layout.szMode === 'focus') {
+        Context.beginPath();
+        TraceScreenOutline(Context, Camera, View.FindPlacement(Layout, Layout.szFocus));
+        Context.lineWidth = 2;
+        Context.strokeStyle = g_szFocusColor;
+        Context.stroke();
+      }
+    }
+    if (Layers.fNames) {
+      Context.textAlign = 'center';
+      Context.textBaseline = 'middle';
+      Context.lineJoin = 'round';
+      for (const Placement of Layout.rgPlacements) {
+        const dPanelPixels = (Placement.rgdBounds[2] - Placement.rgdBounds[0]) * Camera.dScale;
+        if (dPanelPixels < 50) {
+          continue;
+        }
+        const nFont = Math.round(Math.min(22, Math.max(10, dPanelPixels * 0.06)));
+        const [dX, dY] = View.WorldToScreen(Camera, Placement.rgdCenter);
+        Context.font = `600 ${nFont}px system-ui, sans-serif`;
+        Context.lineWidth = 3;
+        Context.strokeStyle = 'rgba(16, 21, 28, 0.75)';
+        Context.strokeText(Placement.szName, dX, dY);
+        Context.fillStyle = '#f2f2f2';
+        Context.fillText(Placement.szName, dX, dY);
+      }
+    }
+    Context.restore();
+  }
+
+  function DrawHover(Context, dRatio, State, rgdWorldToScreen) {
+    const { Doc, Layout, nHoverTile } = State;
+    if (nHoverTile < 0) {
+      return;
+    }
+    const Placement = View.FindPlacement(Layout, Doc.Topo.rgTiles[nHoverTile].szPanel);
+    if (!Placement) {
+      return;
+    }
+    Context.save();
+    SetTransform(Context, dRatio, Projection.ComposeTransforms(Placement.rgdFrameToWorld, rgdWorldToScreen));
+    Context.beginPath();
+    TraceTile(Context, Doc.Topo, nHoverTile, false);
+    Context.lineWidth = 2 / State.Camera.dScale;
+    Context.strokeStyle = g_szHoverColor;
+    Context.stroke();
+    Context.restore();
+  }
+
+  // State: { Doc, Layout, Camera, Layers: { fTerrain, fGrid, fOutlines, fNames }, nHoverTile }.
+  // Returns { fRaster, dHexPixels } for the status bar.
+  function Draw(Renderer, State) {
+    const { Canvas, Context } = Renderer;
+    const { Doc, Layout, Camera, Layers } = State;
+    const dRatio = SyncSize(Canvas, Camera);
+    Renderer.dRatio = dRatio;
+    Context.setTransform(1, 0, 0, 1, 0, 0);
+    Context.fillStyle = g_szBackground;
+    Context.fillRect(0, 0, Canvas.width, Canvas.height);
+    const rgdWorldToScreen = View.WorldToScreenTransform(Camera);
+    const rgdViewBounds = View.VisibleBounds(Camera);
+    const dHexPixels = Doc.Topo.dD * Camera.dScale;
+    const dRasterScale = MainRasterScale(Doc, Layout);
+    const fRaster = Layers.fTerrain && dHexPixels < g_dRasterHexPixels && Camera.dScale <= dRasterScale * 1.5;
+    if (fRaster) {
+      DrawRaster(Context, dRatio, GetRaster(Renderer, 'main', Doc, Layout, dRasterScale), rgdWorldToScreen);
+    } else {
+      DrawTiles(Context, dRatio, Doc, Layout, rgdWorldToScreen, rgdViewBounds, Camera.dScale,
+        { fTerrain: Layers.fTerrain, fGrid: Layers.fGrid });
+    }
+    DrawPanelDecorations(Context, dRatio, State);
+    DrawHover(Context, dRatio, State, rgdWorldToScreen);
+    return { fRaster, dHexPixels };
+  }
+
+  // The net navigator: cached terrain image, panel outlines, and the main view's extent.
+  function DrawMinimap(Renderer, MiniCanvas, State) {
+    const NetLayout = View.BuildNetLayout();
+    const MiniCamera = Renderer.MiniCamera || (Renderer.MiniCamera = View.CreateCamera());
+    const dRatio = SyncSize(MiniCanvas, MiniCamera);
+    View.FitBounds(MiniCamera, NetLayout.rgdBounds, 4);
+    const Context = MiniCanvas.getContext('2d');
+    Context.setTransform(1, 0, 0, 1, 0, 0);
+    Context.fillStyle = g_szBackground;
+    Context.fillRect(0, 0, MiniCanvas.width, MiniCanvas.height);
+    const rgdWorldToScreen = View.WorldToScreenTransform(MiniCamera);
+    DrawRaster(Context, dRatio, GetRaster(Renderer, 'mini', State.Doc, NetLayout, MiniCamera.dScale * dRatio), rgdWorldToScreen);
+    Context.save();
+    Context.setTransform(dRatio, 0, 0, dRatio, 0, 0);
+    Context.beginPath();
+    NetLayout.rgPlacements.forEach((Placement) => TraceScreenOutline(Context, MiniCamera, Placement));
+    Context.lineWidth = 0.75;
+    Context.strokeStyle = 'rgba(230, 230, 230, 0.6)';
+    Context.stroke();
+    Context.lineWidth = 1.5;
+    Context.strokeStyle = g_szFocusColor;
+    if (State.Layout.szMode === 'net') {
+      const [dMinX, dMinY, dMaxX, dMaxY] = View.VisibleBounds(State.Camera);
+      const [dLeft, dTop] = View.WorldToScreen(MiniCamera, [dMinX, dMaxY]);
+      const [dRight, dBottom] = View.WorldToScreen(MiniCamera, [dMaxX, dMinY]);
+      Context.strokeRect(dLeft, dTop, dRight - dLeft, dBottom - dTop);
+    } else {
+      Context.beginPath();
+      TraceScreenOutline(Context, MiniCamera, View.FindPlacement(NetLayout, State.Layout.szFocus));
+      Context.stroke();
+    }
+    Context.restore();
+    return MiniCamera;
+  }
+
+  RpgMap.Renderer = Object.freeze({
+    g_dRasterHexPixels,
+    g_dGridMinPixels,
+    Create,
+    Draw,
+    DrawMinimap,
+  });
+})(globalThis);
+</script>
+
+<script data-module="App" data-dom="true">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+  const { Util, Projection, Coordinates, Terrain, Model, History, View, Renderer } = RpgMap;
+
+  const g_szVersion = '0.2.0';
+  const g_dKeyPanPixels = 60;
+  const g_dKeyZoomFactor = 1.25;
+  const g_rgLayerToggles = [
+    ['fTerrain', 'Terrain'],
+    ['fGrid', 'Hex grid'],
+    ['fOutlines', 'Panel outlines'],
+    ['fNames', 'Panel names'],
+  ];
+
+  const State = {
+    Doc: null,
+    History: null,
+    Layout: null,
+    Camera: View.CreateCamera(),
+    Layers: { fTerrain: true, fGrid: true, fOutlines: true, fNames: true },
+    nHoverTile: -1,
+    Renderer: null,
+    MiniCanvas: null,
+    MiniCamera: null,
+    fFrameQueued: false,
+    LastDraw: null,
+  };
+
+  function Element(szTag, Props = {}, rgChildren = []) {
+    const Node = Root.document.createElement(szTag);
+    Object.assign(Node, Props);
+    rgChildren.forEach((Child) => Node.append(Child));
+    return Node;
+  }
+
+  function RequestDraw() {
+    if (!State.fFrameQueued) {
+      State.fFrameQueued = true;
+      Root.requestAnimationFrame(() => {
+        State.fFrameQueued = false;
+        State.LastDraw = Renderer.Draw(State.Renderer, State);
+        State.MiniCamera = Renderer.DrawMinimap(State.Renderer, State.MiniCanvas, State);
+        UpdateStatus();
+      });
+    }
+  }
+
+  function UpdateStatus() {
+    const Doc = State.Doc;
+    let szCoordinates = '\u00a0';
+    if (State.nHoverTile >= 0) {
+      const Tile = Doc.Topo.rgTiles[State.nHoverTile];
+      const Panel = Projection.Build().Panels[Tile.szPanel];
+      szCoordinates = [
+        Coordinates.FormatUniversal(Coordinates.TileToUniversal(Doc.Topo, State.nHoverTile)),
+        `${Panel.szName} (${Panel.szLetter}) col ${Tile.nColumn} row ${Tile.nRow}${Tile.fPartial ? ' partial' : ''}`,
+        Terrain.ById(Model.GetTerrain(Doc, State.nHoverTile)).szName,
+        `tile ${State.nHoverTile}`,
+      ].join(' \u00b7 ');
+    }
+    Root.document.getElementById('status-coordinates').textContent = szCoordinates;
+    const szView = State.Layout.szMode === 'net' ? 'Net view' : `Focus: ${Projection.Build().Panels[State.Layout.szFocus].szName}`;
+    const Draw = State.LastDraw;
+    Root.document.getElementById('status-message').textContent = [
+      szView,
+      `n=${Doc.Global.nPanelHexes} ${Doc.Global.szTileScale}`,
+      `${Doc.nTiles.toLocaleString('en-US')} tiles`,
+      Draw ? `hex ${Util.FormatNumber(Draw.dHexPixels, 1)} px${Draw.fRaster ? ' (raster)' : ''}` : '',
+      `v${g_szVersion}`,
+    ].filter(Boolean).join(' \u00b7 ');
+  }
+
+  function SetHover(nTile) {
+    if (nTile !== State.nHoverTile) {
+      State.nHoverTile = nTile;
+      RequestDraw();
+    }
+  }
+
+  function HoverAt(rgdScreen) {
+    const Hit = View.HitTest(State.Doc.Topo, State.Layout, View.ScreenToWorld(State.Camera, rgdScreen));
+    SetHover(Hit ? Hit.nTile : -1);
+  }
+
+  function FitNet() {
+    View.FitBounds(State.Camera, State.Layout.rgdBounds);
+    RequestDraw();
+  }
+
+  // Fits the focus panel, or in the net view the panel under the view centre.
+  function FitPanel() {
+    let szPanel = State.Layout.szFocus;
+    if (!szPanel) {
+      const Hit = View.PlacementAt(State.Layout, [State.Camera.dCenterX, State.Camera.dCenterY]);
+      szPanel = Hit ? Hit.Placement.szPanel : null;
+    }
+    if (szPanel) {
+      View.FitBounds(State.Camera, View.FindPlacement(State.Layout, szPanel).rgdBounds);
+    } else {
+      View.FitBounds(State.Camera, State.Layout.rgdBounds);
+    }
+    RequestDraw();
+  }
+
+  // Switches to the focus view of szPanel, keeping rgdFrame (a point in that panel's
+  // frame) at the view centre, or fitting the panel when rgdFrame is null.
+  function ShowFocus(szPanel, rgdFrame = null) {
+    State.Layout = View.BuildFocusLayout(szPanel);
+    if (rgdFrame) {
+      View.CenterOn(State.Camera, rgdFrame);
+    } else {
+      View.FitBounds(State.Camera, View.FindPlacement(State.Layout, szPanel).rgdBounds);
+    }
+    SyncControls();
+    RequestDraw();
+  }
+
+  // Back to the net, keeping the current view centre where it was on the focus panel.
+  function ShowNet() {
+    if (State.Layout.szMode === 'focus') {
+      const Frame = Projection.Build().Frames[State.Layout.szFocus];
+      const rgdCenter = Projection.ApplyTransform(Frame.rgdFrameToNet, [State.Camera.dCenterX, State.Camera.dCenterY]);
+      State.Layout = View.BuildNetLayout();
+      View.CenterOn(State.Camera, rgdCenter);
+    }
+    SyncControls();
+    RequestDraw();
+  }
+
+  function FocusAtViewCenter() {
+    const Hit = View.PlacementAt(State.Layout, [State.Camera.dCenterX, State.Camera.dCenterY]);
+    if (Hit) {
+      ShowFocus(Hit.Placement.szPanel, Hit.rgdFrame);
+    }
+  }
+
+  function SyncControls() {
+    const Select = Root.document.getElementById('focus-panel');
+    Select.value = State.Layout.szFocus || '';
+    Root.document.getElementById('view-net').setAttribute('aria-pressed', String(State.Layout.szMode === 'net'));
+  }
+
+  function BuildToolbar() {
+    const Built = Projection.Build();
+    const rgszGreek = Object.keys(Projection.g_SectorLabels);
+    const Select = Element('select', { id: 'focus-panel', title: 'Focus view: one panel north-up with its neighbours unfolded' }, [
+      Element('option', { value: '', textContent: 'Focus panel\u2026' }),
+      ...rgszGreek.map((szPanel) => Element('option', { value: szPanel, textContent: `${Built.Panels[szPanel].szLetter} ${Built.Panels[szPanel].szName}` })),
+    ]);
+    Select.addEventListener('change', () => (Select.value ? ShowFocus(Select.value) : ShowNet()));
+    const rgButtons = [
+      Element('button', { id: 'view-net', type: 'button', textContent: 'Net view', title: 'Show the whole net (N)', onclick: ShowNet }),
+      Select,
+      Element('button', { id: 'fit-net', type: 'button', textContent: 'Fit all', title: 'Fit the whole view (Home)', onclick: FitNet }),
+      Element('button', { id: 'fit-panel', type: 'button', textContent: 'Fit panel', title: 'Fit the focus panel or the panel at the centre (F)', onclick: FitPanel }),
+    ];
+    Root.document.getElementById('toolbar-actions').replaceChildren(...rgButtons);
+  }
+
+  function BuildLayerList() {
+    const rgRows = g_rgLayerToggles.map(([szKey, szLabel]) => {
+      const Box = Element('input', { type: 'checkbox', checked: State.Layers[szKey], id: `layer-${szKey}` });
+      Box.addEventListener('change', () => {
+        State.Layers[szKey] = Box.checked;
+        RequestDraw();
+      });
+      return Element('label', { className: 'layer-toggle' }, [Box, ` ${szLabel}`]);
+    });
+    Root.document.getElementById('layer-list').replaceChildren(...rgRows);
+  }
+
+  function BuildLegend() {
+    const rgRows = Terrain.g_rgTerrains.map((Item) => Element('div', { className: 'legend-row' }, [
+      Element('span', { className: 'swatch', style: `background:${Item.szColor}` }),
+      Element('code', { textContent: Item.szChar }),
+      ` ${Item.szName}`,
+    ]));
+    Root.document.getElementById('property-list').replaceChildren(Element('h2', { textContent: 'Terrain' }), ...rgRows);
+  }
+
+  function LocalPoint(Event, Target) {
+    const Rect = Target.getBoundingClientRect();
+    return [Event.clientX - Rect.left, Event.clientY - Rect.top];
+  }
+
+  function AttachCanvasEvents(Canvas) {
+    let Drag = null;
+    Canvas.addEventListener('pointerdown', (Event) => {
+      Drag = { nPointer: Event.pointerId, rgdLast: LocalPoint(Event, Canvas) };
+      Canvas.setPointerCapture(Event.pointerId);
+      Canvas.classList.add('dragging');
+    });
+    Canvas.addEventListener('pointermove', (Event) => {
+      const rgdPoint = LocalPoint(Event, Canvas);
+      if (Drag && Drag.nPointer === Event.pointerId) {
+        View.Pan(State.Camera, rgdPoint[0] - Drag.rgdLast[0], rgdPoint[1] - Drag.rgdLast[1]);
+        Drag.rgdLast = rgdPoint;
+        RequestDraw();
+      }
+      HoverAt(rgdPoint);
+    });
+    const EndDrag = (Event) => {
+      if (Drag && Drag.nPointer === Event.pointerId) {
+        Drag = null;
+        Canvas.classList.remove('dragging');
+      }
+    };
+    Canvas.addEventListener('pointerup', EndDrag);
+    Canvas.addEventListener('pointercancel', EndDrag);
+    Canvas.addEventListener('pointerleave', () => SetHover(-1));
+    Canvas.addEventListener('wheel', (Event) => {
+      Event.preventDefault();
+      const dDelta = Event.deltaMode === 1 ? Event.deltaY * 16 : Event.deltaY;
+      View.ZoomAt(State.Camera, LocalPoint(Event, Canvas), Math.exp(-dDelta * 0.0015));
+      HoverAt(LocalPoint(Event, Canvas));
+      RequestDraw();
+    }, { passive: false });
+    Canvas.addEventListener('dblclick', (Event) => {
+      const Hit = View.PlacementAt(State.Layout, View.ScreenToWorld(State.Camera, LocalPoint(Event, Canvas)));
+      if (Hit && (State.Layout.szMode === 'net' || Hit.Placement.szPanel !== State.Layout.szFocus)) {
+        ShowFocus(Hit.Placement.szPanel, State.Layout.szMode === 'net' ? null : Hit.rgdFrame);
+      }
+    });
+  }
+
+  function AttachMinimapEvents(MiniCanvas) {
+    MiniCanvas.addEventListener('click', (Event) => {
+      if (!State.MiniCamera) {
+        return;
+      }
+      const rgdNet = View.ScreenToWorld(State.MiniCamera, LocalPoint(Event, MiniCanvas));
+      if (State.Layout.szMode === 'net') {
+        View.CenterOn(State.Camera, rgdNet);
+        RequestDraw();
+        return;
+      }
+      const Hit = View.PlacementAt(View.BuildNetLayout(), rgdNet);
+      if (Hit) {
+        ShowFocus(Hit.Placement.szPanel, Hit.rgdFrame);
+      }
+    });
+  }
+
+  function AttachKeyboard() {
+    Root.addEventListener('keydown', (Event) => {
+      const szTag = Event.target && Event.target.tagName;
+      if (szTag === 'INPUT' || szTag === 'SELECT' || szTag === 'TEXTAREA' || Event.ctrlKey || Event.metaKey || Event.altKey) {
+        return;
+      }
+      const dStep = g_dKeyPanPixels * (Event.shiftKey ? 4 : 1);
+      const rgdCenter = [State.Camera.nWidth / 2, State.Camera.nHeight / 2];
+      const Actions = {
+        ArrowLeft: () => View.Pan(State.Camera, dStep, 0),
+        ArrowRight: () => View.Pan(State.Camera, -dStep, 0),
+        ArrowUp: () => View.Pan(State.Camera, 0, dStep),
+        ArrowDown: () => View.Pan(State.Camera, 0, -dStep),
+        '+': () => View.ZoomAt(State.Camera, rgdCenter, g_dKeyZoomFactor),
+        '=': () => View.ZoomAt(State.Camera, rgdCenter, g_dKeyZoomFactor),
+        '-': () => View.ZoomAt(State.Camera, rgdCenter, 1 / g_dKeyZoomFactor),
+        Home: FitNet,
+        f: FitPanel,
+        n: ShowNet,
+        p: FocusAtViewCenter,
+      };
+      const Action = Actions[Event.key];
+      if (Action) {
+        Event.preventDefault();
+        Action();
+        RequestDraw();
+      }
+    });
+  }
+
+  // A new global map seeded with the deterministic demo terrain (no undo history).
+  function CreateDemoDocument() {
+    const Doc = Model.CreateGlobalMap({ szName: 'Demo' });
+    View.DemoTerrain(Doc.Topo, 1).forEach((nId, nTile) => Model.SetTerrain(Doc, nTile, nId));
+    return Doc;
   }
 
   function Start() {
     const Canvas = Root.document.getElementById('map-canvas');
-    const Redraw = () => DrawPlaceholder(Canvas);
-    new Root.ResizeObserver(Redraw).observe(Canvas);
-    Redraw();
-    const rgszModules = Object.keys(RpgMap).filter((szName) => szName !== 'App');
-    Root.document.getElementById('status-message').textContent =
-      `v${g_szVersion} \u2014 modules: ${rgszModules.join(', ')}`;
+    State.MiniCanvas = Root.document.getElementById('minimap');
+    State.Renderer = Renderer.Create(Canvas);
+    State.Doc = CreateDemoDocument();
+    State.History = History.Create(State.Doc);
+    State.Layout = View.BuildNetLayout();
+    BuildToolbar();
+    BuildLayerList();
+    BuildLegend();
+    AttachCanvasEvents(Canvas);
+    AttachMinimapEvents(State.MiniCanvas);
+    AttachKeyboard();
+    const Rect = Canvas.getBoundingClientRect();
+    View.ResizeCamera(State.Camera, Rect.width, Rect.height);
+    View.FitBounds(State.Camera, State.Layout.rgdBounds);
+    new Root.ResizeObserver(RequestDraw).observe(Canvas);
+    SyncControls();
+    RequestDraw();
   }
 
-  RpgMap.App = Object.freeze({ g_szVersion, Start });
+  RpgMap.App = Object.freeze({ g_szVersion, State, Start, ShowFocus, ShowNet, FitNet, FitPanel });
 
   if (Root.document.readyState === 'loading') {
     Root.document.addEventListener('DOMContentLoaded', Start);

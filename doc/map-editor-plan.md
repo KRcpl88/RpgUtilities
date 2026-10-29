@@ -23,6 +23,7 @@ tests/
   projection.test.cjs           # port vs golden JSON, frames, seams                     [done]
   lattice.test.cjs  topology.test.cjs  coordinates.test.cjs                               [done]
   model.test.cjs                                                                         [done]
+  view.test.cjs                 # camera, layouts, hit testing, culling, demo terrain    [done]
   fileformat.test.cjs  regions.test.cjs  svgexport.test.cjs
   fixtures/sample-global.map.txt  fixtures/sample-local.map.txt
 tools/generate_map_projection.py                                                         [done]
@@ -52,7 +53,7 @@ Every module is an inline block that registers one frozen object:
 - Blocks appear in dependency order; `Util` is first and `App` is last.
 - Blocks that touch the DOM carry `data-dom="true"`. The tests skip these, so every other block must be DOM-free.
 - `tests/_load.cjs` `LoadModules()` blanks out HTML comments, compiles each DOM-free block with `vm.compileFunction` (passing a sandbox object as `globalThis`, with `lineOffset` so errors report `index.html` line numbers), and returns `RpgMap`.
-- **Planned modules, in order:** `Util` ✅ → `Projection` ✅ → `Lattice` ✅ → `Topology` ✅ → `Coordinates` ✅ → `Terrain` ✅ → `Model` ✅ → `History` ✅ → `FileFormat` → `Regions` → `SvgExport` → `Renderer`* → `Tools`* → `App`* ✅. Modules marked * use the DOM.
+- **Planned modules, in order:** `Util` ✅ → `Projection` ✅ → `Lattice` ✅ → `Topology` ✅ → `Coordinates` ✅ → `Terrain` ✅ → `Model` ✅ → `History` ✅ → `View` ✅ → `FileFormat` → `Regions` → `SvgExport` → `Renderer`* ✅ → `Tools`* → `App`* ✅. Modules marked * use the DOM.
 
 ## 3. Projection module (port of the Python geometry)
 
@@ -302,7 +303,7 @@ road r1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Zeta
 2. ✅ **Projection:** JS port, validation, panel frames (north axis, reference point, equator), 48 seam transforms.
 3. ✅ **Lattice and Topology:** flat-top lattice, global size and scales, equatorial continuous lattice, partial tiles clipped per panel, adjacency, universal coordinates (miles), local-map lattice.
 4. ✅ **Terrain table, Model, History.**
-5. **Renderer and viewport:** pan, zoom, culling, clipped panels, outlines, minimap, panel focus view, status bar coordinates.
+5. ✅ **Renderer and viewport:** pan, zoom, culling, clipped panels, outlines, minimap, panel focus view, status bar coordinates.
 6. **Terrain tools:** brush, fill, eyedropper, undo/redo.
 7. **File format:** `doc/file-format.md`, writer, parser, open/save/autosave, fixtures.
 8. **Overlays, landmarks, labels:** tools, properties panel, A* gap filling.
@@ -338,6 +339,12 @@ road r1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Zeta
 23. **Label defaults:** size region 28, city 18, location 14 (SVG px at 1:1 export); rotation in degrees, clockwise; `dx`, `dy` offsets default to 0.
 24. **History:** a command is `{ szLabel, rgChanges }`. `Begin`/`Record`/`Commit` group a brush stroke; on commit, repeated terrain or landmark changes to one tile coalesce (first `Before`, last `After`) and net no-ops are dropped; an empty command is discarded without clearing redo. `Perform(History, szLabel, (Doc, fnRecord) => …)` reverts recorded changes if the callback throws. The stack keeps the latest 500 commands.
 25. **Local tile numbering:** local tile index = `y · width + x`; local `(x, y)` is lattice offset `(x + parity, −y)`, which gives the neighbours.
+26. **View module:** camera, layouts, culling, hit testing and the demo terrain live in a DOM-free `View` module (after `History`) so they are unit-tested; `Renderer` only does canvas drawing.
+27. **World space:** in the net view, world = net space; in the panel focus view, world = the focus panel's frame. Both are y-up edge units. A layout is a list of placements `{ szPanel, rgdFrameToWorld, … }`; focus layouts place each edge-neighbour through its seam transform and draw the focus panel last.
+28. **Overhanging hexes:** whole equatorial hexes on a panel's east/west edge overhang the neighbouring equatorial panel. Each equatorial panel also draws its strip neighbours' edge columns (mapped through the seam), clipped to its own polygon, so the strip renders without gaps.
+29. **Drawing thresholds (hex size in screen pixels):** below 3 px, a cached raster of the whole layout is used (at most 4096 px across, rebuilt when the document revision changes); below 4 px, tiles are filled as their w × d cells; the hex grid appears at 6 px. Fills are inflated by ½ px to hide anti-aliasing seams and are issued in chunks of 512 tiles, because canvas path fills slow down superlinearly with subpath count.
+30. **Demo terrain:** until files can be opened (milestone 7), the editor starts with `View.DemoTerrain(Topo, 1)`, a deterministic world from seeded sphere waves.
+31. **Viewport input (milestone 5):** dragging with any button pans; milestone 6 moves pan to the middle/right button or Space+drag when the left button becomes the active tool. A double-click opens the focus view on the clicked panel. A minimap click recentres the net view, or refocuses on the clicked panel in focus view. Keys: arrows pan (Shift ×4), `+`/`=`/`-` zoom, Home fits all, `F` fits the panel, `N` shows the net, `P` focuses the panel at the view centre.
 
 ## 12. Open questions
 
