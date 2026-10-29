@@ -1,0 +1,90 @@
+# RPGMAP 1
+
+[map]
+kind = local
+name = "Sample Valley"
+width = 36
+height = 26
+system = regional
+size = M
+anchor = Eta 119.5W 339.0N
+panelHexes = 24
+
+[legend]
+~ water
+i islands
+o lakes
+v firth
+. plain
+h hills
+M mountains
+A mountainPeak
+d desert
+D sandDunes
+f forest
+m marsh
+g mangrove
+t tundra
+c canyon
+b badlands
+= farmland
+
+[local]
+columns = 36
+rows = 26
+...........fffff...........ttttttttt
+..........ffffffff........tttttttttt
+.........fffffffff....hhhhhhtttttttt
+........fffffffffff....hhhhMMMtttttt
+~........ffffffffff...hhhhMMMMAttttt
+~~.~.....ffffffff..ooohhhMMMMMMMttt.
+~~~~......fffffff..ooo.hhMMMAMM.t.t.
+~iii~.......fffff...o.hfhMMMMMM.t...
+~iiii~.......=====....fffff.MMM.....
+~ii~~~.....========...fffff.........
+~~~~~~......=======...fffff.........
+~~~~~~~.....=======...f.ff..........
+~~~~~~~v.v...=====..................
+~~~~~~vvvv....===..=................
+~~~~~~~vvv.......=.===..............
+~~~~~~~..mmm.....=====.....d.dddd...
+ii~~~~...mmmm....=====....dddddddd..
+i~i~~~~..mmmmmm...===....cccddddddd.
+~~~~~~...mmmmm...........cccddddddd.
+~~~~~~ggggmmm...........bbccdddddDdd
+~~~~~gggg.g..........bbbbbcdcddDDDDd
+~~~~~~gggg............bbbbbdddDDDDD.
+~~~~~~ggg.............bbbbb.ddDDDDD.
+~~~~~~~~.............bbbbbb.d.DDDD..
+~~~~~~~~~.............bbbb......D...
+~~~~~~~~~...........................
+
+[landmarks]
+Eta 46.8E 321.0N dungeon "Ice Vault"
+Eta 62.4W 312.0N temple "Grove Shrine"
+Eta 20.8E 312.0N mine "Deep Seam"
+Eta 46.8W 291.0N town "Millbrook"
+Eta 15.6E 285.0N fortress "Ironpass Keep"
+Eta 20.8W 270.0N castle "Highwatch"
+Eta 31.2W 258.0N city "Riverford"
+Eta 10.4W 234.0N village "Ashby"
+Eta 10.4E 222.0N cave "Echo Cave"
+Eta 67.5W 219.0N tower "Fen Tower"
+Eta 41.6E 216.0N ruins "Sunken Court"
+
+[labels]
+Eta 98.7W 261.0N region id=label1 size=28 rot=-80 dx=0 dy=0 "Grey Sea"
+Eta 36.4E 213.0N region id=label2 size=28 rot=0 dx=0 dy=0 "Ember Waste"
+Eta 52.0W 318.0N location id=label3 size=14 rot=0 dx=0 dy=0 "Old Wood"
+Eta 31.2W 258.0N city id=label4 size=18 rot=0 dx=0 dy=22 "Riverford"
+Eta 5.2E 249.0N location id=label5 size=14 rot=15 dx=0 dy=0 "Kings Road"
+Eta 31.2E 306.0N location id=label6 size=14 rot=-30 dx=0 dy=0 "Miners Path"
+Eta 5.2W 291.0N location id=label7 size=14 rot=25 dx=0 dy=-10 "Silverrun"
+
+[overlays]
+road road1 "Kings Road" : Eta 46.8W 291.0N; 41.6W 288.0N; 36.4W 285.0N; 31.2W 282.0N; 31.2W 276.0N; 31.2W 270.0N; 31.2W 264.0N; 31.2W 258.0N; 26.0W 255.0N; 20.8W 252.0N; 15.6W 249.0N; 10.4W 246.0N; 10.4W 240.0N; 10.4W 234.0N; 5.2W 237.0N; 0.0E 240.0N; 5.2E 243.0N; 10.4E 246.0N; 15.6E 249.0N; 20.8E 252.0N; 26.0E 255.0N; 31.2E 252.0N; 36.4E 249.0N; 41.6E 246.0N; 46.8E 243.0N; 52.0E 240.0N; 57.2E 237.0N; 62.4E 234.0N
+road road2 style=paved "Pass Road" : Eta 20.8W 270.0N; 15.6W 273.0N; 10.4W 276.0N; 5.2W 279.0N; 0.0E 282.0N; 5.2E 285.0N; 10.4E 288.0N; 15.6E 285.0N
+trail trail1 "Miners Path" : Eta 15.6E 285.0N; 15.6E 291.0N; 15.6E 297.0N; 15.6E 303.0N; 15.6E 309.0N; 20.8E 312.0N; 26.0E 315.0N; 31.2E 318.0N; 36.4E 321.0N; 41.6E 324.0N; 46.8E 321.0N
+trail trail2 "" : Eta 10.4W 234.0N; 5.2W 231.0N; 0.0E 228.0N; 5.2E 225.0N; 10.4E 222.0N; 15.6E 225.0N; 20.8E 228.0N; 26.0E 225.0N; 31.2E 222.0N; 36.4E 219.0N; 41.6E 216.0N
+river river1 "Silverrun" : Eta 15.6E 303.0N; 10.4E 306.0N; 5.2E 309.0N; 0.0E 312.0N; 5.2W 309.0N; 10.4W 306.0N; 15.6W 303.0N; 20.8W 300.0N; 26.0W 297.0N; 26.0W 291.0N; 26.0W 285.0N; 26.0W 279.0N; 26.0W 273.0N; 26.0W 267.0N; 31.2W 270.0N; 36.4W 273.0N; 41.6W 276.0N; 46.8W 273.0N; 52.0W 270.0N; 57.2W 267.0N; 62.4W 264.0N; 67.5W 261.0N; 72.7W 258.0N
+river river2 "Fenwater" : Eta 52.0W 234.0N; 57.2W 237.0N; 62.4W 234.0N; 67.5W 231.0N; 72.7W 228.0N; 77.9W 225.0N

@@ -353,9 +353,17 @@
     return [dT0, dT1];
   }
 
+  // Allocation-free: hot in hit testing and embellishment scatter.
   function PointInConvex(rgdPoint, rgrgdClip, dTolerance = g_dEpsilon) {
-    return Boundary(rgrgdClip).every(([rgdStart, rgdEnd]) =>
-      EdgeSide(rgdStart, rgdEnd, rgdPoint) / Distance(rgdStart, rgdEnd) >= -dTolerance);
+    const nCount = rgrgdClip.length;
+    for (let nIndex = 0; nIndex < nCount; nIndex++) {
+      const rgdStart = rgrgdClip[nIndex], rgdEnd = rgrgdClip[(nIndex + 1) % nCount];
+      const dX = rgdStart[0] - rgdEnd[0], dY = rgdStart[1] - rgdEnd[1];
+      if (EdgeSide(rgdStart, rgdEnd, rgdPoint) / Math.sqrt(dX * dX + dY * dY) < -dTolerance) {
+        return false;
+      }
+    }
+    return true;
   }
 
   // Mulberry32: small, fast, deterministic PRNG returning floats in [0, 1).
@@ -1797,6 +1805,55 @@
     return MakeLocation(szPanel, dEast || 0, dNorth || 0);
   }
 
+  // True (spherical) coordinates are for display only: a panel-plane point is projected
+  // centrally onto the globe. The prime meridian runs through eta's opposite vertex
+  // (+1, +1, −1); true east is north × outward, matching the panel frames.
+  const g_rgdPrimeMeridian = Object.freeze(Util.Unit(Util.Subtract([1, 1, -1],
+    Util.Scale(Projection.g_North, Util.Dot([1, 1, -1], Projection.g_North)))));
+  const g_rgdTrueEast = Object.freeze(Util.Cross(Projection.g_North, g_rgdPrimeMeridian));
+
+  // { dLatitude, dLongitude } in degrees (east and north positive) plus
+  // dNorthBearing: the clockwise angle in degrees from panel north to true north at the
+  // point (null at a pole). dMilesPerEdge converts universal miles to frame units.
+  function TrueCoordinates(Location, dMilesPerEdge) {
+    const Frame = Projection.Build().Frames[Location.szPanel];
+    Require(Frame !== undefined, `Unknown panel: ${Location.szPanel}`);
+    Require(dMilesPerEdge > 0, 'Miles per edge must be positive');
+    const rgdSolid = Projection.FrameToSolid(Frame, [Location.dEast / dMilesPerEdge, Location.dNorth / dMilesPerEdge]);
+    const rgdPoint = Util.Unit(rgdSolid);
+    const dSinLatitude = Math.max(-1, Math.min(1, Util.Dot(rgdPoint, Projection.g_North)));
+    const dLatitude = Math.asin(dSinLatitude) * 180 / Math.PI;
+    const fPole = 1 - Math.abs(dSinLatitude) < 1e-12;
+    const dLongitude = fPole ? 0
+      : Math.atan2(Util.Dot(rgdPoint, g_rgdTrueEast), Util.Dot(rgdPoint, g_rgdPrimeMeridian)) * 180 / Math.PI;
+    // Central projection maps meridians to straight lines: the meridian through the
+    // point meets the panel plane along normal × (north × point).
+    let dNorthBearing = null;
+    if (!fPole) {
+      let rgdDirection = Util.Cross(Frame.rgdNormal3D, Util.Cross(Projection.g_North, rgdSolid));
+      const rgdTrueNorth = Util.Subtract(Projection.g_North, Util.Scale(rgdPoint, dSinLatitude));
+      if (Util.Dot(rgdDirection, rgdTrueNorth) < 0) {
+        rgdDirection = Util.Scale(rgdDirection, -1);
+      }
+      dNorthBearing = Math.atan2(Util.Dot(rgdDirection, Frame.rgdEast3D), Util.Dot(rgdDirection, Frame.rgdNorth3D)) * 180 / Math.PI;
+    }
+    return Object.freeze({ dLatitude, dLongitude: dLongitude === -180 ? 180 : dLongitude, dNorthBearing });
+  }
+
+  // For example "35.264°N 30.000°W".
+  function FormatTrue(True, nDecimals = 3) {
+    return `${FormatAxis(True.dLatitude, nDecimals, '\u00b0N', '\u00b0S')} ${FormatAxis(True.dLongitude, nDecimals, '\u00b0E', '\u00b0W')}`;
+  }
+
+  // Decimal places that resolve about a tenth of a hex in degrees.
+  function TrueDecimals(dHexMiles, dMilesPerEdge) {
+    const Built = Projection.Build();
+    const dPlaneDistance = Util.Dot(Built.Frames[Built.rgszEquatorialWestToEast[0]].rgdOrigin3D,
+      Built.Frames[Built.rgszEquatorialWestToEast[0]].rgdNormal3D);
+    const dDegrees = dHexMiles / dMilesPerEdge / dPlaneDistance * 180 / Math.PI;
+    return Math.max(1, Math.min(9, Math.ceil(-Math.log10(dDegrees / 10))));
+  }
+
   // A flat local map: nWidth × nHeight flat-top hexes, tile (0, 0) in the north-west,
   // x east and y south, oriented to panel north at the anchor (centre of tile (0, 0)).
   // Regional anchors snap to the global lattice of the same scale, so local tiles nest.
@@ -1876,6 +1933,9 @@
     UniversalToTile,
     FormatUniversal,
     ParseUniversal,
+    TrueCoordinates,
+    FormatTrue,
+    TrueDecimals,
     CreateLocalMap,
     LocalTilePoint,
     LocalPointToTile,
@@ -2012,7 +2072,7 @@
 (function (Root) {
   'use strict';
   const RpgMap = Root.RpgMap = Root.RpgMap || {};
-  const { Util, Lattice, Topology, Coordinates, Terrain } = RpgMap;
+  const { Util, Projection, Lattice, Topology, Coordinates, Terrain } = RpgMap;
   const { Require } = Util;
 
   // A map document. Mutators validate their input, apply the change, and return a
@@ -2089,6 +2149,15 @@
     CheckTile(Doc, nTile);
     return Doc.Topo ? Coordinates.TileToUniversal(Doc.Topo, nTile)
       : Coordinates.LocalTileToUniversal(Doc.Local, ...LocalTileXY(Doc, nTile));
+  }
+
+  function MilesPerEdge(Doc) {
+    return Doc.Topo ? Doc.Topo.dMilesPerEdge : Projection.MilesPerEdge(Doc.Local.nPanelHexes);
+  }
+
+  // True latitude/longitude of the tile centre (display only; see Coordinates.TrueCoordinates).
+  function TrueCoordinates(Doc, nTile) {
+    return Coordinates.TrueCoordinates(TileToUniversal(Doc, nTile), MilesPerEdge(Doc));
   }
 
   function HexMiles(Doc) {
@@ -2361,6 +2430,8 @@
     LocalTileIndex,
     LocalTileXY,
     TileToUniversal,
+    MilesPerEdge,
+    TrueCoordinates,
     HexMiles,
     IsTile,
     Neighbors,
@@ -4187,12 +4258,17 @@
     const rgrgdPoints = [], rgCells = [], rgEdges = [];
     const Buckets = new Map(), Edges = new Map();
     // Adjacent hexes and clipped seam copies can differ in their last float bits.
-    // Check neighbouring buckets too, rather than relying on rounded string equality.
+    // Check neighbouring buckets too, rather than relying on rounded equality.
+    // Buckets are nested numeric maps (x, then y) to avoid string keys at L scale.
     const Vertex = (Point) => {
       const nX = Math.floor(Point[0] / g_dTolerance), nY = Math.floor(Point[1] / g_dTolerance);
       for (let nDx = -1; nDx <= 1; nDx++) {
+        const Column = Buckets.get(nX + nDx);
+        if (!Column) {
+          continue;
+        }
         for (let nDy = -1; nDy <= 1; nDy++) {
-          for (const nVertex of Buckets.get(`${nX + nDx},${nY + nDy}`) || []) {
+          for (const nVertex of Column.get(nY + nDy) || []) {
             if (Util.Distance(Point, rgrgdPoints[nVertex]) <= g_dTolerance) {
               return nVertex;
             }
@@ -4201,8 +4277,8 @@
       }
       const nVertex = rgrgdPoints.length;
       rgrgdPoints.push(Point);
-      const szKey = `${nX},${nY}`;
-      (Buckets.get(szKey) || Buckets.set(szKey, []).get(szKey)).push(nVertex);
+      const Column = Buckets.get(nX) || Buckets.set(nX, new Map()).get(nX);
+      (Column.get(nY) || Column.set(nY, []).get(nY)).push(nVertex);
       return nVertex;
     };
     for (const Group of View.PanelTileGroups(Geometry, szPanel)) {
@@ -4511,16 +4587,16 @@
   function LatticeInstances(Data, rgnCells, Type, nSeed) {
     const Spec = Type.Embellish, fField = Spec.szLayout === 'field';
     const dMarginX = Spec.dDx * (fField ? 0.5 : g_dJitter / 2), dMarginY = Spec.dDy * (fField ? 0.5 : g_dJitter / 2);
-    const Seen = new Set(), rgInstances = [];
+    const Seen = new Map(), rgInstances = [];
     for (const nCell of rgnCells) {
       const Polygon = CellPolygon(Data, Data.rgCells[nCell]), rgdBounds = Bounds(Polygon);
       const nLastRow = Math.floor((rgdBounds[3] + dMarginY) / Spec.dDy);
       for (let nJ = Math.ceil((rgdBounds[1] - dMarginY) / Spec.dDy); nJ <= nLastRow; nJ++) {
         const dOffset = fField ? Util.CreateRng(Util.HashIntegers(nSeed, Type.nId, nJ))() : (nJ & 1) / 2;
         const nLast = Math.floor((rgdBounds[2] + dMarginX) / Spec.dDx - dOffset);
+        const SeenRow = Seen.get(nJ) || Seen.set(nJ, new Set()).get(nJ);
         for (let nI = Math.ceil((rgdBounds[0] - dMarginX) / Spec.dDx - dOffset); nI <= nLast; nI++) {
-          const szKey = `${nI},${nJ}`;
-          if (Seen.has(szKey)) {
+          if (SeenRow.has(nI)) {
             continue;
           }
           const R = Util.CreateRng(Util.HashIntegers(nSeed, Type.nId, nI, nJ, 1));
@@ -4531,7 +4607,7 @@
               continue;
             }
           }
-          Seen.add(szKey);
+          SeenRow.add(nI);
           if (R() < Spec.dChance) {
             rgInstances.push({ nVariant: Math.floor(R() * g_nVariants), rgdPoint: Point, dScale: 1 });
           }
@@ -4899,13 +4975,31 @@
     return Lines.join('\n');
   }
 
+  // Upper bound on SVG bytes per embellished tile (tundra, the densest motif, measures
+  // about 1.04 KB per hex); merged regions without motifs cost only a few bytes per tile.
+  const g_nEmbellishedTileBytes = 1100;
+
+  // Rough size of an export before writing it: { nTiles, nEmbellished, nBytes }. Counts
+  // the scope's own tiles; features add comparatively little.
+  function Estimate(Doc, szPanel = Doc.Local ? 'local' : null, fEmbellish = true) {
+    Regions.Outline(Doc, szPanel);
+    const nFirst = Doc.Local ? 0 : Doc.Topo.Panels[szPanel].nFirstTile;
+    const nTiles = Doc.Local ? Doc.nTiles : Doc.Topo.Panels[szPanel].nTileCount;
+    const rgfEmbellished = Terrain.g_rgTerrains.map((Type) => !!Type.Embellish);
+    let nEmbellished = 0;
+    for (let nTile = nFirst; nTile < nFirst + nTiles; nTile++) {
+      nEmbellished += rgfEmbellished[Doc.rgnTerrain[nTile]] ? 1 : 0;
+    }
+    return { nTiles, nEmbellished, nBytes: 4096 + 4 * nTiles + (fEmbellish ? nEmbellished * g_nEmbellishedTileBytes : 0) };
+  }
+
   function FileName(Doc, szPanel = Doc.Local ? 'local' : null) {
     Regions.Outline(Doc, szPanel);
     const szBase = FileFormat.FileName(Doc).slice(0, -FileFormat.g_szFileExtension.length);
     return `${szBase}${Doc.Local ? '' : '-' + Projection.Build().Panels[szPanel].szName}.svg`;
   }
 
-  RpgMap.SvgExport = Object.freeze({ g_dHexUnits, g_nDefaultWidth, g_Layers, Escape, Dimensions, Write, FileName });
+  RpgMap.SvgExport = Object.freeze({ g_dHexUnits, g_nDefaultWidth, g_Layers, g_nEmbellishedTileBytes, Escape, Dimensions, Estimate, Write, FileName });
 })(globalThis);
 </script>
 
@@ -4921,7 +5015,7 @@
   const g_nRasterMaxPixels = 4096;
   const g_dSmallHexPixels = 4;
   const g_dSeamPixels = 0.5;
-  const g_dGridMinPixels = 6;
+  const g_dGridMinPixels = 8;
   // Canvas path fills slow down superlinearly with subpath count, so long tile lists are
   // filled or stroked in chunks.
   const g_nPathChunk = 512;
@@ -5522,7 +5616,8 @@
   const RpgMap = Root.RpgMap = Root.RpgMap || {};
   const { Util, Projection, Lattice, Coordinates, Terrain, Model, History, View, Edit, FileFormat, SvgExport, Renderer } = RpgMap;
 
-  const g_szVersion = '0.8.0';
+  const g_szVersion = '1.0.0';
+  const g_nLargeExportBytes = 4e6;
   const g_szAutosaveKey = 'rpgmap.autosave';
   const g_nAutosaveDelayMs = 2000;
   // [id, label, hotkey, title]
@@ -5611,6 +5706,7 @@
       const szPanel = Doc.Local ? 'Local' : `${Projection.Build().Panels[Tile.szPanel].szName} (${Projection.Build().Panels[Tile.szPanel].szLetter})`;
       szCoordinates = [
         TileLocationText(State.nHoverTile),
+        TrueLocationText(State.nHoverTile),
         `${szPanel} col ${Tile.nColumn} row ${Tile.nRow}${Tile.fPartial ? ' partial' : ''}`,
         Terrain.ById(Model.GetTerrain(Doc, State.nHoverTile)).szName,
         ...[Model.GetLandmark(Doc, State.nHoverTile)].filter(Boolean).map((Item) => `${Item.szType}: ${Item.szName || '(unnamed)'}`),
@@ -5636,6 +5732,17 @@
 
   function TileLocationText(nTile) {
     return Coordinates.FormatUniversal(Model.TileToUniversal(State.Doc, nTile), FileFormat.CoordinateDecimals(Model.HexMiles(State.Doc)));
+  }
+
+  // True (globe) coordinates are display only; panel coordinates stay primary.
+  function TrueLocationText(nTile) {
+    const True = Model.TrueCoordinates(State.Doc, nTile);
+    const nDecimals = Coordinates.TrueDecimals(Model.HexMiles(State.Doc), Model.MilesPerEdge(State.Doc));
+    const dBearing = True.dNorthBearing;
+    const szBearing = dBearing === null ? 'pole'
+      : Math.abs(dBearing) < 0.05 ? 'true N = panel N'
+      : `true N ${Math.abs(dBearing).toFixed(1)}\u00b0${dBearing < 0 ? 'W' : 'E'} of panel N`;
+    return `true ${Coordinates.FormatTrue(True, nDecimals)} (${szBearing})`;
   }
 
   function SetHover(nTile) {
@@ -5883,22 +5990,32 @@
         ErrorText.textContent = 'Check the highlighted map settings.';
         return;
       }
-      let Doc;
-      try {
-        Doc = Kind.value === 'local' ? Model.CreateLocalMap(LocalOptions()) : Model.CreateGlobalMap({
-          nPanelHexes: Number(PanelHexes.value), szTileScale: TileScale.value, szName: Name.value,
-        });
-      } catch (Caught) {
-        ErrorText.textContent = Caught.message;
-        return;
-      }
-      if (!ConfirmDiscard('create a new map')) {
-        return;
-      }
-      Dialog.close();
-      LoadDocument(Doc, `Created ${Doc.szKind} map`, true);
-      ClearAutosave();
-      ScheduleAutosave();
+      // Large global maps take a moment to build; let the busy state paint first.
+      const fnCreate = Kind.value === 'local' ? () => Model.CreateLocalMap(LocalOptions()) : ((Options) => () => Model.CreateGlobalMap(Options))({
+        nPanelHexes: Number(PanelHexes.value), szTileScale: TileScale.value, szName: Name.value,
+      });
+      SetBusy(Form, true);
+      Preview.textContent = 'Building map\u2026';
+      RunAfterPaint(() => {
+        let Doc;
+        try {
+          Doc = fnCreate();
+        } catch (Caught) {
+          UpdateFields();
+          ErrorText.textContent = Caught.message;
+          return;
+        } finally {
+          SetBusy(Form, false);
+        }
+        if (!ConfirmDiscard('create a new map')) {
+          UpdateFields();
+          return;
+        }
+        Dialog.close();
+        LoadDocument(Doc, `Created ${Doc.szKind} map`, true);
+        ClearAutosave();
+        ScheduleAutosave();
+      });
     });
     Dialog.replaceChildren(Form);
     UpdateScales(Local ? Local.szScale : 'M');
@@ -5926,13 +6043,27 @@
     const File = Input.files && Input.files[0];
     Input.value = '';
     if (File) {
-      File.text().then((szText) => {
+      SetMessage(`Opening ${File.name}\u2026`);
+      File.text().then((szText) => RunAfterPaint(() => {
         const Doc = ParseMap(szText, `Can't open ${File.name}`);
         if (Doc) {
           LoadDocument(Doc, `Opened ${File.name}`);
           ClearAutosave();
         }
-      }, (Caught) => SetMessage(`Can't read ${File.name}: ${Caught.message}`));
+      }), (Caught) => SetMessage(`Can't read ${File.name}: ${Caught.message}`));
+    }
+  }
+
+  // Runs fnWork after the browser has painted pending changes (e.g. a busy message),
+  // so long synchronous work such as large exports shows feedback first.
+  function RunAfterPaint(fnWork) {
+    Root.requestAnimationFrame(() => Root.setTimeout(fnWork, 0));
+  }
+
+  function SetBusy(Form, fBusy) {
+    Form.setAttribute('aria-busy', String(fBusy));
+    for (const Button of Form.querySelectorAll('button')) {
+      Button.disabled = fBusy;
     }
   }
 
@@ -6001,7 +6132,11 @@
       ErrorText.textContent = '';
       try {
         const Size = SvgExport.Dimensions(Doc, Panel.value, Number(Width.value));
-        Preview.textContent = `${Size.nWidth} x ${Size.nHeight} px - ${SvgExport.FileName(Doc, Panel.value)}. Export does not save or change the map.`;
+        const Estimate = SvgExport.Estimate(Doc, Panel.value, Boxes.embellishment.checked);
+        const szLarge = Estimate.nBytes < g_nLargeExportBytes ? ''
+          : ` Large export: ${Estimate.nTiles.toLocaleString('en-US')} tiles, up to about ${Util.FormatNumber(Estimate.nBytes / 1e6, 0)} MB; it may take a few seconds.`
+            + (Boxes.embellishment.checked ? ' Turning off embellishments makes it much smaller.' : '');
+        Preview.textContent = `${Size.nWidth} x ${Size.nHeight} px - ${SvgExport.FileName(Doc, Panel.value)}. Export does not save or change the map.${szLarge}`;
       } catch (Caught) {
         Preview.textContent = `Check export settings: ${Caught.message}`;
       }
@@ -6014,18 +6149,27 @@
         ErrorText.textContent = 'Check the highlighted export settings.';
         return;
       }
-      try {
-        const szText = SvgExport.Write(Doc, {
-          szPanel: Panel.value, nWidth: Number(Width.value),
-          Layers: Object.fromEntries(Object.entries(Boxes).map(([szKey, Box]) => [szKey, Box.checked])),
-        });
-        const szName = SvgExport.FileName(Doc, Panel.value);
-        Download(szText, 'image/svg+xml;charset=utf-8', szName);
-        Dialog.close();
-        SetMessage(`Exported ${szName}`);
-      } catch (Caught) {
-        ErrorText.textContent = `Export failed: ${Caught.message}`;
-      }
+      const Options = {
+        szPanel: Panel.value, nWidth: Number(Width.value),
+        Layers: Object.fromEntries(Object.entries(Boxes).map(([szKey, Box]) => [szKey, Box.checked])),
+      };
+      SetBusy(Form, true);
+      Preview.textContent = 'Exporting\u2026';
+      RunAfterPaint(() => {
+        try {
+          const nStart = Root.performance.now();
+          const szText = SvgExport.Write(Doc, Options);
+          const szName = SvgExport.FileName(Doc, Options.szPanel);
+          Download(szText, 'image/svg+xml;charset=utf-8', szName);
+          Dialog.close();
+          SetMessage(`Exported ${szName} (${Util.FormatNumber(szText.length / 1e6, 1)} MB, ${Util.FormatNumber((Root.performance.now() - nStart) / 1000, 1)} s)`);
+        } catch (Caught) {
+          UpdatePreview();
+          ErrorText.textContent = `Export failed: ${Caught.message}`;
+        } finally {
+          SetBusy(Form, false);
+        }
+      });
     });
     Dialog.replaceChildren(Form);
     UpdatePreview();
@@ -6484,6 +6628,7 @@
       rgFields.push(Field('feature-type', 'Type', SelectControl(Terrain.g_rgLandmarkTypes.map((Type) => [Type.szKey, Type.szName]), Item.szType, (szType) => EditProps({ szType }))));
       TextField('szName', 'Name');
       TextField('szNotes', 'Notes (one line)');
+      rgFields.push(LocationNote(Key));
     } else {
       TextField('szText', 'Text');
       rgFields.push(Field('feature-category', 'Category', SelectControl(Model.g_rgszLabelCategories.map((sz) => [sz, sz]), Item.szCategory, (szCategory) => EditProps({ szCategory }))));
@@ -6491,12 +6636,17 @@
       TextField('dRotation', 'Rotation (clockwise degrees)', true);
       TextField('dDx', 'Offset right (units)', true);
       TextField('dDy', 'Offset down (units)', true);
+      rgFields.push(LocationNote(Item.nTile));
       rgFields.push(Element('p', { className: 'tool-help', textContent: 'Drag the white handle to move; drag the yellow handle to rotate. Escape cancels a drag. Each drag is one undo step.' }));
     }
     rgFields.push(Element('div', { className: 'property-actions' }, [
       ActionButton('feature-delete', `Delete ${szLayer}`, DeleteSelected),
     ]));
     Container.replaceChildren(...rgFields);
+  }
+
+  function LocationNote(nTile) {
+    return Element('p', { className: 'tool-help feature-location', textContent: `${TileLocationText(nTile)} \u00b7 ${TrueLocationText(nTile)}` });
   }
 
   function DeleteSelected() {

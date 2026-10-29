@@ -212,3 +212,23 @@ test('export filenames identify the selected global panel and preserve the map b
   const Local = LocalMap();
   assert.equal(SvgExport.FileName(Local), FileFormat.FileName(Local).replace(/\.map\.txt$/, '.svg'));
 });
+
+test('export size estimates bound the written terrain and drop with embellishments off', () => {
+  const { Terrain } = LoadModules();
+  const Global = Model.CreateGlobalMap({ nPanelHexes: 4, szTileScale: 'XL' });
+  const Water = SvgExport.Estimate(Global, 'Hyz+-');
+  assert.equal(Water.nTiles, Global.Topo.Panels['Hyz+-'].nTileCount);
+  assert.equal(Water.nEmbellished, 0);
+  for (const Type of Terrain.g_rgTerrains.filter((Item) => Item.Embellish)) {
+    Global.rgnTerrain.fill(Type.nId);
+    const Estimate = SvgExport.Estimate(Global, 'Hyz+-');
+    assert.equal(Estimate.nEmbellished, Estimate.nTiles, Type.szKey);
+    assert.ok(Estimate.nBytes >= SvgExport.Write(Global, { szPanel: 'Hyz+-' }).length, Type.szKey);
+    assert.ok(SvgExport.Estimate(Global, 'Hyz+-', false).nBytes < Estimate.nBytes);
+  }
+  const Local = LocalMap();
+  const LocalEstimate = SvgExport.Estimate(Local);
+  assert.equal(LocalEstimate.nTiles, Local.nTiles);
+  assert.equal(LocalEstimate.nEmbellished, [...Local.rgnTerrain].filter((nId) => Terrain.ById(nId).Embellish).length);
+  assert.throws(() => SvgExport.Estimate(Global, 'nowhere'));
+});
