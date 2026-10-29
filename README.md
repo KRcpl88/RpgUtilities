@@ -17,6 +17,27 @@ The specification is [`prompt.md`](prompt.md), the implementation plan is
 [`doc/map-editor-plan.md`](doc/map-editor-plan.md), and progress is tracked in
 [`doc/map-editor-status.md`](doc/map-editor-status.md).
 
+### Feature editing
+
+Use **Path (O)** to draw a road, trail or river: choose its type, click **New path**,
+then click tiles to extend it. Gaps follow the shortest connected tile path across
+panel seams. **Escape** finishes the path. Select a path to edit its name/style,
+insert or remove a point, split at an interior point, or join another path of the
+same type. Joining keeps the selected path's name/style.
+
+**Landmark (K)** places one landmark per tile; its type, name and notes are editable
+in Properties. **Label (T)** adds text with per-label category, size, rotation and
+offsets. Drag a selected label's white handle to move it or its yellow handle to
+rotate it; Escape cancels the drag. **New label** allows multiple labels on a tile.
+Label size and offsets use 48 units per hex height and scale with zoom.
+
+**Select (V)** and **Erase (E)** have a target-layer selector. Overlapping features
+can be selected individually using **Features on this tile** in Properties.
+Hidden layers cannot be selected or erased. Delete/Backspace deletes the selected
+visible feature. Each property change, path operation and completed label drag is
+one undo step (Ctrl+Z; Ctrl+Y to redo). Changes are included in Save (Ctrl+S) and
+browser autosave.
+
 ### Code layout
 
 | Path | Purpose |
@@ -30,7 +51,9 @@ The specification is [`prompt.md`](prompt.md), the implementation plan is
 | `doc/equilateral-chamfered-cube.{json,svg}` | Projection geometry (reference data for the editor) and a diagram of the unfolded net. |
 
 Module blocks appear in dependency order. Blocks marked `data-dom="true"` use
-the browser DOM and are skipped by the tests; all other blocks must be DOM-free.
+the browser DOM and are skipped by `LoadModules`; all other blocks must be
+DOM-free. Renderer contract tests load that module separately with canvas doubles;
+browser smoke checks verify actual rendering and interaction.
 
 ### Tests
 

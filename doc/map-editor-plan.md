@@ -25,6 +25,8 @@ tests/
   model.test.cjs                                                                         [done]
   view.test.cjs                 # camera, layouts, hit testing, culling, demo terrain    [done]
   edit.test.cjs                 # brush, stroke, flood fill, undo of edits               [done]
+  features.test.cjs             # A*, feature commands, seam curves, label transforms   [done]
+  feature-renderer.test.cjs     # canvas contracts, picking, visibility, raster reuse    [done]
   fileformat.test.cjs           # round trips, fixtures, line-numbered errors           [done]
   fixtures/sample-global.map.txt  fixtures/sample-local.map.txt                         [done]
   regions.test.cjs  svgexport.test.cjs
@@ -297,6 +299,8 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
   - adjacency is symmetric and connected, interior tiles have 6 neighbours, and the strip wraps.
 - **coordinates:** universal ↔ tile round trips; at n=24 XL, the equatorial width is ≈4489 mi and no equatorial hex sits at east = 0.
 - **model/history:** only one landmark per tile; overlay adjacency is enforced; undo/redo restores exactly.
+- **features:** A* versus BFS, all seams, exclusions/unreachable paths; insert/remove/split/join and feature edits undo and round-trip exactly; matching seam curves and tangents; label transforms and adaptive curve hit geometry.
+- **feature-renderer:** canvas contract tests for drawing/picking visibility, label previews and handles, and terrain raster reuse after feature changes; real browser checks cover pixels and pointer/file interactions.
 - **fileformat:** global and local round trips; fixtures; line-numbered errors.
 - **regions:** a single hex gives 1 loop; a ring gives an outer ring plus a hole; loops close.
 - **svgexport:** well-formed XML; layer toggles add or remove groups; output is byte-identical across runs; text is escaped; the hex overlay toggles.
@@ -311,7 +315,7 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
 5. ✅ **Renderer and viewport:** pan, zoom, culling, clipped panels, outlines, minimap, panel focus view, status bar coordinates.
 6. ✅ **Terrain tools:** brush, fill, eyedropper, undo/redo.
 7. ✅ **File format:** `doc/file-format.md`, writer, parser, open/save/autosave, fixtures.
-8. **Overlays, landmarks, labels:** tools, properties panel, A* gap filling.
+8. ✅ **Overlays, landmarks, labels:** tools, properties panel, A* gap filling, path operations, layer-specific selection/erase, label drag/rotate handles.
 9. **Local maps:** new-map dialog, scales, anchor snapping, conversion to universal coordinates.
 10. **SVG export, part 1:** per-panel options popup, regions, shoreline, colours, hex overlay, overlays, landmarks, labels.
 11. **SVG export, part 2:** an embellishment algorithm for each terrain (§8).
@@ -372,6 +376,15 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
     - Dirty tracking compares `Doc.nRevision` with the saved revision. The status bar shows `name *`, and New/Open/Restore ask before discarding unsaved changes.
     - Autosave writes `{ szText, nTime }` to `localStorage['rpgmap.autosave']` 2 s after the last edit (and on `pagehide`) when the map is dirty. Save, Open and New clear it.
     - On start, a non-blocking banner offers Restore or Discard. Until the user chooses, autosave doesn't overwrite the copy on offer.
+41. **Pathfinding:** `Edit.FindPath` is deterministic A* with unit cost per adjacency edge (no terrain preference). Local maps use hex distance. Global maps use solid-space chord distance divided by the longest adjacency edge, an admissible/consistent lower bound even for partial tiles and seams. Geometry is cached per topology and the heap breaks equal scores by tile index. Excluded tiles are supported for rerouting; an impossible path reports an error without changing the map.
+42. **Feature commands:** `Edit.SetFeature` creates, edits or deletes a landmark, label or overlay in one History command; identical property edits are no-ops. Overlay helpers extend, insert after a selected point, remove, split and join:
+    - Insert bridges both sides with A*. Removing an interior point reroutes around that tile; removing the sole point deletes the path.
+    - Split shares the selected interior junction between the two resulting paths.
+    - Join allows either endpoint on each path, bridges gaps with A*, and keeps the first path's id/name/style while deleting the second. Undo restores both originals and their order.
+43. **Feature seam geometry:** `View.OverlayCurves` computes Catmull-Rom-to-cubic segments in panel frames. Adjacent panels draw transformed copies of the same curve, clipped to their own polygons. Never connect two net-space centres across a cut edge. `FeatureCopies` applies the same seam transforms to glyphs and labels. Whole tiles use their lattice centres; partial tiles use a point inside their largest visible piece (`FeatureAnchor`) so even slivers can carry a visible feature. Saved coordinates and point ownership are unchanged.
+44. **Feature appearance and picking:** rivers are blue, roads brown and trails dashed. Overlay `style` is preserved metadata for future styling/export; canvas appearance currently follows type. The eleven landmark types carry vector path data in `Terrain.g_rgLandmarkTypes[].szPath` (canvas `Path2D`, reusable for SVG). Labels have a light halo. Selection uses the drawn, clipped geometry: adaptively flattened cubic curves (half-pixel tolerance), glyph hit radii, and inverse-transformed label bounds. Each feature layer has its own visibility toggle; hidden features cannot be picked or erased.
+45. **Label units and handles:** one size/offset unit is 1/48 hex height. Positive dx is right/east, dy is down/south, rotation is clockwise relative to panel north. Labels scale with zoom. The white centre handle changes offsets; the yellow handle rotates. Pointer motion only changes a preview; pointer-up commits one command, while Escape, cancellation or lost capture discards the preview. Property fields commit on change, not per keystroke.
+46. **Feature UI (v0.5.0):** Path (`O`), Landmark (`K`), Label (`T`), Select (`V`) and Erase (`E`) supplement the terrain tools. Path clicks extend until Escape/Finish; New path and New label explicitly start additional items. The properties panel has an overlapping-feature chooser, editable fields, path operations and Delete; Delete/Backspace also removes the selected visible feature. Select/Erase can target terrain, one overlay type, landmarks or labels. Terrain erase resets just that tile to water. The hovered tile's landmark, overlays and labels appear in the status bar. Feature changes/undo/redo use existing dirty/autosave handling and call `MarkTilesChanged` with an empty terrain list to advance cached raster revisions without rebuilding terrain.
 
 ## 12. Open questions
 

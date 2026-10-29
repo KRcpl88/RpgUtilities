@@ -92,12 +92,19 @@ dungeon`. The name may be omitted (`""`). There is at most one landmark per tile
 ### `[labels]` (optional)
 
 ```
-<location> <category> [id=<id>] [size=<pt>] [rot=<deg>] [dx=<pt>] [dy=<pt>] "<text>"
+<location> <category> [id=<id>] [size=<units>] [rot=<deg>] [dx=<units>] [dy=<units>] "<text>"
 ```
 
 `<category>` is `region`, `location` or `city`. Size defaults to the category's
 default size. Rotation and offsets default to 0. A missing `id` is assigned
 automatically (`label1`, `label2`, …). Labels keep their file order.
+
+For display, 48 size/offset units equal one hex height (centre-to-centre distance).
+Positive `dx` is panel-east/right, positive `dy` is panel-south/down, and rotation
+is clockwise relative to the panel. Text and offsets scale together with zoom.
+These display units do not change the stored universal tile location. Partial
+tiles use an anchor inside their largest visible piece for drawing, while retaining
+their original tile-centre location in the file.
 
 ### `[overlays]` (optional)
 
@@ -109,6 +116,8 @@ automatically (`label1`, `label2`, …). Labels keep their file order.
 Consecutive tiles must be adjacent, including across panel seams. After the first
 point, a point may leave out the panel name, which then means "same panel as the
 previous point". The writer always leaves it out when the panel doesn't change.
+`style` is optional metadata (letters, digits, `_`, `-`); the current canvas uses
+the overlay type for its appearance: blue rivers, brown roads, dashed trails.
 
 ## Locations
 

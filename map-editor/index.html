@@ -47,7 +47,7 @@
     border-bottom: 1px solid var(--panel-border);
   }
   #toolbar h1 { margin: 0; font-size: 15px; font-weight: 600; }
-  #toolbar-actions { display: flex; gap: 6px; }
+  #toolbar-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   aside {
     overflow: auto;
     padding: 10px;
@@ -137,6 +137,16 @@
   .tool-button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
   .tool-option { display: flex; align-items: center; gap: 6px; margin: 4px 0 8px; }
   .tool-option input[type="range"] { flex: 1; min-width: 0; }
+  .tool-option[hidden] { display: none; }
+  .property-field { display: block; margin: 8px 0; }
+  .property-field span { display: block; color: var(--text-dim); }
+  .property-field input, .property-field select {
+    width: 100%; padding: 4px; background: #383a40; color: var(--text);
+    border: 1px solid var(--panel-border); border-radius: 3px; font: inherit;
+  }
+  .property-actions { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
+  .property-actions button:disabled { opacity: 0.45; cursor: default; }
+  .tool-help { color: var(--text-dim); font-size: 12px; }
   #tool-list { margin-bottom: 12px; }
   .layer-toggle { display: block; margin: 2px 0; cursor: pointer; }
   .legend-row { display: flex; align-items: center; gap: 6px; margin: 1px 0; padding: 1px 4px; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
@@ -180,6 +190,7 @@
 <aside id="properties-panel" aria-label="Properties">
   <h2>Properties</h2>
   <div id="property-list"></div>
+  <div id="feature-properties" hidden></div>
 </aside>
 <footer id="status-bar">
   <span id="status-coordinates">&nbsp;</span>
@@ -1883,18 +1894,18 @@
   const g_ByKey = new Map(g_rgTerrains.map((Terrain) => [Terrain.szKey, Terrain]));
 
   const g_rgLandmarkTypes = Object.freeze([
-    ['village', 'Village'],
-    ['town', 'Town'],
-    ['city', 'City'],
-    ['castle', 'Castle'],
-    ['fortress', 'Fortress'],
-    ['tower', 'Tower'],
-    ['ruins', 'Ruins'],
-    ['mine', 'Mine'],
-    ['temple', 'Temple'],
-    ['cave', 'Cave'],
-    ['dungeon', 'Dungeon'],
-  ].map(([szKey, szName]) => Object.freeze({ szKey, szName })));
+    ['village', 'Village', 'M-8 0L0-8L8 0V9H-8ZM-3 9V2H3V9'],
+    ['town', 'Town', 'M-10 0L-4-7L2 0V9H-10ZM0-2L5-9L10-2V9H2M-6 9V3H-2V9'],
+    ['city', 'City', 'M-10 9V-3H-7V-7H-3V-3H3V-9H7V-3H10V9ZM-3 9V2H3V9'],
+    ['castle', 'Castle', 'M-10 9V-9H-6V-5H-2V-9H2V-5H6V-9H10V9ZM-3 9V2Q0-3 3 2V9'],
+    ['fortress', 'Fortress', 'M0-11L11 0L0 11L-11 0ZM-4-4H4V4H-4Z'],
+    ['tower', 'Tower', 'M-6 9V-5H-8V-10H-4V-7H0V-10H4V-7H8V-5H6V9ZM-2 9V3H2V9'],
+    ['ruins', 'Ruins', 'M-10 9V-6L-5-3V9ZM1 9V-9L6-5L10-7V9ZM-10 9H10'],
+    ['mine', 'Mine', 'M-9-6Q0-13 9-6L1-7L-6 10L-9 9L-2-7ZM-9-1L9 8M9-1L-9 8'],
+    ['temple', 'Temple', 'M-11-3L0-11L11-3ZM-9 0H9M-7 0V7M0 0V7M7 0V7M-10 7H10V10H-10Z'],
+    ['cave', 'Cave', 'M-11 9L-7-5L0-11L8-5L11 9ZM-5 9V1Q0-7 5 1V9Z'],
+    ['dungeon', 'Dungeon', 'M-9 9V-2Q0-15 9-2V9ZM-5 8V-3M0 8V-6M5 8V-3M-8 2H8'],
+  ].map(([szKey, szName, szPath]) => Object.freeze({ szKey, szName, szPath })));
   const g_LandmarksByKey = new Map(g_rgLandmarkTypes.map((Landmark) => [Landmark.szKey, Landmark]));
 
   function ById(nId) {
@@ -2746,6 +2757,133 @@
     return { nTile, szPanel, rgdFrame, szDrawPanel };
   }
 
+  // Feature geometry is computed in panel frames, never by joining net positions.
+  function PanelTransform(szFrom, szTo) {
+    if (szFrom === szTo) {
+      return g_rgdIdentity;
+    }
+    const Seam = Projection.FindSeam(szFrom, szTo);
+    Require(Seam !== null && Seam !== undefined, `Panels ${szFrom} and ${szTo} do not share an edge`);
+    return Seam.szPanelA === szFrom ? Seam.rgdAToB : Seam.rgdBToA;
+  }
+
+  function PanelCopies(szPanel) {
+    const rgCopies = [{ szPanel, rgdTransform: g_rgdIdentity }];
+    for (const Seam of Projection.Build().Seams) {
+      if (Seam.szPanelA === szPanel) {
+        rgCopies.push({ szPanel: Seam.szPanelB, rgdTransform: Seam.rgdAToB });
+      } else if (Seam.szPanelB === szPanel) {
+        rgCopies.push({ szPanel: Seam.szPanelA, rgdTransform: Seam.rgdBToA });
+      }
+    }
+    return rgCopies;
+  }
+
+  // A partial tile's lattice centre can lie outside its panel. Keep its glyph/path
+  // anchor inside the largest visible piece; the saved tile coordinate is unchanged.
+  function FeatureAnchor(Topo, nTile) {
+    const Tile = Topo.rgTiles[nTile];
+    if (!Tile.rgPieces) {
+      return Tile.rgdCenter;
+    }
+    const Piece = Tile.rgPieces.reduce((Best, Next) =>
+      Math.abs(Util.PolygonArea(Next.rgrgdPolygon)) > Math.abs(Util.PolygonArea(Best.rgrgdPolygon)) ? Next : Best);
+    return Util.Center(Piece.rgrgdPolygon);
+  }
+
+  function FeatureCopies(Topo, Layout, nTile) {
+    return PanelCopies(Topo.rgTiles[nTile].szPanel).flatMap((Copy) => {
+      const Placement = FindPlacement(Layout, Copy.szPanel);
+      return Placement ? [{
+        Placement,
+        rgdFrameToWorld: Projection.ComposeTransforms(Copy.rgdTransform, Placement.rgdFrameToWorld),
+      }] : [];
+    });
+  }
+
+  const g_OverlayCurves = new WeakMap();
+
+  // Catmull-Rom tangents yield cubic curves through the tile anchors. At a seam both
+  // panels get the SAME curve, transformed and clipped when drawn, including cut edges.
+  function OverlayCurves(Topo, Overlay) {
+    const Cached = g_OverlayCurves.get(Overlay);
+    if (Cached && Cached.Topo === Topo) {
+      return Cached.rgCurves;
+    }
+    const rgnTiles = Overlay.rgnTiles;
+    const rgCurves = [];
+    const PointIn = (nTile, szPanel) => Projection.ApplyTransform(PanelTransform(Topo.rgTiles[nTile].szPanel, szPanel), FeatureAnchor(Topo, nTile));
+    for (let nIndex = 0; nIndex + 1 < rgnTiles.length; nIndex++) {
+      const nA = rgnTiles[nIndex];
+      const nB = rgnTiles[nIndex + 1];
+      const szA = Topo.rgTiles[nA].szPanel;
+      const szB = Topo.rgTiles[nB].szPanel;
+      const rgdA = FeatureAnchor(Topo, nA);
+      const rgdB = PointIn(nB, szA);
+      const rgdPrev = PointIn(rgnTiles[Math.max(0, nIndex - 1)], szA);
+      const rgdNextInB = PointIn(rgnTiles[Math.min(rgnTiles.length - 1, nIndex + 2)], szB);
+      const rgdControlB = Util.Subtract(FeatureAnchor(Topo, nB), Util.Scale(Util.Subtract(rgdNextInB, PointIn(nA, szB)), 1 / 6));
+      const rgrgdControl = [
+        rgdA,
+        Util.Add(rgdA, Util.Scale(Util.Subtract(rgdB, rgdPrev), 1 / 6)),
+        Projection.ApplyTransform(PanelTransform(szB, szA), rgdControlB),
+        rgdB,
+      ];
+      for (const Copy of PanelCopies(szA)) {
+        const rgrgdMapped = rgrgdControl.map((rgdPoint) => Projection.ApplyTransform(Copy.rgdTransform, rgdPoint));
+        if (BoundsIntersect(BoundsOf(rgrgdMapped), BoundsOf(Projection.Build().Frames[Copy.szPanel].rgrgdPolygon))) {
+          rgCurves.push({ szPanel: Copy.szPanel, nPoint: nIndex, rgrgdControl: rgrgdMapped });
+        }
+      }
+    }
+    g_OverlayCurves.set(Overlay, { Topo, rgCurves });
+    return rgCurves;
+  }
+
+  function CubicPoint(rgrgdControl, dT) {
+    const dU = 1 - dT;
+    return [0, 1].map((nAxis) => dU ** 3 * rgrgdControl[0][nAxis]
+      + 3 * dU * dU * dT * rgrgdControl[1][nAxis]
+      + 3 * dU * dT * dT * rgrgdControl[2][nAxis] + dT ** 3 * rgrgdControl[3][nAxis]);
+  }
+
+  function DistanceToSegment(rgdPoint, rgdA, rgdB) {
+    const rgdDelta = Util.Subtract(rgdB, rgdA);
+    const dSquared = Util.Dot(rgdDelta, rgdDelta);
+    const dT = dSquared === 0 ? 0 : Math.max(0, Math.min(1, Util.Dot(Util.Subtract(rgdPoint, rgdA), rgdDelta) / dSquared));
+    return Util.Distance(rgdPoint, Util.Add(rgdA, Util.Scale(rgdDelta, dT)));
+  }
+
+  function FlattenCurve(rgrgdControl, dTolerance = 0.5) {
+    const rgPoints = [rgrgdControl[0]];
+    const Subdivide = (rg, nDepth) => {
+      if (nDepth === 16 || Math.max(DistanceToSegment(rg[1], rg[0], rg[3]), DistanceToSegment(rg[2], rg[0], rg[3])) <= dTolerance) {
+        rgPoints.push(rg[3]);
+        return;
+      }
+      const Mid = (A, B) => Util.Scale(Util.Add(A, B), 0.5);
+      const A = Mid(rg[0], rg[1]), B = Mid(rg[1], rg[2]), C = Mid(rg[2], rg[3]);
+      const D = Mid(A, B), E = Mid(B, C), F = Mid(D, E);
+      Subdivide([rg[0], A, D, F], nDepth + 1);
+      Subdivide([F, E, C, rg[3]], nDepth + 1);
+    };
+    Subdivide(rgrgdControl, 0);
+    return rgPoints;
+  }
+
+  const g_dLabelUnitsPerHex = 48;
+
+  // Label size/offset units are 1/48 hex. Local x is right, y is down, and rotation
+  // is clockwise relative to panel north. Compose this with a panel-to-screen matrix.
+  function LabelTransform(Topo, Label) {
+    const [dX, dY] = FeatureAnchor(Topo, Label.nTile);
+    const dUnit = Topo.dD / g_dLabelUnitsPerHex;
+    const dAngle = Label.dRotation * Math.PI / 180;
+    const dCos = Math.cos(dAngle) * dUnit;
+    const dSin = Math.sin(dAngle) * dUnit;
+    return [dCos, -dSin, -dSin, -dCos, dX + Label.dDx * dUnit, dY - Label.dDy * dUnit];
+  }
+
   // Demo terrain -------------------------------------------------------------------------
 
   function CreateWaves(Random, nCount) {
@@ -2847,6 +2985,15 @@
     PanelTileGroups,
     VisibleTiles,
     HitTest,
+    PanelTransform,
+    FeatureAnchor,
+    FeatureCopies,
+    OverlayCurves,
+    CubicPoint,
+    DistanceToSegment,
+    FlattenCurve,
+    g_dLabelUnitsPerHex,
+    LabelTransform,
     DemoTerrain,
   });
 })(globalThis);
@@ -2856,7 +3003,7 @@
 (function (Root) {
   'use strict';
   const RpgMap = Root.RpgMap = Root.RpgMap || {};
-  const { Util, Topology, Terrain, Model, History, View } = RpgMap;
+  const { Util, Projection, Lattice, Topology, Terrain, Model, History, View } = RpgMap;
   const { Require } = Util;
 
   // DOM-free terrain editing: brush footprints, flood fill, stroke interpolation, and
@@ -3001,6 +3148,201 @@
     return Command ? Command.rgChanges.filter((Change) => Change.szLayer === 'terrain').map((Change) => Change.Key) : [];
   }
 
+  const g_PathGeometry = new WeakMap();
+
+  // Chord distance / longest graph edge is an admissible, consistent lower bound,
+  // including partial tiles and seams where a planar hex-distance heuristic is not.
+  function PathGeometry(Topo) {
+    if (!g_PathGeometry.has(Topo)) {
+      const Built = Projection.Build();
+      const rgrgdPoints = Topo.rgTiles.map((Tile) => Projection.FrameToSolid(Built.Frames[Tile.szPanel], Tile.rgdCenter));
+      let dMaxStep = 0;
+      for (let nTile = 0; nTile < Topo.nTiles; nTile++) {
+        for (const nOther of Topology.Neighbors(Topo, nTile)) {
+          dMaxStep = Math.max(dMaxStep, Util.Distance(rgrgdPoints[nTile], rgrgdPoints[nOther]));
+        }
+      }
+      g_PathGeometry.set(Topo, { rgrgdPoints, dMaxStep: dMaxStep * (1 + 1e-12) });
+    }
+    return g_PathGeometry.get(Topo);
+  }
+
+  // Deterministic A*, unit cost per adjacency edge. Excluded tiles are used when
+  // removing an interior overlay point so the replacement cannot reinsert it.
+  function FindPath(Doc, nFrom, nTo, Excluded = new Set()) {
+    Require(Model.IsTile(Doc, nFrom) && Model.IsTile(Doc, nTo), 'Path endpoints must be map tiles');
+    Require(!Excluded.has(nFrom) && !Excluded.has(nTo), 'A path endpoint is excluded');
+    const Geometry = Doc.Topo ? PathGeometry(Doc.Topo) : null;
+    const Heuristic = (nTile) => {
+      if (Geometry) {
+        return Geometry.dMaxStep > 0
+          ? Util.Distance(Geometry.rgrgdPoints[nTile], Geometry.rgrgdPoints[nTo]) / Geometry.dMaxStep : 0;
+      }
+      const [nX, nY] = Model.LocalTileXY(Doc, nTile);
+      const [nTX, nTY] = Model.LocalTileXY(Doc, nTo);
+      return Lattice.OffsetDistance(nX + Doc.Local.nParity, -nY, nTX + Doc.Local.nParity, -nTY);
+    };
+    const rgnCost = new Int32Array(Doc.nTiles).fill(-1);
+    const rgnPrevious = new Int32Array(Doc.nTiles).fill(-1);
+    const rgHeap = [];
+    const Before = (A, B) => A.dScore < B.dScore || (A.dScore === B.dScore && A.nTile < B.nTile);
+    const Push = (Entry) => {
+      let nIndex = rgHeap.length;
+      rgHeap.push(Entry);
+      while (nIndex > 0) {
+        const nParent = (nIndex - 1) >> 1;
+        if (!Before(Entry, rgHeap[nParent])) {
+          break;
+        }
+        rgHeap[nIndex] = rgHeap[nParent];
+        nIndex = nParent;
+      }
+      rgHeap[nIndex] = Entry;
+    };
+    const Pop = () => {
+      const First = rgHeap[0];
+      const Last = rgHeap.pop();
+      if (rgHeap.length > 0) {
+        let nIndex = 0;
+        while (2 * nIndex + 1 < rgHeap.length) {
+          let nChild = 2 * nIndex + 1;
+          if (nChild + 1 < rgHeap.length && Before(rgHeap[nChild + 1], rgHeap[nChild])) {
+            nChild++;
+          }
+          if (!Before(rgHeap[nChild], Last)) {
+            break;
+          }
+          rgHeap[nIndex] = rgHeap[nChild];
+          nIndex = nChild;
+        }
+        rgHeap[nIndex] = Last;
+      }
+      return First;
+    };
+    rgnCost[nFrom] = 0;
+    Push({ nTile: nFrom, nCost: 0, dScore: Heuristic(nFrom) });
+    while (rgHeap.length > 0) {
+      const { nTile, nCost } = Pop();
+      if (rgnCost[nTile] !== nCost) {
+        continue;
+      }
+      if (nTile === nTo) {
+        const rgnPath = [];
+        for (let nStep = nTo; nStep >= 0; nStep = rgnPrevious[nStep]) {
+          rgnPath.push(nStep);
+        }
+        return rgnPath.reverse();
+      }
+      for (const nOther of NeighborsOf(Doc, nTile)) {
+        if (!Excluded.has(nOther) && (rgnCost[nOther] < 0 || nCost + 1 < rgnCost[nOther])) {
+          rgnCost[nOther] = nCost + 1;
+          rgnPrevious[nOther] = nTile;
+          Push({ nTile: nOther, nCost: nCost + 1, dScore: nCost + 1 + Heuristic(nOther) });
+        }
+      }
+    }
+    throw new Error(`No path connects tiles ${nFrom} and ${nTo}`);
+  }
+
+  function GetFeature(Doc, Selection) {
+    if (!Selection) {
+      return null;
+    }
+    const { szLayer, Key } = Selection;
+    if (szLayer === 'landmark') {
+      return Model.IsTile(Doc, Key) ? Model.GetLandmark(Doc, Key) : null;
+    }
+    return szLayer === 'overlay' ? Model.GetOverlay(Doc, Key) : Model.GetLabel(Doc, Key);
+  }
+
+  // Key null creates an overlay/label; landmarks always use a tile key. Props null
+  // deletes. Each committed property change is one command, with no-op edits skipped.
+  function SetFeature(Hist, szLayer, Key, Props) {
+    Require(['overlay', 'landmark', 'label'].includes(szLayer), `Unknown feature layer: ${szLayer}`);
+    const Before = GetFeature(Hist.Doc, { szLayer, Key });
+    if (Before && Props && Object.keys(Props).every((szKey) => {
+      const Value = Props[szKey];
+      return Array.isArray(Value) ? Value.length === Before[szKey].length && Value.every((Item, nIndex) => Item === Before[szKey][nIndex])
+        : Value === Before[szKey];
+    })) {
+      return null;
+    }
+    return History.Perform(Hist, `${Props === null ? 'Delete' : Before ? 'Edit' : 'Add'} ${szLayer}`, (Doc, Record) => {
+      if (szLayer === 'landmark') {
+        Record(Model.SetLandmark(Doc, Key, Props === null ? null : { ...Before, ...Props }));
+      } else if (szLayer === 'overlay') {
+        Record(Props === null ? Model.RemoveOverlay(Doc, Key)
+          : Key === null ? Model.AddOverlay(Doc, Props) : Model.UpdateOverlay(Doc, Key, Props));
+      } else {
+        Record(Props === null ? Model.RemoveLabel(Doc, Key)
+          : Key === null ? Model.AddLabel(Doc, Props) : Model.UpdateLabel(Doc, Key, Props));
+      }
+    });
+  }
+
+  function OverlayPoint(Doc, szId, nPoint) {
+    const Overlay = Model.GetOverlay(Doc, szId);
+    Require(Overlay !== null, `Unknown overlay: ${szId}`);
+    Require(Number.isInteger(nPoint) && nPoint >= 0 && nPoint < Overlay.rgnTiles.length, 'Select an overlay point');
+    return Overlay;
+  }
+
+  function ExtendOverlay(Hist, szId, nTile) {
+    const Overlay = Model.GetOverlay(Hist.Doc, szId);
+    Require(Overlay !== null, `Unknown overlay: ${szId}`);
+    const rgnPath = FindPath(Hist.Doc, Overlay.rgnTiles.at(-1), nTile);
+    return SetFeature(Hist, 'overlay', szId, { rgnTiles: [...Overlay.rgnTiles, ...rgnPath.slice(1)] });
+  }
+
+  function InsertOverlayPoint(Hist, szId, nPoint, nTile) {
+    const { rgnTiles } = OverlayPoint(Hist.Doc, szId, nPoint);
+    const rgnPath = [...rgnTiles.slice(0, nPoint), ...FindPath(Hist.Doc, rgnTiles[nPoint], nTile)];
+    if (nPoint + 1 < rgnTiles.length) {
+      rgnPath.push(...FindPath(Hist.Doc, nTile, rgnTiles[nPoint + 1]).slice(1), ...rgnTiles.slice(nPoint + 2));
+    }
+    return SetFeature(Hist, 'overlay', szId, { rgnTiles: rgnPath });
+  }
+
+  function RemoveOverlayPoint(Hist, szId, nPoint) {
+    const { rgnTiles } = OverlayPoint(Hist.Doc, szId, nPoint);
+    if (rgnTiles.length === 1) {
+      return SetFeature(Hist, 'overlay', szId, null);
+    }
+    const rgnPath = rgnTiles.slice(0, nPoint);
+    if (nPoint > 0 && nPoint + 1 < rgnTiles.length) {
+      rgnPath.push(...FindPath(Hist.Doc, rgnTiles[nPoint - 1], rgnTiles[nPoint + 1], new Set([rgnTiles[nPoint]])).slice(1));
+      rgnPath.push(...rgnTiles.slice(nPoint + 2));
+    } else {
+      rgnPath.push(...rgnTiles.slice(nPoint + 1));
+    }
+    return SetFeature(Hist, 'overlay', szId, { rgnTiles: rgnPath });
+  }
+
+  function SplitOverlay(Hist, szId, nPoint) {
+    const Overlay = OverlayPoint(Hist.Doc, szId, nPoint);
+    Require(nPoint > 0 && nPoint < Overlay.rgnTiles.length - 1, 'Split needs an interior point');
+    return History.Perform(Hist, 'Split overlay', (Doc, Record) => {
+      Record(Model.UpdateOverlay(Doc, szId, { rgnTiles: Overlay.rgnTiles.slice(0, nPoint + 1) }));
+      Record(Model.AddOverlay(Doc, { ...Overlay, szId: undefined, rgnTiles: Overlay.rgnTiles.slice(nPoint) }));
+    });
+  }
+
+  // Orient the first path toward its chosen endpoint and the second away from its
+  // endpoint. Keep the first path's id and properties; bridge any gap with A*.
+  function JoinOverlays(Hist, szFirst, szSecond, fReverseFirst = false, fReverseSecond = false) {
+    const First = Model.GetOverlay(Hist.Doc, szFirst);
+    const Second = Model.GetOverlay(Hist.Doc, szSecond);
+    Require(First && Second && First !== Second, 'Choose two different overlays');
+    Require(First.szType === Second.szType, 'Joined overlays must have the same type');
+    const rgnFirst = fReverseFirst ? [...First.rgnTiles].reverse() : First.rgnTiles;
+    const rgnSecond = fReverseSecond ? [...Second.rgnTiles].reverse() : Second.rgnTiles;
+    const rgnBridge = FindPath(Hist.Doc, rgnFirst.at(-1), rgnSecond[0]);
+    return History.Perform(Hist, 'Join overlays', (Doc, Record) => {
+      Record(Model.UpdateOverlay(Doc, szFirst, { rgnTiles: [...rgnFirst, ...rgnBridge.slice(1), ...rgnSecond.slice(1)] }));
+      Record(Model.RemoveOverlay(Doc, szSecond));
+    });
+  }
+
   RpgMap.Edit = Object.freeze({
     g_nMaxBrushRadius,
     BrushTiles,
@@ -3012,6 +3354,14 @@
     EndStroke,
     Fill,
     CommandTiles,
+    FindPath,
+    GetFeature,
+    SetFeature,
+    ExtendOverlay,
+    InsertOverlayPoint,
+    RemoveOverlayPoint,
+    SplitOverlay,
+    JoinOverlays,
   });
 })(globalThis);
 </script>
@@ -3650,7 +4000,7 @@
 (function (Root) {
   'use strict';
   const RpgMap = Root.RpgMap = Root.RpgMap || {};
-  const { Projection, Lattice, Terrain, View } = RpgMap;
+  const { Util, Projection, Lattice, Terrain, View } = RpgMap;
 
   // Canvas drawing for a global map in a View layout. Tiles are drawn per panel through
   // the frame → world → screen transform, clipped to the panel polygon, batched by colour.
@@ -3673,7 +4023,7 @@
   const g_rgrgdHexUnit = [0, 1, 2, 3, 4, 5].map((nIndex) => [Math.cos(nIndex * Math.PI / 3), Math.sin(nIndex * Math.PI / 3)]);
 
   function Create(Canvas) {
-    return { Canvas, Context: Canvas.getContext('2d'), dRatio: 1, Rasters: new Map(), MiniCamera: null };
+    return { Canvas, Context: Canvas.getContext('2d'), dRatio: 1, Rasters: new Map(), MiniCamera: null, rgFeatureHits: [] };
   }
 
   // Matches the canvas backing store to its CSS size and resizes the camera.
@@ -3990,6 +4340,198 @@
     }
   }
 
+  const g_OverlayStyles = Object.freeze({
+    river: { szColor: '#236eae', dWidth: 3, rgDash: [] },
+    road: { szColor: '#704224', dWidth: 2.5, rgDash: [] },
+    trail: { szColor: '#805e3b', dWidth: 1.8, rgDash: [4, 3] },
+  });
+  const g_LandmarkPaths = new Map();
+
+  function FeatureVisible(Layers, szLayer, Item) {
+    return szLayer === 'overlay' ? Layers[Item.szType] !== false : Layers[szLayer] !== false;
+  }
+
+  function IsSelected(State, szLayer, Key) {
+    return State.Selection && State.Selection.szLayer === szLayer && State.Selection.Key === Key;
+  }
+
+  function ScreenDot(Context, rgdPoint, dRadius, szFill) {
+    Context.beginPath();
+    Context.arc(rgdPoint[0], rgdPoint[1], dRadius, 0, 2 * Math.PI);
+    Context.fillStyle = szFill;
+    Context.fill();
+    Context.lineWidth = 1;
+    Context.strokeStyle = '#10151c';
+    Context.stroke();
+  }
+
+  function DrawFeatures(Renderer, State, rgdWorldToScreen) {
+    const { Context, dRatio } = Renderer;
+    const { Doc, Layout, Camera, Layers } = State;
+    const Topo = Doc.Topo;
+    Renderer.rgFeatureHits = [];
+    const ByPanel = new Map(Layout.rgPlacements.map((Placement) => [Placement.szPanel, []]));
+    for (const Overlay of Doc.rgOverlays) {
+      if (!FeatureVisible(Layers, 'overlay', Overlay)) {
+        continue;
+      }
+      for (const Curve of View.OverlayCurves(Topo, Overlay)) {
+        if (ByPanel.has(Curve.szPanel)) {
+          ByPanel.get(Curve.szPanel).push({ Overlay, Curve });
+        }
+      }
+    }
+    for (const Placement of Layout.rgPlacements) {
+      Context.save();
+      Context.setTransform(dRatio, 0, 0, dRatio, 0, 0);
+      Context.beginPath();
+      TraceScreenOutline(Context, Camera, Placement);
+      Context.clip();
+      const rgdPanelToScreen = Projection.ComposeTransforms(Placement.rgdFrameToWorld, rgdWorldToScreen);
+      const AddHit = (Hit) => Renderer.rgFeatureHits.push({ ...Hit, szDrawPanel: Placement.szPanel });
+      for (const { Overlay, Curve } of ByPanel.get(Placement.szPanel)) {
+        const Style = g_OverlayStyles[Overlay.szType];
+        const dWidth = Style.dWidth * Math.max(0.7, Math.min(2, Topo.dD * Camera.dScale / 32));
+        const rg = Curve.rgrgdControl.map((Point) => Projection.ApplyTransform(rgdPanelToScreen, Point));
+        Context.beginPath();
+        Context.moveTo(...rg[0]);
+        Context.bezierCurveTo(...rg[1], ...rg[2], ...rg[3]);
+        Context.lineCap = 'round';
+        Context.lineJoin = 'round';
+        if (IsSelected(State, 'overlay', Overlay.szId)) {
+          Context.strokeStyle = g_szHoverColor;
+          Context.lineWidth = dWidth + 4;
+          Context.stroke();
+        }
+        Context.setLineDash(Style.rgDash);
+        Context.strokeStyle = Style.szColor;
+        Context.lineWidth = dWidth;
+        Context.stroke();
+        Context.setLineDash([]);
+        AddHit({ szLayer: 'overlay', Key: Overlay.szId, nPoint: Curve.nPoint, rgrgdPoints: View.FlattenCurve(rg), dRadius: Math.max(5, dWidth / 2 + 2) });
+      }
+      for (const Overlay of Doc.rgOverlays) {
+        if (!FeatureVisible(Layers, 'overlay', Overlay) || (Overlay.rgnTiles.length > 1 && !IsSelected(State, 'overlay', Overlay.szId))) {
+          continue;
+        }
+        Overlay.rgnTiles.forEach((nTile, nPoint) => {
+          const Copy = View.FeatureCopies(Topo, Layout, nTile).find((Item) => Item.Placement === Placement);
+          if (!Copy) {
+            return;
+          }
+          const rgdScreen = Projection.ApplyTransform(Projection.ComposeTransforms(Copy.rgdFrameToWorld, rgdWorldToScreen), View.FeatureAnchor(Topo, nTile));
+          const fPoint = IsSelected(State, 'overlay', Overlay.szId) && State.Selection.nPoint === nPoint;
+          ScreenDot(Context, rgdScreen, fPoint ? 5 : 3, fPoint ? '#ffffff' : g_OverlayStyles[Overlay.szType].szColor);
+          AddHit({ szLayer: 'overlay', Key: Overlay.szId, nPoint, rgdScreen, dRadius: 6 });
+        });
+      }
+      if (Layers.landmark !== false) {
+        for (const [nTile, Landmark] of Doc.Landmarks) {
+          const Copy = View.FeatureCopies(Topo, Layout, nTile).find((Item) => Item.Placement === Placement);
+          if (!Copy) {
+            continue;
+          }
+          const rgdT = Projection.ComposeTransforms(Copy.rgdFrameToWorld, rgdWorldToScreen);
+          const rgdScreen = Projection.ApplyTransform(rgdT, View.FeatureAnchor(Topo, nTile));
+          const dSize = Math.max(6, Math.min(26, Topo.dD * Camera.dScale * 0.55));
+          if (IsSelected(State, 'landmark', nTile)) {
+            ScreenDot(Context, rgdScreen, dSize * 0.7 + 3, g_szHoverColor);
+          }
+          if (!g_LandmarkPaths.has(Landmark.szType)) {
+            g_LandmarkPaths.set(Landmark.szType, new Root.Path2D(Terrain.LandmarkType(Landmark.szType).szPath));
+          }
+          Context.save();
+          Context.translate(...rgdScreen);
+          Context.rotate(Math.atan2(rgdT[1], rgdT[0]));
+          Context.scale(dSize / 24, dSize / 24);
+          Context.fillStyle = '#f9edcc';
+          Context.strokeStyle = '#28221b';
+          Context.lineWidth = 1.8;
+          Context.fill(g_LandmarkPaths.get(Landmark.szType));
+          Context.stroke(g_LandmarkPaths.get(Landmark.szType));
+          Context.restore();
+          AddHit({ szLayer: 'landmark', Key: nTile, rgdScreen, dRadius: Math.max(6, dSize * 0.6) });
+        }
+      }
+      if (Layers.label !== false) {
+        for (const Stored of Doc.rgLabels) {
+          const Label = State.LabelPreview && State.LabelPreview.szId === Stored.szId ? State.LabelPreview : Stored;
+          const Copy = View.FeatureCopies(Topo, Layout, Label.nTile).find((Item) => Item.Placement === Placement);
+          if (!Copy) {
+            continue;
+          }
+          const rgdFrameToScreen = Projection.ComposeTransforms(Copy.rgdFrameToWorld, rgdWorldToScreen);
+          const rgdTextToScreen = Projection.ComposeTransforms(View.LabelTransform(Topo, Label), rgdFrameToScreen);
+          Context.save();
+          SetTransform(Context, dRatio, rgdTextToScreen);
+          Context.font = `${Label.szCategory === 'region' ? '600' : '400'} ${Label.dSize}px system-ui, sans-serif`;
+          Context.textAlign = 'center';
+          Context.textBaseline = 'middle';
+          const dHalfWidth = Context.measureText(Label.szText).width / 2 + 2;
+          const dHalfHeight = Label.dSize * 0.65;
+          Context.lineJoin = 'round';
+          Context.strokeStyle = '#f9edcc';
+          Context.lineWidth = Math.max(1, Label.dSize / 8);
+          Context.strokeText(Label.szText, 0, 0);
+          Context.fillStyle = '#201c19';
+          Context.fillText(Label.szText, 0, 0);
+          const fSelected = IsSelected(State, 'label', Label.szId);
+          if (fSelected) {
+            Context.lineWidth = 1.5 / Math.hypot(rgdTextToScreen[0], rgdTextToScreen[1]);
+            Context.strokeStyle = g_szHoverColor;
+            Context.strokeRect(-dHalfWidth, -dHalfHeight, 2 * dHalfWidth, 2 * dHalfHeight);
+          }
+          Context.restore();
+          AddHit({ szLayer: 'label', Key: Label.szId, rgdScreenToText: Projection.InvertTransform(rgdTextToScreen), rgdFrameToScreen, dHalfWidth, dHalfHeight });
+          if (fSelected) {
+            const rgdCenter = Projection.ApplyTransform(rgdTextToScreen, [0, 0]);
+            const rgdTop = Projection.ApplyTransform(rgdTextToScreen, [0, -dHalfHeight]);
+            const dLength = Math.hypot(rgdTextToScreen[2], rgdTextToScreen[3]);
+            const rgdRotate = [rgdTop[0] - 20 * rgdTextToScreen[2] / dLength, rgdTop[1] - 20 * rgdTextToScreen[3] / dLength];
+            Context.beginPath();
+            Context.moveTo(...rgdTop);
+            Context.lineTo(...rgdRotate);
+            Context.strokeStyle = g_szHoverColor;
+            Context.lineWidth = 1.5;
+            Context.stroke();
+            for (const [szHandle, rgdScreen] of [['move', rgdCenter], ['rotate', rgdRotate]]) {
+              ScreenDot(Context, rgdScreen, 5, szHandle === 'move' ? '#ffffff' : g_szHoverColor);
+              AddHit({ szLayer: 'label', Key: Label.szId, szHandle, rgdScreen, dRadius: 8, rgdFrameToScreen });
+            }
+          }
+        }
+      }
+      Context.restore();
+    }
+  }
+
+  function HitFeature(Renderer, State, rgdScreen, szFilter = 'all') {
+    const PanelHit = View.PlacementAt(State.Layout, View.ScreenToWorld(State.Camera, rgdScreen));
+    if (!PanelHit) {
+      return null;
+    }
+    for (let nIndex = Renderer.rgFeatureHits.length - 1; nIndex >= 0; nIndex--) {
+      const Hit = Renderer.rgFeatureHits[nIndex];
+      const fTypeMatch = Hit.szLayer === 'overlay' && State.Doc.rgOverlays.some((Item) => Item.szId === Hit.Key && Item.szType === szFilter);
+      if (Hit.szDrawPanel !== PanelHit.Placement.szPanel || (szFilter !== 'all' && Hit.szLayer !== szFilter && !fTypeMatch)) {
+        continue;
+      }
+      if (Hit.rgdScreenToText) {
+        const [dX, dY] = Projection.ApplyTransform(Hit.rgdScreenToText, rgdScreen);
+        if (Math.abs(dX) <= Hit.dHalfWidth && Math.abs(dY) <= Hit.dHalfHeight) {
+          return Hit;
+        }
+      } else if (Hit.rgrgdPoints) {
+        if (Hit.rgrgdPoints.slice(1).some((Point, nPoint) => View.DistanceToSegment(rgdScreen, Hit.rgrgdPoints[nPoint], Point) <= Hit.dRadius)) {
+          return Hit;
+        }
+      } else if (Util.Distance(rgdScreen, Hit.rgdScreen) <= Hit.dRadius) {
+        return Hit;
+      }
+    }
+    return null;
+  }
+
   // State: { Doc, Layout, Camera, Layers: { fTerrain, fGrid, fOutlines, fNames }, nHoverTile }.
   // Returns { fRaster, dHexPixels } for the status bar.
   function Draw(Renderer, State) {
@@ -4012,6 +4554,7 @@
         { fTerrain: Layers.fTerrain, fGrid: Layers.fGrid });
     }
     DrawPanelDecorations(Context, dRatio, State);
+    DrawFeatures(Renderer, State, rgdWorldToScreen);
     DrawHover(Context, dRatio, State, rgdWorldToScreen);
     return { fRaster, dHexPixels };
   }
@@ -4058,6 +4601,8 @@
     Draw,
     DrawMinimap,
     MarkTilesChanged,
+    FeatureVisible,
+    HitFeature,
   });
 })(globalThis);
 </script>
@@ -4068,7 +4613,7 @@
   const RpgMap = Root.RpgMap = Root.RpgMap || {};
   const { Util, Projection, Coordinates, Terrain, Model, History, View, Edit, FileFormat, Renderer } = RpgMap;
 
-  const g_szVersion = '0.4.0';
+  const g_szVersion = '0.5.0';
   const g_szAutosaveKey = 'rpgmap.autosave';
   const g_nAutosaveDelayMs = 2000;
   // [id, label, hotkey, title]
@@ -4077,6 +4622,11 @@
     ['brush', 'Brush', 'b', 'Paint the active terrain (B). Alt+click picks a terrain.'],
     ['fill', 'Fill', 'g', 'Fill the connected area of one terrain (G). Alt+click picks a terrain.'],
     ['eyedropper', 'Pick', 'i', 'Pick the terrain of a tile (I)'],
+    ['overlay', 'Path', 'o', 'Road, trail or river paths (O). Click to extend; Escape finishes.'],
+    ['landmark', 'Landmark', 'k', 'Place or select a landmark (K)'],
+    ['label', 'Label', 't', 'Place or select a label (T). Drag the white handle to move; yellow to rotate.'],
+    ['select', 'Select', 'v', 'Select a feature (V); choose overlapping items in Properties'],
+    ['erase', 'Erase', 'e', 'Erase from the target layer (E), without changing other layers'],
   ];
   const g_dKeyPanPixels = 60;
   const g_dKeyZoomFactor = 1.25;
@@ -4085,6 +4635,11 @@
     ['fGrid', 'Hex grid'],
     ['fOutlines', 'Panel outlines'],
     ['fNames', 'Panel names'],
+    ['road', 'Roads'],
+    ['trail', 'Trails'],
+    ['river', 'Rivers'],
+    ['landmark', 'Landmarks'],
+    ['label', 'Labels'],
   ];
 
   const State = {
@@ -4092,7 +4647,7 @@
     History: null,
     Layout: null,
     Camera: View.CreateCamera(),
-    Layers: { fTerrain: true, fGrid: true, fOutlines: true, fNames: true },
+    Layers: { fTerrain: true, fGrid: true, fOutlines: true, fNames: true, road: true, trail: true, river: true, landmark: true, label: true },
     nHoverTile: -1,
     rgnPreviewTiles: [],
     szTool: 'brush',
@@ -4108,6 +4663,16 @@
     LastDraw: null,
     nSavedRevision: 0,
     nAutosaveTimer: 0,
+    Selection: null,
+    nSelectedTile: -1,
+    szOverlayType: 'road',
+    szLandmarkType: 'village',
+    szLabelCategory: 'location',
+    szTargetLayer: 'all',
+    szPathAction: 'select',
+    fNewLabel: false,
+    LabelPreview: null,
+    LabelDrag: null,
   };
 
   function Element(szTag, Props = {}, rgChildren = []) {
@@ -4139,6 +4704,9 @@
         Coordinates.FormatUniversal(Coordinates.TileToUniversal(Doc.Topo, State.nHoverTile)),
         `${Panel.szName} (${Panel.szLetter}) col ${Tile.nColumn} row ${Tile.nRow}${Tile.fPartial ? ' partial' : ''}`,
         Terrain.ById(Model.GetTerrain(Doc, State.nHoverTile)).szName,
+        ...[Model.GetLandmark(Doc, State.nHoverTile)].filter(Boolean).map((Item) => `${Item.szType}: ${Item.szName || '(unnamed)'}`),
+        ...Model.OverlaysAt(Doc, State.nHoverTile).map((Item) => `${Item.szType}: ${Item.szName || Item.szId}`),
+        ...Model.LabelsAt(Doc, State.nHoverTile).map((Item) => Item.szText),
         `tile ${State.nHoverTile}`,
       ].join(' \u00b7 ');
     }
@@ -4182,9 +4750,7 @@
   }
 
   function TilesChanged(rgnTiles) {
-    if (rgnTiles.length > 0) {
-      Renderer.MarkTilesChanged(State.Renderer, State.Doc, rgnTiles);
-    }
+    Renderer.MarkTilesChanged(State.Renderer, State.Doc, rgnTiles);
     SyncUndoButtons();
     ScheduleAutosave();
     RequestDraw();
@@ -4195,14 +4761,25 @@
   }
 
   function SetTool(szTool) {
+    EndStroke();
+    FinishLabelDrag(true);
     State.szTool = szTool;
+    State.szPathAction = 'select';
+    State.fNewLabel = false;
+    if (State.Selection && !['select', 'erase'].includes(szTool) && State.Selection.szLayer !== szTool) {
+      State.Selection = null;
+      State.nSelectedTile = -1;
+    }
     for (const [szId] of g_rgTools) {
       const Button = Root.document.getElementById(`tool-${szId}`);
       Button.setAttribute('aria-pressed', String(szId === szTool));
     }
     Root.document.getElementById('brush-options').hidden = szTool !== 'brush';
     Root.document.getElementById('map-canvas').dataset.tool = szTool;
+    BuildFeatureOptions();
+    BuildProperties();
     SetHover(State.nHoverTile);
+    RequestDraw();
   }
 
   function SetTerrain(nTerrainId) {
@@ -4250,14 +4827,17 @@
   }
 
   function UndoOrRedo(fUndo) {
-    if (State.Stroke) {
+    if (State.Stroke || State.LabelDrag) {
       return;
     }
     const Command = fUndo ? History.Undo(State.History) : History.Redo(State.History);
     if (Command) {
       const rgnTiles = Edit.CommandTiles(Command);
-      SetMessage(`${fUndo ? 'Undo' : 'Redo'} ${Command.szLabel}: ${CountText(rgnTiles.length)}`);
+      SetMessage(`${fUndo ? 'Undo' : 'Redo'} ${Command.szLabel}${rgnTiles.length ? ': ' + CountText(rgnTiles.length) : ''}`);
       TilesChanged(rgnTiles);
+      State.szPathAction = 'select';
+      SyncSelection();
+      BuildProperties();
       SetHover(State.nHoverTile);
     } else {
       SetMessage(fUndo ? 'Nothing to undo' : 'Nothing to redo');
@@ -4282,15 +4862,21 @@
   // Replaces the open document; fDirty marks it unsaved (e.g. a restored autosave).
   function LoadDocument(Doc, szMessage, fDirty = false) {
     EndStroke();
+    FinishLabelDrag(true);
     State.Doc = Doc;
     State.History = History.Create(Doc);
     State.nHoverTile = -1;
     State.rgnPreviewTiles = [];
+    State.Selection = null;
+    State.nSelectedTile = -1;
+    State.szPathAction = 'select';
+    State.fNewLabel = false;
     State.nSavedRevision = fDirty ? -1 : Doc.nRevision;
     State.Layout = View.BuildNetLayout();
     Root.document.title = `${Doc.szName || 'Untitled'} \u2013 RPG World Map Editor`;
     SyncUndoButtons();
     SyncControls();
+    BuildProperties();
     FitNet();
     SetMessage(szMessage);
   }
@@ -4340,6 +4926,7 @@
 
   function SaveMap() {
     EndStroke();
+    FinishLabelDrag(false);
     const szName = FileFormat.FileName(State.Doc);
     const Url = Root.URL.createObjectURL(new Root.Blob([FileFormat.Write(State.Doc)], { type: 'text/plain' }));
     const Link = Element('a', { href: Url, download: szName });
@@ -4512,6 +5099,7 @@
       const Box = Element('input', { type: 'checkbox', checked: State.Layers[szKey], id: `layer-${szKey}` });
       Box.addEventListener('change', () => {
         State.Layers[szKey] = Box.checked;
+        BuildProperties();
         RequestDraw();
       });
       return Element('label', { className: 'layer-toggle' }, [Box, ` ${szLabel}`]);
@@ -4534,7 +5122,8 @@
       Element('span', { id: 'active-terrain-name' }),
     ]);
     Root.document.getElementById('tool-list').replaceChildren(
-      Element('div', { className: 'tool-buttons' }, rgButtons), BrushOptions, ActiveTerrain);
+      Element('div', { className: 'tool-buttons' }, rgButtons), BrushOptions, ActiveTerrain,
+      Element('div', { id: 'feature-options' }));
   }
 
   function BuildLegend() {
@@ -4556,6 +5145,382 @@
     });
     Root.document.getElementById('property-list').replaceChildren(
       Element('h2', { textContent: 'Terrain' }), Element('div', { role: 'radiogroup', ariaLabel: 'Active terrain' }, rgRows));
+  }
+
+  function Field(szId, szTitle, Control) {
+    Control.id = szId;
+    return Element('label', { className: 'property-field', htmlFor: szId }, [
+      Element('span', { textContent: szTitle }), Control,
+    ]);
+  }
+
+  function SelectControl(rgOptions, szValue, OnChange) {
+    const Select = Element('select', {}, rgOptions.map(([szKey, szText]) => Element('option', { value: szKey, textContent: szText })));
+    Select.value = szValue;
+    Select.onchange = () => OnChange(Select.value);
+    return Select;
+  }
+
+  function ActionButton(szId, szText, OnClick, fDisabled = false) {
+    return Element('button', { id: szId, type: 'button', className: 'tool-button', textContent: szText, onclick: OnClick, disabled: fDisabled });
+  }
+
+  function FeatureName(szLayer, Item) {
+    return szLayer === 'label' ? Item.szText : `${Item.szType}: ${Item.szName || Item.szId || '(unnamed)'}`;
+  }
+
+  function SelectionTile(Selection) {
+    const Item = Edit.GetFeature(State.Doc, Selection);
+    return !Item ? -1 : Selection.szLayer === 'landmark' ? Selection.Key
+      : Selection.szLayer === 'label' ? Item.nTile : Item.rgnTiles[Selection.nPoint || 0];
+  }
+
+  function SyncSelection() {
+    const Item = Edit.GetFeature(State.Doc, State.Selection);
+    if (!Item) {
+      State.Selection = null;
+    } else if (State.Selection.szLayer === 'overlay') {
+      State.Selection.nPoint = Math.min(State.Selection.nPoint || 0, Item.rgnTiles.length - 1);
+    }
+    if (State.Selection) {
+      State.nSelectedTile = SelectionTile(State.Selection);
+    }
+  }
+
+  function SelectFeature(Selection) {
+    State.Selection = Selection ? { szLayer: Selection.szLayer, Key: Selection.Key, nPoint: Selection.nPoint || 0 } : null;
+    SyncSelection();
+    BuildProperties();
+    RequestDraw();
+  }
+
+  function ApplyFeatureEdit(Action, fSelectChanged = false) {
+    try {
+      const Command = Action();
+      if (Command && fSelectChanged) {
+        const Change = Command.rgChanges[0];
+        State.Selection = { szLayer: Change.szLayer, Key: Change.Key, nPoint: 0 };
+      }
+      SyncSelection();
+      BuildProperties();
+      if (Command) {
+        TilesChanged(Edit.CommandTiles(Command));
+        SetMessage(Command.szLabel);
+      }
+      return true;
+    } catch (Caught) {
+      SetMessage(`Can't edit: ${Caught.message}`);
+      return false;
+    }
+  }
+
+  function StartPath() {
+    SelectFeature(null);
+    State.szPathAction = 'new';
+    BuildProperties();
+    SetMessage('Click the first tile of the new path');
+  }
+
+  function FinishPath() {
+    State.szPathAction = 'select';
+    BuildProperties();
+    SetMessage('Path finished; click a path to select it');
+  }
+
+  function BuildFeatureOptions() {
+    const rgFields = [];
+    if (State.szTool === 'overlay') {
+      rgFields.push(Field('overlay-type', 'New path type', SelectControl(
+        Model.g_rgszOverlayTypes.map((szType) => [szType, szType]), State.szOverlayType, (szValue) => {
+          State.szOverlayType = szValue;
+          StartPath();
+        })));
+      rgFields.push(ActionButton('path-new', 'New path', StartPath));
+    } else if (State.szTool === 'landmark') {
+      rgFields.push(Field('landmark-type', 'New landmark type', SelectControl(
+        Terrain.g_rgLandmarkTypes.map((Item) => [Item.szKey, Item.szName]), State.szLandmarkType, (szValue) => { State.szLandmarkType = szValue; })));
+    } else if (State.szTool === 'label') {
+      rgFields.push(Field('label-category', 'New label category', SelectControl(
+        Model.g_rgszLabelCategories.map((szCategory) => [szCategory, szCategory]), State.szLabelCategory, (szValue) => { State.szLabelCategory = szValue; })));
+      rgFields.push(ActionButton('label-new', 'New label', () => {
+        SelectFeature(null);
+        State.fNewLabel = true;
+        SetMessage('Click a tile to add another label');
+      }));
+    } else if (State.szTool === 'select' || State.szTool === 'erase') {
+      rgFields.push(Field('target-layer', 'Target layer', SelectControl([
+        ['all', 'Any feature'], ['terrain', 'Terrain'], ['road', 'Roads'], ['trail', 'Trails'], ['river', 'Rivers'],
+        ['landmark', 'Landmarks'], ['label', 'Labels'],
+      ], State.szTargetLayer, (szValue) => {
+        State.szTargetLayer = szValue;
+        State.nSelectedTile = -1;
+        SelectFeature(null);
+      })));
+    }
+    Root.document.getElementById('feature-options').replaceChildren(...rgFields);
+  }
+
+  function FeaturesAt(nTile, szFilter = 'all') {
+    if (!Model.IsTile(State.Doc, nTile)) {
+      return [];
+    }
+    const rgFeatures = [
+      ...Model.OverlaysAt(State.Doc, nTile).map((Item) => ({ szLayer: 'overlay', Key: Item.szId, nPoint: Item.rgnTiles.indexOf(nTile), Item })),
+      ...[Model.GetLandmark(State.Doc, nTile)].filter(Boolean).map((Item) => ({ szLayer: 'landmark', Key: nTile, Item })),
+      ...Model.LabelsAt(State.Doc, nTile).map((Item) => ({ szLayer: 'label', Key: Item.szId, Item })),
+    ];
+    return rgFeatures.filter(({ szLayer, Item }) => Renderer.FeatureVisible(State.Layers, szLayer, Item)
+      && (szFilter === 'all' || szFilter === szLayer || (szLayer === 'overlay' && szFilter === Item.szType)));
+  }
+
+  function BuildProperties() {
+    const fTerrain = ['pan', 'brush', 'fill', 'eyedropper'].includes(State.szTool)
+      || (['select', 'erase'].includes(State.szTool) && State.szTargetLayer === 'terrain');
+    Root.document.getElementById('property-list').hidden = !fTerrain;
+    const Container = Root.document.getElementById('feature-properties');
+    Container.hidden = fTerrain;
+    if (fTerrain) {
+      return;
+    }
+    const Selection = State.Selection;
+    const Item = Edit.GetFeature(State.Doc, Selection);
+    const rgFields = [];
+    const rgAtTile = FeaturesAt(State.nSelectedTile);
+    if (rgAtTile.length > 1) {
+      rgFields.push(Field('feature-choice', 'Features on this tile', SelectControl(
+        rgAtTile.map((Entry, nIndex) => [String(nIndex), FeatureName(Entry.szLayer, Entry.Item) + (Entry.Item.szId ? ` [${Entry.Item.szId}]` : '')]),
+        String(rgAtTile.findIndex((Entry) => Selection && Entry.szLayer === Selection.szLayer && Entry.Key === Selection.Key)),
+        (szIndex) => {
+          State.szPathAction = 'select';
+          SelectFeature(rgAtTile[Number(szIndex)]);
+        })));
+    }
+    if (!Item) {
+      const szHelp = State.szTool === 'overlay' ? 'Click a tile to start a path, then click to extend. Gaps follow the shortest tile path. Escape finishes.'
+        : State.szTool === 'landmark' ? 'Click a tile to place a landmark, or an existing symbol to edit it.'
+        : State.szTool === 'label' ? 'Click a tile to add a label. Select existing text to edit it.'
+        : State.szTool === 'erase' ? 'Click to erase only the target layer. For overlapping features, use Select and the feature chooser first.'
+        : 'Click a feature to inspect it. Hidden layers cannot be selected or erased.';
+      rgFields.push(Element('p', { className: 'tool-help', textContent: szHelp }));
+      Container.replaceChildren(...rgFields);
+      return;
+    }
+    const { szLayer, Key } = Selection;
+    rgFields.push(Element('h2', { textContent: FeatureName(szLayer, Item) }));
+    if (!Renderer.FeatureVisible(State.Layers, szLayer, Item)) {
+      rgFields.push(Element('p', { className: 'tool-help', textContent: 'This layer is hidden. Show it to edit the feature.' }));
+      Container.replaceChildren(...rgFields);
+      return;
+    }
+    const EditProps = (Props) => ApplyFeatureEdit(() => Edit.SetFeature(State.History, szLayer, Key, Props));
+    const TextField = (szKey, szTitle, fNumber = false) => {
+      const Input = Element('input', { type: fNumber ? 'number' : 'text', value: String(Item[szKey]), step: 'any' });
+      if (fNumber) {
+        Input.required = true;
+        if (szKey === 'dSize') {
+          Input.min = '0.1';
+        }
+      }
+      Input.onchange = () => {
+        if (Input.reportValidity()) {
+          EditProps({ [szKey]: fNumber ? Number(Input.value) : Input.value });
+        }
+      };
+      rgFields.push(Field(`feature-${szKey}`, szTitle, Input));
+    };
+    if (szLayer === 'overlay') {
+      rgFields.push(Field('feature-type', 'Type', SelectControl(Model.g_rgszOverlayTypes.map((sz) => [sz, sz]), Item.szType, (szType) => EditProps({ szType }))));
+      TextField('szName', 'Name');
+      TextField('szStyle', 'Style (letters, digits, - or _)');
+      rgFields.push(Field('path-point', 'Selected point', SelectControl(Item.rgnTiles.map((nTile, nIndex) => [
+        String(nIndex), `${nIndex + 1}: ${Coordinates.FormatUniversal(Coordinates.TileToUniversal(State.Doc.Topo, nTile))}`,
+      ]), String(Selection.nPoint), (szIndex) => SelectFeature({ ...Selection, nPoint: Number(szIndex) }))));
+      const nPoint = Selection.nPoint;
+      rgFields.push(Element('div', { className: 'property-actions' }, [
+        ActionButton('path-extend', 'Extend end', () => {
+          SetTool('overlay');
+          State.szPathAction = 'extend';
+          BuildProperties();
+          SetMessage('Click a tile to extend the path from its end');
+        }),
+        ActionButton('path-insert', 'Insert after point', () => {
+          SetTool('overlay');
+          State.szPathAction = 'insert';
+          BuildProperties();
+          SetMessage('Click a tile to insert after the selected point');
+        }),
+        ActionButton('path-remove', 'Remove point', () => ApplyFeatureEdit(() => Edit.RemoveOverlayPoint(State.History, Key, nPoint))),
+        ActionButton('path-split', 'Split at point', () => ApplyFeatureEdit(() => Edit.SplitOverlay(State.History, Key, nPoint)), nPoint === 0 || nPoint === Item.rgnTiles.length - 1),
+        ActionButton('path-finish', 'Finish path', FinishPath),
+      ]));
+      rgFields.push(Element('p', { className: 'tool-help', textContent: `Path mode: ${State.szPathAction}. Select a point to insert, remove or split. Removing an interior point reroutes around that tile.` }));
+      const rgOthers = State.Doc.rgOverlays.filter((Other) => Other.szId !== Key && Other.szType === Item.szType);
+      if (rgOthers.length > 0) {
+        const Target = SelectControl(rgOthers.map((Other) => [Other.szId, Other.szName || Other.szId]), rgOthers[0].szId, () => {});
+        const FromEnd = SelectControl([['end', 'End'], ['start', 'Start']], 'end', () => {});
+        const ToEnd = SelectControl([['start', 'Start'], ['end', 'End']], 'start', () => {});
+        rgFields.push(Field('join-target', 'Join to (same type)', Target), Field('join-from', 'This endpoint', FromEnd), Field('join-to', 'Other endpoint', ToEnd),
+          ActionButton('path-join', 'Join paths', () => ApplyFeatureEdit(() => Edit.JoinOverlays(State.History, Key, Target.value, FromEnd.value === 'start', ToEnd.value === 'end'))),
+          Element('p', { className: 'tool-help', textContent: 'Join keeps this path\'s name/style, removes the other path, and bridges any gap.' }));
+      }
+    } else if (szLayer === 'landmark') {
+      rgFields.push(Field('feature-type', 'Type', SelectControl(Terrain.g_rgLandmarkTypes.map((Type) => [Type.szKey, Type.szName]), Item.szType, (szType) => EditProps({ szType }))));
+      TextField('szName', 'Name');
+      TextField('szNotes', 'Notes (one line)');
+    } else {
+      TextField('szText', 'Text');
+      rgFields.push(Field('feature-category', 'Category', SelectControl(Model.g_rgszLabelCategories.map((sz) => [sz, sz]), Item.szCategory, (szCategory) => EditProps({ szCategory }))));
+      TextField('dSize', 'Size (48 units = one hex)', true);
+      TextField('dRotation', 'Rotation (clockwise degrees)', true);
+      TextField('dDx', 'Offset right (units)', true);
+      TextField('dDy', 'Offset down (units)', true);
+      rgFields.push(Element('p', { className: 'tool-help', textContent: 'Drag the white handle to move; drag the yellow handle to rotate. Escape cancels a drag. Each drag is one undo step.' }));
+    }
+    rgFields.push(Element('div', { className: 'property-actions' }, [
+      ActionButton('feature-delete', `Delete ${szLayer}`, DeleteSelected),
+    ]));
+    Container.replaceChildren(...rgFields);
+  }
+
+  function DeleteSelected() {
+    const Item = Edit.GetFeature(State.Doc, State.Selection);
+    if (Item && Renderer.FeatureVisible(State.Layers, State.Selection.szLayer, Item)) {
+      const { szLayer, Key } = State.Selection;
+      State.szPathAction = 'select';
+      ApplyFeatureEdit(() => Edit.SetFeature(State.History, szLayer, Key, null));
+    }
+  }
+
+  function PickFeature(rgdScreen, Hit, szFilter) {
+    const Feature = Renderer.HitFeature(State.Renderer, State, rgdScreen, szFilter);
+    return Feature || (Hit ? FeaturesAt(Hit.nTile, szFilter).at(-1) : null);
+  }
+
+  function FeatureClick(rgdScreen, Hit) {
+    const szTool = State.szTool;
+    const szFilter = szTool === 'select' || szTool === 'erase' ? State.szTargetLayer : szTool;
+    State.nSelectedTile = Hit ? Hit.nTile : -1;
+    if (szFilter === 'terrain') {
+      SelectFeature(null);
+      if (Hit && State.Layers.fTerrain) {
+        if (szTool === 'erase') {
+          const Command = History.Perform(State.History, 'Erase terrain', (Doc, Record) => Record(Model.SetTerrain(Doc, Hit.nTile, Terrain.g_nWaterId)));
+          TilesChanged(Edit.CommandTiles(Command));
+          SetMessage(Command ? 'Erased terrain' : 'Terrain is already water');
+        } else {
+          PickTerrain(Hit.nTile);
+        }
+      }
+      return;
+    }
+    const Feature = PickFeature(rgdScreen, Hit, szFilter);
+    if (szTool === 'erase') {
+      if (Feature) {
+        SelectFeature(Feature);
+        DeleteSelected();
+      } else {
+        SetMessage('No visible feature in the target layer here');
+      }
+      return;
+    }
+    if (szTool === 'select') {
+      SelectFeature(Feature);
+      return;
+    }
+    if (szTool === 'overlay' && State.szPathAction !== 'select' && State.szPathAction !== 'new') {
+      const Selected = Edit.GetFeature(State.Doc, State.Selection);
+      if (!Selected || State.Selection.szLayer !== 'overlay' || !State.Layers[Selected.szType]) {
+        SetMessage('Select a visible path first');
+        return;
+      }
+      if (Hit) {
+        const { Key, nPoint } = State.Selection;
+        const fInsert = State.szPathAction === 'insert';
+        if (ApplyFeatureEdit(() => fInsert ? Edit.InsertOverlayPoint(State.History, Key, nPoint, Hit.nTile) : Edit.ExtendOverlay(State.History, Key, Hit.nTile))) {
+          const rgnTiles = Model.GetOverlay(State.Doc, Key).rgnTiles;
+          State.Selection.nPoint = fInsert ? rgnTiles.indexOf(Hit.nTile, nPoint) : rgnTiles.length - 1;
+          if (fInsert) {
+            State.szPathAction = 'select';
+          }
+          SyncSelection();
+          BuildProperties();
+        }
+      }
+      return;
+    }
+    if (Feature && !(szTool === 'overlay' && State.szPathAction === 'new') && !(szTool === 'label' && State.fNewLabel)) {
+      SelectFeature(Feature);
+      return;
+    }
+    if (!Hit) {
+      SelectFeature(null);
+      return;
+    }
+    const szLayerKey = szTool === 'overlay' ? State.szOverlayType : szTool;
+    if (!State.Layers[szLayerKey]) {
+      SetMessage(`Show the ${szLayerKey} layer before adding a feature`);
+      return;
+    }
+    if (szTool === 'overlay') {
+      if (ApplyFeatureEdit(() => Edit.SetFeature(State.History, 'overlay', null, { szType: State.szOverlayType, rgnTiles: [Hit.nTile] }), true)) {
+        State.szPathAction = 'extend';
+        BuildProperties();
+      }
+    } else if (szTool === 'landmark') {
+      ApplyFeatureEdit(() => Edit.SetFeature(State.History, 'landmark', Hit.nTile, { szType: State.szLandmarkType }), true);
+    } else if (szTool === 'label') {
+      ApplyFeatureEdit(() => Edit.SetFeature(State.History, 'label', null, { nTile: Hit.nTile, szCategory: State.szLabelCategory, szText: 'Label' }), true);
+      State.fNewLabel = false;
+    }
+  }
+
+  function StartLabelDrag(rgdScreen) {
+    if (!['label', 'select'].includes(State.szTool) || (State.szTool === 'select' && !['all', 'label'].includes(State.szTargetLayer)) || State.fNewLabel) {
+      return false;
+    }
+    const Hit = Renderer.HitFeature(State.Renderer, State, rgdScreen, 'label');
+    if (!Hit || !Hit.szHandle) {
+      return false;
+    }
+    const Label = Model.GetLabel(State.Doc, Hit.Key);
+    const rgdScreenToFrame = Projection.InvertTransform(Hit.rgdFrameToScreen);
+    State.LabelDrag = { Label, szHandle: Hit.szHandle, rgdScreenToFrame, rgdStart: Projection.ApplyTransform(rgdScreenToFrame, rgdScreen) };
+    State.LabelPreview = Label;
+    return true;
+  }
+
+  function MoveLabelDrag(rgdScreen) {
+    const Drag = State.LabelDrag;
+    if (!Drag) {
+      return;
+    }
+    const rgdPoint = Projection.ApplyTransform(Drag.rgdScreenToFrame, rgdScreen);
+    const Label = Drag.Label;
+    const dUnit = State.Doc.Topo.dD / View.g_dLabelUnitsPerHex;
+    if (Drag.szHandle === 'move') {
+      State.LabelPreview = { ...Label, dDx: Label.dDx + (rgdPoint[0] - Drag.rgdStart[0]) / dUnit, dDy: Label.dDy - (rgdPoint[1] - Drag.rgdStart[1]) / dUnit };
+    } else {
+      const rgdT = View.LabelTransform(State.Doc.Topo, Label);
+      const Angle = (Point) => Math.atan2(-(Point[1] - rgdT[5]), Point[0] - rgdT[4]);
+      const dDelta = Angle(rgdPoint) - Angle(Drag.rgdStart);
+      State.LabelPreview = { ...Label, dRotation: Label.dRotation + Math.atan2(Math.sin(dDelta), Math.cos(dDelta)) * 180 / Math.PI };
+    }
+    RequestDraw();
+  }
+
+  function FinishLabelDrag(fCancel) {
+    if (!State.LabelDrag) {
+      return;
+    }
+    const Label = State.LabelPreview;
+    State.LabelPreview = null;
+    State.LabelDrag = null;
+    if (fCancel) {
+      SetMessage('Label drag cancelled');
+    } else {
+      ApplyFeatureEdit(() => Edit.SetFeature(State.History, 'label', Label.szId, { dDx: Label.dDx, dDy: Label.dDy, dRotation: Label.dRotation }));
+    }
+    RequestDraw();
   }
 
   function LocalPoint(Event, Target) {
@@ -4581,6 +5546,11 @@
         Drag = { szMode: 'pan', nPointer: Event.pointerId, rgdLast: rgdPoint };
         Canvas.classList.add('dragging');
       } else if (Event.button === 0) {
+        if (!Event.altKey && StartLabelDrag(rgdPoint)) {
+          Drag = { szMode: 'label', nPointer: Event.pointerId };
+          Canvas.setPointerCapture(Event.pointerId);
+          return;
+        }
         const Hit = HitAt(rgdPoint);
         if (Event.altKey || State.szTool === 'eyedropper') {
           if (Hit) {
@@ -4592,6 +5562,10 @@
           if (Hit) {
             FillAt(Hit.nTile);
           }
+          return;
+        }
+        if (State.szTool !== 'brush') {
+          FeatureClick(rgdPoint, Hit);
           return;
         }
         State.Stroke = Edit.BeginStroke(State.History, State.nTerrainId, State.nBrushRadius);
@@ -4609,7 +5583,9 @@
           View.Pan(State.Camera, rgdPoint[0] - Drag.rgdLast[0], rgdPoint[1] - Drag.rgdLast[1]);
           Drag.rgdLast = rgdPoint;
           RequestDraw();
-        } else {
+        } else if (Drag.szMode === 'label') {
+          MoveLabelDrag(rgdPoint);
+        } else if (State.Stroke) {
           StrokeAt(rgdPoint);
         }
       }
@@ -4619,6 +5595,8 @@
       if (Drag && Drag.nPointer === Event.pointerId) {
         if (Drag.szMode === 'paint') {
           EndStroke();
+        } else if (Drag.szMode === 'label') {
+          FinishLabelDrag(Event.type !== 'pointerup');
         }
         Drag = null;
         Canvas.classList.remove('dragging');
@@ -4626,9 +5604,13 @@
     };
     Canvas.addEventListener('pointerup', EndDrag);
     Canvas.addEventListener('pointercancel', EndDrag);
+    Canvas.addEventListener('lostpointercapture', EndDrag);
     Canvas.addEventListener('pointerleave', () => SetHover(-1));
     Canvas.addEventListener('wheel', (Event) => {
       Event.preventDefault();
+      if (State.LabelDrag) {
+        return;
+      }
       const dDelta = Event.deltaMode === 1 ? Event.deltaY * 16 : Event.deltaY;
       View.ZoomAt(State.Camera, LocalPoint(Event, Canvas), Math.exp(-dDelta * 0.0015));
       HoverAt(LocalPoint(Event, Canvas));
@@ -4675,6 +5657,13 @@
     Root.addEventListener('keydown', (Event) => {
       const szTag = Event.target && Event.target.tagName;
       const fTextEntry = szTag === 'TEXTAREA' || (szTag === 'INPUT' && Event.target.type !== 'range' && Event.target.type !== 'checkbox');
+      if (State.LabelDrag) {
+        if (Event.key === 'Escape') {
+          FinishLabelDrag(true);
+        }
+        Event.preventDefault();
+        return;
+      }
       if ((Event.ctrlKey || Event.metaKey) && !Event.altKey && !fTextEntry) {
         const szKey = Event.key.toLowerCase();
         if (szKey === 'z' || szKey === 'y') {
@@ -4690,6 +5679,17 @@
         return;
       }
       if (szTag === 'INPUT' || szTag === 'SELECT' || szTag === 'TEXTAREA' || Event.ctrlKey || Event.metaKey || Event.altKey) {
+        return;
+      }
+      if (Event.key === 'Escape') {
+        EndStroke();
+        State.fNewLabel = false;
+        FinishPath();
+        return;
+      }
+      if ((Event.key === 'Delete' || Event.key === 'Backspace') && !['pan', 'brush', 'fill', 'eyedropper'].includes(State.szTool)) {
+        Event.preventDefault();
+        DeleteSelected();
         return;
       }
       if (Event.key === ' ') {
