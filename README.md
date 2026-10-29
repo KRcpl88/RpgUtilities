@@ -24,6 +24,8 @@ The specification is [`prompt.md`](prompt.md), the implementation plan is
 | `map-editor/index.html` | The editor. Each `<script data-module="Name">` block registers `globalThis.RpgMap.Name`. |
 | `tests/*.test.cjs` | Unit tests (Node's built-in test runner, no npm packages). |
 | `tests/_load.cjs` | Loads the DOM-free modules from `index.html` for the tests. |
+| `tests/fixtures/*.map.txt` | Sample map files in the editor's save format. |
+| `doc/file-format.md` | Specification of the `.map.txt` save format. |
 | `tools/generate_map_projection.py` | Builds and validates the chamfered-cube world projection. |
 | `doc/equilateral-chamfered-cube.{json,svg}` | Projection geometry (reference data for the editor) and a diagram of the unfolded net. |
 

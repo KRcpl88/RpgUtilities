@@ -1,0 +1,225 @@
+# RPGMAP 1
+
+[map]
+kind = global
+name = "Sample world"
+panelHexes = 4
+tileScale = XL
+
+[legend]
+~ water
+i islands
+o lakes
+v firth
+. plain
+h hills
+M mountains
+A mountainPeak
+d desert
+D sandDunes
+f forest
+m marsh
+g mangrove
+t tundra
+c canyon
+b badlands
+= farmland
+
+[panel Alpha]
+columns = 4
+rows = 5
+latticeColumn = 0
+latticeRow = 2
+__A_
+MMAA
+AMMM
+AAAA
+_AAA
+
+[panel Beta]
+columns = 4
+rows = 5
+latticeColumn = 0
+latticeRow = 2
+__M_
+hhMM
+hMMM
+DcMA
+_bMA
+
+[panel Gamma]
+columns = 4
+rows = 5
+latticeColumn = 0
+latticeRow = 2
+__D_
+=bbh
+gddh
+~vDD
+_~DD
+
+[panel Delta]
+columns = 4
+rows = 5
+latticeColumn = 0
+latticeRow = 2
+__f_
+~~..
+~~ff
+f.fv
+_ffg
+
+[panel Epsilon]
+columns = 4
+rows = 5
+latticeColumn = 0
+latticeRow = 2
+__~_
+~~~~
+v~~~
+d.fg
+_fhf
+
+[panel Zeta]
+columns = 4
+rows = 5
+latticeColumn = 0
+latticeRow = 2
+__d_
+hhDD
+h.dD
+AhdD
+_MMD
+
+[panel Eta]
+columns = 5
+rows = 5
+latticeColumn = -2
+latticeRow = 2
+__t__
+cttt.
+MMMh.
+AAAMd
+_AMh_
+
+[panel Theta]
+columns = 5
+rows = 5
+latticeColumn = -2
+latticeRow = 2
+__t__
+~~ttM
+=v..h
+D..hM
+_bhh_
+
+[panel Iota]
+columns = 5
+rows = 5
+latticeColumn = -2
+latticeRow = 2
+__t__
+.t~~~
+~~~~.
+~~~~f
+_~~~_
+
+[panel Kappa]
+columns = 5
+rows = 5
+latticeColumn = -2
+latticeRow = 2
+__A__
+bAAAA
+bAAAA
+bMMAA
+_MMM_
+
+[panel Lambda]
+columns = 5
+rows = 5
+latticeColumn = -2
+latticeRow = 2
+__~__
+ff.~D
+h....
+MMMbM
+_MMM_
+
+[panel Mu]
+columns = 5
+rows = 5
+latticeColumn = -2
+latticeRow = 2
+__d__
+Mbb.h
+AMMMM
+AAMMM
+_MMM_
+
+[panel Nu]
+columns = 5
+rows = 3
+latticeColumn = -2
+latticeRow = 1
+__M__
+hhMAA
+_MMM_
+
+[panel Xi]
+columns = 5
+rows = 3
+latticeColumn = -2
+latticeRow = 1
+__v__
+~v..D
+_..b_
+
+[panel Omicron]
+columns = 5
+rows = 3
+latticeColumn = -2
+latticeRow = 1
+__.__
+h..~~
+_DD~_
+
+[panel Pi]
+columns = 5
+rows = 3
+latticeColumn = -2
+latticeRow = 1
+__D__
+vD.bM
+_.bM_
+
+[panel Rho]
+columns = 5
+rows = 3
+latticeColumn = -2
+latticeRow = 1
+__f__
+ffhff
+_hMh_
+
+[panel Sigma]
+columns = 5
+rows = 3
+latticeColumn = -2
+latticeRow = 1
+__A__
+AAAAM
+_AAA_
+
+[landmarks]
+Iota 374.1W 216.0S city "Karador" notes="Capital of the \"north\""
+Lambda 374.1E 0.0N tower "Wizard\\Tower"
+
+[labels]
+Zeta 280.6E 108.0S region id=label1 size=28 rot=-15 dx=0 dy=0 "The Northern Wastes"
+Iota 374.1W 216.0S city id=label2 size=18 rot=0 dx=0.5 dy=-12 "Karador"
+
+[overlays]
+river river1 "Silverrun" : Pi 187.1W 108.0N; 0.0E 216.0N; Gamma 280.6E 108.0S; 93.5E 0.0N
+road road1 style=highway "King's Road" : Iota 374.1W 216.0S; Omicron 187.1E 108.0N
+trail trail1 "" : Theta 374.1W 0.0N

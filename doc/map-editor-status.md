@@ -1,6 +1,6 @@
 # Global Map Editor: Plan Status
 
-Last updated: 2026-10-29 (after milestone 6). See [`map-editor-plan.md`](map-editor-plan.md) for the full plan and [`../prompt.md`](../prompt.md) for the specification.
+Last updated: 2026-10-29 (after milestone 7). See [`map-editor-plan.md`](map-editor-plan.md) for the full plan and [`../prompt.md`](../prompt.md) for the specification.
 
 ## Summary
 
@@ -12,16 +12,16 @@ Last updated: 2026-10-29 (after milestone 6). See [`map-editor-plan.md`](map-edi
 | 4 | Terrain table, Model, History | ✅ Done |
 | 5 | Renderer and viewport | ✅ Done |
 | 6 | Terrain tools | ✅ Done |
-| 7 | ASCII file format | ⏭ **Next** |
-| 8 | Overlays, landmarks, labels | Pending |
+| 7 | ASCII file format | ✅ Done |
+| 8 | Overlays, landmarks, labels | ⏭ **Next** |
 | 9 | Local maps and scales | Pending |
 | 10 | SVG export, part 1 | Pending |
 | 11 | SVG export, part 2: terrain embellishments | Pending |
 | 12 | Polish | Pending |
 
-## What exists now (milestones 1–6)
+## What exists now (milestones 1–7)
 
-- **`map-editor/index.html`**: the editor shell (toolbar, tool panel, canvas, properties panel, status bar) with twelve modules.
+- **`map-editor/index.html`**: the editor shell (toolbar, tool panel, canvas, properties panel, status bar) with thirteen modules.
   - `Util` (DOM-free): vector helpers, `Center`, `Boundary`, `Require`, `CreateRng` (mulberry32), `HashIntegers`, `FormatNumber`, and 2D geometry: `PolygonArea` (signed, CCW positive), `ClipPolygonToConvex` (Sutherland–Hodgman), `ClipSegmentToConvex` (returns `[t0, t1]` or null), `PointInConvex`.
   - `Projection` (DOM-free): a 1:1 port of the Python geometry, net and `Validate`, plus panel frames and seams. Exports `g_North`, `g_SectorLabels`, `g_SectorNames`, `g_dXlHexMiles`, `Build()`, `MilesPerEdge(nHexes)`, `FindSeam(szA, szB)`, `SolidToFrame`, `FrameToSolid`, and 2D transform helpers (`ApplyTransform`, `ComposeTransforms`, `InvertTransform`, `RigidFromSegments`).
   - `Lattice` (DOM-free): scale tables (`g_Scales`, regional XL/L/M/S = 216/72/24/8 mi; local in yards), flat-top offset ↔ axial ↔ cube ↔ point, `CubeRound`, `HexPolygon` (CCW from due east), `PointToOffset`, neighbours in order N, NE, SE, S, SW, NW (`g_rgrgnDirections`), `SharedEdge`, `OffsetDistance`, `NestOffset(q, j, r)`. Offset `(q, j)` centre = `(q·w, (j + ½·odd(q))·d)`.
@@ -50,6 +50,9 @@ Last updated: 2026-10-29 (after milestone 6). See [`map-editor-plan.md`](map-edi
     - `PaintTiles(Doc, rgnTiles, nId, fnRecord)` → changed tiles.
     - Strokes: `BeginStroke(History, nId, nRadius)` opens a `Paint <terrain>` command; `StrokeTo(Stroke, Layout, world)` stamps the brush on each new tile along the segment from the last point and returns the changed tiles; `EndStroke` commits (null if nothing changed).
     - `Fill(History, nStart, nId)` → `{ Command, rgnTiles }` as one `Fill <terrain>` command (Command null for a no-op); `CommandTiles(Command)` lists the terrain tiles a command changes (for redraws after undo/redo).
+  - `FileFormat` (DOM-free, plan §6 and §11.38–39; full spec in [`file-format.md`](file-format.md)): `Write(Doc)` → canonical `*.map.txt` text; `Parse(szText)` → a new Doc (`nRevision` 0), or throws an Error with `nLine` (0 = whole file) and the message `Line N: …`.
+    - Sections: `[map]`, `[legend]`, a `[panel <Name>]` per panel in Greek order (`columns`, `rows`, `latticeColumn`, `latticeRow`, grid lines north first, `_` = not a tile) or one `[local]`, then `[landmarks]`, `[labels]`, `[overlays]` with universal coordinates. Overlay points may leave out an unchanged panel.
+    - Also exports `g_szMagic` (`# RPGMAP 1`), `g_szFileExtension` (`.map.txt`), `Quote`/`Tokenize` (quoted strings with `\"`, `\\`, `\uXXXX`), `CoordinateDecimals(hexMiles)` and `FileName(Doc)`.
   - `Renderer` (`data-dom="true"`): `Create(Canvas)`, `Draw(R, State)` → `{ fRaster, dHexPixels }`, `DrawMinimap(R, MiniCanvas, State)`.
     - Tiles are drawn per placement through frame → world → screen, clipped to the panel polygon, and batched by terrain colour in chunks of 512.
     - Below 4 px, cells are filled as w × d rects; below 3 px, a cached raster of the layout is used. The hex grid appears from 6 px.
@@ -57,11 +60,13 @@ Last updated: 2026-10-29 (after milestone 6). See [`map-editor-plan.md`](map-edi
     - The minimap shows the net raster with the view rectangle (net view) or the focus panel outline.
     - `MarkTilesChanged(R, Doc, rgnTiles)`: after an edit, cached rasters repaint just those tiles (integer-pixel boxes in every placement that draws them) on the next draw; above 3,000 tiles the raster is redrawn in place (plan §11.37). Colour buckets paint in terrain-id order.
     - The brush footprint (`State.rgnPreviewTiles`) is outlined with the hovered tile.
-  - `App` (`data-dom="true"`, v0.3.0): `State { Doc, History, Layout, Camera, Layers, nHoverTile, rgnPreviewTiles, szTool, nTerrainId, nBrushRadius, Stroke, szMessage, … }`, starting with `Model.CreateGlobalMap()` (n = 24, XL) seeded with `View.DemoTerrain`.
-    - Toolbar: Net view, Focus panel select, Fit all, Fit panel, Undo, Redo (disabled when unavailable). Tool panel: Pan / Brush / Fill / Pick buttons (`aria-pressed`), the brush radius slider (0–5, Brush only) and the active terrain swatch; then layer toggles (terrain, hex grid, panel outlines, panel names). The properties panel's terrain legend is the active-terrain picker (click or Enter/Space; default plain).
-    - Input (plan §11.36): the left button drives the tool (Brush strokes, Fill click, Pick click; Alt+click picks with any tool); middle/right drag, Space+drag or the Pan tool pans; the wheel zooms about the cursor; a double-click focuses a panel (Pan tool only); a minimap click recentres or refocuses. Keys: `H B G I` tools, `[ ]` radius, Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z, arrows (Shift ×4), `+ = -`, Home, `F`, `N`, `P`.
+  - `App` (`data-dom="true"`, v0.4.0): `State { Doc, History, Layout, Camera, Layers, nHoverTile, rgnPreviewTiles, szTool, nTerrainId, nBrushRadius, Stroke, szMessage, … }`, starting with `Model.CreateGlobalMap()` (n = 24, XL) seeded with `View.DemoTerrain`.
+    - Toolbar: New, Open…, Save (plan §11.40), Net view, Focus panel select, Fit all, Fit panel, Undo, Redo (disabled when unavailable). Tool panel: Pan / Brush / Fill / Pick buttons (`aria-pressed`), the brush radius slider (0–5, Brush only) and the active terrain swatch; then layer toggles (terrain, hex grid, panel outlines, panel names). The properties panel's terrain legend is the active-terrain picker (click or Enter/Space; default plain).
+    - Input (plan §11.36): the left button drives the tool (Brush strokes, Fill click, Pick click; Alt+click picks with any tool); middle/right drag, Space+drag or the Pan tool pans; the wheel zooms about the cursor; a double-click focuses a panel (Pan tool only); a minimap click recentres or refocuses. Keys: `H B G I` tools, `[ ]` radius, Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z, Ctrl+S, Ctrl+O, arrows (Shift ×4), `+ = -`, Home, `F`, `N`, `P`.
     - Status bar: the hovered tile's universal coordinate · panel (letter) col/row (partial) · terrain · tile #, plus the last action (`Paint Forest: 116 tiles`, `Undo Fill Desert: 1,999 tiles`), the view, n/scale, tile count, hex px (raster) and version.
-    - Exports `RpgMap.App = { g_szVersion, State, Start, ShowFocus, ShowNet, FitNet, FitPanel, SetTool, SetTerrain, SetBrushRadius, UndoOrRedo }`.
+    - Files (§11.40): New makes an all-water world of the same n/scale. Open parses the file; errors show `Line N: …` and keep the current map, and local maps are rejected until milestone 9. Save downloads `FileFormat.FileName(Doc)`. Dirty state is `Doc.nRevision ≠ State.nSavedRevision`; the status bar starts with `name *`, and New/Open/Restore confirm before discarding changes.
+    - Autosave: 2 s after the last edit (and on `pagehide`) a dirty map goes to `localStorage['rpgmap.autosave']` as `{ szText, nTime }`; Save/Open/New clear it. On start a banner offers Restore or Discard (`#restore-banner`).
+    - Exports `RpgMap.App = { g_szVersion, State, Start, ShowFocus, ShowNet, FitNet, FitPanel, SetTool, SetTerrain, SetBrushRadius, UndoOrRedo, NewMap, SaveMap, Autosave, IsDirty }`.
 - **`Projection.Build()`** runs once, validates, and returns a deep-frozen object:
   - `Vertices`, `Faces`, `Edges`, `NetVertices`, `NetFaces`, `NetEdges` with the same IDs, order and fields as the golden JSON (edge maps are keyed `"V01|V09"`);
   - `rgszStrip` (net left to right), `rgszEquatorialWestToEast` (Epsilon … Zeta), `Validation`, `dEquatorialWidth` (1.759306);
@@ -70,7 +75,7 @@ Last updated: 2026-10-29 (after milestone 6). See [`map-editor-plan.md`](map-edi
   - `Seams`: 48 entries `{ szEdge, rgszVertices, szPanelA, szPanelB, rgdAToB, rgdBToA }`.
 - **Transforms** are `[a, b, c, d, e, f]` (canvas/SVG layout): `x' = a·x + c·y + e`, `y' = b·x + d·y + f`. Units are edge lengths; multiply by `MilesPerEdge(n)` for miles (plan §11.12).
 - **`tests/_load.cjs`**: `LoadModules()` returns `RpgMap` built from the DOM-free blocks.
-- **Tests** (97, all passing): `scaffold`, `util` (including the geometry helpers), `lattice`, `topology`, `coordinates`, `model` (terrain table vs plan §5, global/local documents, local adjacency, terrain/landmark/overlay/label undo-redo round trips, grouped strokes, Perform rollback, validation, history limit), `view` (camera round trips, zoom about a point, clamping, fit, net and focus layouts and shared seam edges, `HitTest` on every tile centre/piece centroid in the net and in every focus layout, random hits land inside the hit tile, seam ownership (equatorial edge-hex tips belong to the neighbour; elsewhere the containing panel), `PanelTileGroups`, culling keeps every tile touching the view, deterministic demo terrain), `edit` (brush sizes 3r(r+1)+1 for r = 0–5, brush = BFS distance ≤ r in order and across a seam, radius validation, flood fill of the whole world / a blob / across seams, segment tiles cover dense sampling and are connected, a stroke is one command that undoes and redoes exactly, empty strokes record nothing, fill inside a ring, fill no-op), `projection-reference` (golden JSON counts and Python `--check`), and `projection.test.cjs`:
+- **Tests** (106, all passing): `scaffold`, `util` (including the geometry helpers), `lattice`, `topology`, `coordinates`, `model` (terrain table vs plan §5, global/local documents, local adjacency, terrain/landmark/overlay/label undo-redo round trips, grouped strokes, Perform rollback, validation, history limit), `view` (camera round trips, zoom about a point, clamping, fit, net and focus layouts and shared seam edges, `HitTest` on every tile centre/piece centroid in the net and in every focus layout, random hits land inside the hit tile, seam ownership (equatorial edge-hex tips belong to the neighbour; elsewhere the containing panel), `PanelTileGroups`, culling keeps every tile touching the view, deterministic demo terrain), `edit` (brush sizes 3r(r+1)+1 for r = 0–5, brush = BFS distance ≤ r in order and across a seam, radius validation, flood fill of the whole world / a blob / across seams, segment tiles cover dense sampling and are connected, a stroke is one command that undoes and redoes exactly, empty strokes record nothing, fill inside a ring, fill no-op), `fileformat` (fixtures parse and are canonical; byte-identical round trips for global n = 4/24 XL and 4 L with landmarks, labels and overlays on partial tiles and across seams, and local maps at every regional and yard scale; every 7th tile location at n = 24 L snaps back; CRLF, comments, missing or remapped legend; optional item defaults; quoting; 26 error cases with their line numbers; file names), `projection-reference` (golden JSON counts and Python `--check`), and `projection.test.cjs`:
   - every solid/net vertex, edge and face deep-equals the golden JSON within 1e-9; validation summary matches;
   - frames are orthonormal, east = north × normal, origins at panel centres, frame→net placement and frame→solid round trips;
   - equatorial north/east are +y/+x in the net, centres on y = 0.122008, east/west edges at ±W/2;
@@ -78,6 +83,7 @@ Last updated: 2026-10-29 (after milestone 6). See [`map-editor-plan.md`](map-edi
   - seams are rotations, A→B→A is the identity, shared endpoints map onto each other, B unfolds to the far side of the edge, net folds agree;
   - the equatorial strip wraps (Zeta → Epsilon) with a pure translation of −W east;
   - `MilesPerEdge(24)` ≈ 2551.8.
+- **`doc/file-format.md`** (the `.map.txt` spec) and **`tests/fixtures/sample-global.map.txt`** (n = 4 XL demo terrain; landmarks with escaped strings; labels; a river crossing a seam) / **`sample-local.map.txt`** (12 × 8 regional M map at `Eta 187.1W 324.0N` with a road).
 - **`tools/generate_map_projection.py`** and **`doc/equilateral-chamfered-cube.{json,svg}`**: unchanged since milestone 1.
 
 ### Checked numerically
@@ -88,18 +94,20 @@ Last updated: 2026-10-29 (after milestone 6). See [`map-editor-plan.md`](map-edi
 - **At n = 24 XL:** d = 0.0846446 edge units; panel edge ≈ 2551.8 mi; equatorial circumference ≈ 26,936.9 mi; equatorial panel width ≈ 4489.5 mi.
 - **Tile counts** (total / partial, build time): n = 4 XL 264 / 180; n = 8 XL 882 / 390; n = 24 XL 6,564 / 1,218 (~0.1 s); n = 4 L 6,570 / 1,224; n = 24 L 218,088 / 7,572 (~1 s). Tile areas sum to the panel areas, and the tile graph is connected in every case.
 - **Draw times** (headless Chromium, 920 × 790 canvas): n = 24 XL fit-net ≈ 20–50 ms. For n = 24 L: building the raster takes ≈ 0.3 s once, and each cached raster frame ≈ 5 ms; vector frames at 3.7–22 px hexes take 10–85 ms.
+- **File sizes:** n = 24 XL is about 11 KB. Every tile location written at 0.1 mi snaps back to its tile at n = 4/8/24 XL and 4/24 L.
 - **Edit costs** (n = 24 L): a 41-sample radius-3 stroke (6,401 tiles) takes ≈ 20 ms to apply; repainting ~1,000–2,800 changed tiles into the raster takes 40–90 ms (a full in-place redraw ≈ 0.25 s). Filling the whole world (218,088 tiles) takes ≈ 0.2 s in Node, and undoing it ≈ 3 ms. The partially repainted raster differs from a full rebuild in only 138–316 anti-aliased pixels (max 23/255).
 
-## Next step: milestone 7 (ASCII file format)
+## Next step: milestone 8 (overlays, landmarks, labels)
 
-Read plan §6 and §7 ("File") and `prompt.md` item 1 at the top ("saved in a human readable ASCII text file … other layers … appended … in the universal map coordinate system"). Add a DOM-free `FileFormat` module after `Edit` (plan §2):
+Read plan §5, §7 ("Tools" 3–6, "Layers") and `prompt.md` lines 9–10 and the "overlays" / "landmarks" sections (~line 827). The Model mutators and the file format for all three layers already exist (milestones 4 and 7).
 
-1. **`doc/file-format.md`:** the full spec of `*.map.txt` from plan §6: the `# RPGMAP 1` header; `[map]` (global: `kind`, `name`, `panelHexes`, `tileScale`; local: `width`, `height`, `system`, `size`, `anchor`); `[legend]`; one `[panel <Name>]` per panel in Greek order (`columns`, `rows`, then `rows` lines of `columns` chars over the panel's bounding rectangle, north line first, odd columns ½ hex north, `_` = not a tile) or a single `[local]` section; `[landmarks]`, `[labels]`, `[overlays]` with universal coordinates (miles to 0.1); quoting/escaping of names and notes; comments, blank lines and `\r\n`.
-2. **Writer** `FileFormat.Write(Doc)` → string: deterministic (stable section, item and key order; `Util.FormatNumber`), so files diff cleanly. Uses `Topology.Panels[sz]` (`nColumns`, `nRows`, `nLatticeColumnMin`, `nLatticeRowMax`) and `Topology.TileByColumnRow` for the bounding-rectangle mask; `Coordinates.TileToUniversal`/`FormatUniversal` for items.
-3. **Parser** `FileFormat.Parse(szText)` → Doc (or throws an error carrying a 1-based line number): accepts blank lines, `#` comments and `\r\n`; validates the header, line widths, unknown characters, `_` placement against the tile mask, duplicate landmarks (one per tile), overlay path adjacency (the panel may be omitted when unchanged from the previous point), and snaps each coordinate to a tile with `Coordinates.ParseUniversal`/`UniversalToTile`.
-4. **Fixtures:** `tests/fixtures/sample-global.map.txt` (small n, e.g. 4) and `tests/fixtures/sample-local.map.txt`, with terrain, landmarks, labels and overlays.
-5. **App:** File buttons in the toolbar: New (reset to an empty/demo world for now; the full dialog comes in milestone 9), Open (`<input type=file>`), Save (a `Blob` download named from the map name), Ctrl+S; autosave to `localStorage` (debounced after edits) with a prompt to restore on start. Opening replaces `State.Doc`/`History`, and rebuilds layouts and rasters.
-6. **Tests** (`tests/fileformat.test.cjs`): round trips (write → parse → write is byte-identical) for global n = 4 and n = 24 XL (demo terrain), L scale and a local map; fixtures parse; each validation error reports the right line; `\r\n` and comments are accepted. Browser check: save, reopen and autosave restore with no console errors.
+1. **Overlay tool** (road, trail, river): click tiles to extend the selected path. A click on a non-adjacent tile fills the gap with A* over the tile graph (`Model.Neighbors`, crossing seams; a DOM-free `Edit` helper, e.g. `Edit.FindPath(Doc, nFrom, nTo)`, tested). Also: start a new path, select a path by clicking it, insert/remove a point, split, join and delete. Each edit is one undoable command.
+2. **Landmark tool:** place, replace or edit a landmark (one per tile; type from `Terrain.g_rgLandmarkTypes`, name, notes); remove.
+3. **Label tool:** add a label on a tile; edit text, category, size, rotation and offset (dx, dy) in the properties panel; drag/rotate handles if practical.
+4. **Properties panel:** shows the selected item's fields (overlay type/name/style; landmark; label) with live, undoable edits. The terrain legend stays available for the terrain tools.
+5. **Renderer:** draw overlays (rivers blue, roads brown, trails dashed) as smooth lines through tile centres, across seams in both views; landmark symbols; labels with size/rotation/offset; selection highlights. Add layer toggles for each overlay type, landmarks and labels. Redraw (not the raster) when items change.
+6. **Status bar:** the hovered tile's landmark and overlays.
+7. **Tests:** A* (shortest, adjacent steps, across seams, unreachable), the overlay edit helpers, and undo/redo of each item edit. Browser check: draw a river across a seam in the net and focus views, place a landmark and a label, save, reopen, and confirm no console errors.
 
 ## How to continue (for an unattended or auto-mode session)
 

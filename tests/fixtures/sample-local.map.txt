@@ -1,0 +1,51 @@
+# RPGMAP 1
+
+[map]
+kind = local
+name = "Riverlands"
+width = 12
+height = 8
+system = regional
+size = M
+anchor = Eta 187.1W 324.0N
+panelHexes = 24
+
+[legend]
+~ water
+i islands
+o lakes
+v firth
+. plain
+h hills
+M mountains
+A mountainPeak
+d desert
+D sandDunes
+f forest
+m marsh
+g mangrove
+t tundra
+c canyon
+b badlands
+= farmland
+
+[local]
+columns = 12
+rows = 8
+~~~~~f...hhh
+~~~~..f..hhh
+~~~....f.hhh
+~~.f....fhhh
+~...f....hhh
+f....f...hhh
+.f....f..hhh
+..f....f.hhh
+
+[landmarks]
+Eta 155.9W 300.0N village "Millford"
+
+[labels]
+Eta 140.3W 315.0N location id=label1 size=14 rot=0 dx=0 dy=0 "Grey Hills"
+
+[overlays]
+road road1 "Mill Road" : Eta 176.7W 282.0N; 171.5W 285.0N; 166.3W 288.0N; 161.1W 291.0N; 155.9W 294.0N; 150.7W 297.0N; 145.5W 300.0N

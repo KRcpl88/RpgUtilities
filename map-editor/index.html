@@ -98,6 +98,31 @@
   #map-canvas[data-tool="pan"].dragging, #map-canvas.dragging { cursor: grabbing; }
   #toolbar .toolbar-gap { display: inline-block; width: 12px; }
   #toolbar button:disabled { opacity: 0.45; border-color: var(--panel-border); }
+  #restore-banner {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    background: var(--panel);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  }
+  #restore-banner[hidden] { display: none; }
+  #restore-banner button {
+    padding: 2px 10px;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    background: #383a40;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+  }
+  #restore-banner button:hover { border-color: var(--accent); }
   .tool-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 8px; }
   .tool-button {
     padding: 4px 6px;
@@ -146,6 +171,11 @@
 <main id="viewport">
   <canvas id="map-canvas" aria-label="Map"></canvas>
   <canvas id="minimap" aria-label="Net navigator" title="Click to move the view"></canvas>
+  <div id="restore-banner" role="alert" hidden>
+    <span id="restore-text"></span>
+    <button type="button" id="restore-accept">Restore</button>
+    <button type="button" id="restore-discard">Discard</button>
+  </div>
 </main>
 <aside id="properties-panel" aria-label="Properties">
   <h2>Properties</h2>
@@ -2986,6 +3016,636 @@
 })(globalThis);
 </script>
 
+<script data-module="FileFormat">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+  const { Util, Projection, Lattice, Topology, Coordinates, Terrain, Model } = RpgMap;
+
+  // The human-readable ASCII map file (doc/file-format.md). Write is deterministic, so
+  // saved files diff cleanly; Parse reports every problem with its 1-based line number.
+  const g_szMagic = '# RPGMAP 1';
+  const g_szFileExtension = '.map.txt';
+  const g_szReserved = Terrain.g_szReservedChar;
+  // Characters that may never stand for a terrain.
+  const g_szForbiddenTerrainChars = ' #[]"\\' + g_szReserved;
+
+  // A parse error carrying the line it was found on (0 when not tied to a line).
+  function FileError(nLine, szMessage) {
+    const Error_ = new Error(nLine > 0 ? `Line ${nLine}: ${szMessage}` : szMessage);
+    Error_.nLine = nLine;
+    Error_.szReason = szMessage;
+    return Error_;
+  }
+
+  function Check(fCondition, nLine, szMessage) {
+    if (!fCondition) {
+      throw FileError(nLine, szMessage);
+    }
+  }
+
+  // Runs fn, re-throwing plain errors (for example Model validation) with the line.
+  function AtLine(nLine, fn) {
+    try {
+      return fn();
+    } catch (Caught) {
+      if (Caught.nLine !== undefined) {
+        throw Caught;
+      }
+      throw FileError(nLine, Caught.message);
+    }
+  }
+
+  // Panels in Greek-alphabet order (Alpha … Sigma).
+  function GreekPanelOrder() {
+    const Panels = Projection.Build().Panels;
+    return Object.keys(Panels).sort((szA, szB) => Panels[szA].szLetter.localeCompare(Panels[szB].szLetter));
+  }
+
+  // Strings ----------------------------------------------------------------------
+
+  // Double-quoted; backslash and quote are escaped, and anything outside printable
+  // ASCII becomes \uXXXX, so the file stays printable ASCII.
+  function Quote(szText) {
+    let szResult = '"';
+    for (const szChar of szText) {
+      for (let nIndex = 0; nIndex < szChar.length; nIndex++) {
+        const nCode = szChar.charCodeAt(nIndex);
+        const szUnit = szChar[nIndex];
+        if (szUnit === '\\' || szUnit === '"') {
+          szResult += '\\' + szUnit;
+        } else if (nCode < 0x20 || nCode > 0x7e) {
+          szResult += '\\u' + nCode.toString(16).padStart(4, '0');
+        } else {
+          szResult += szUnit;
+        }
+      }
+    }
+    return szResult + '"';
+  }
+
+  // Reads a quoted string starting at szLine[nStart] === '"'. Returns [text, next index].
+  function ReadQuoted(szLine, nStart, nLine) {
+    let szText = '';
+    let nIndex = nStart + 1;
+    while (nIndex < szLine.length) {
+      const szChar = szLine[nIndex];
+      if (szChar === '"') {
+        return [szText, nIndex + 1];
+      }
+      if (szChar === '\\') {
+        const szNext = szLine[nIndex + 1];
+        if (szNext === '\\' || szNext === '"') {
+          szText += szNext;
+          nIndex += 2;
+          continue;
+        }
+        const szHex = szLine.slice(nIndex + 2, nIndex + 6);
+        Check(szNext === 'u' && /^[0-9A-Fa-f]{4}$/.test(szHex), nLine, `Invalid escape in quoted text at column ${nIndex + 1}`);
+        szText += String.fromCharCode(parseInt(szHex, 16));
+        nIndex += 6;
+        continue;
+      }
+      szText += szChar;
+      nIndex++;
+    }
+    throw FileError(nLine, 'Unterminated quoted text');
+  }
+
+  // Tokens: { szKind: 'word'|'string'|'pair'|'punct', szValue, szKey? }. A pair is
+  // key=value or key="quoted value"; ';' and ':' are punctuation.
+  function Tokenize(szLine, nLine) {
+    const rgTokens = [];
+    let nIndex = 0;
+    while (nIndex < szLine.length) {
+      const szChar = szLine[nIndex];
+      if (szChar === ' ' || szChar === '\t') {
+        nIndex++;
+      } else if (szChar === '"') {
+        const [szText, nNext] = ReadQuoted(szLine, nIndex, nLine);
+        rgTokens.push({ szKind: 'string', szValue: szText });
+        nIndex = nNext;
+      } else if (szChar === ';' || szChar === ':') {
+        rgTokens.push({ szKind: 'punct', szValue: szChar });
+        nIndex++;
+      } else {
+        let nEnd = nIndex;
+        while (nEnd < szLine.length && !' \t";:'.includes(szLine[nEnd])) {
+          nEnd++;
+        }
+        const szWord = szLine.slice(nIndex, nEnd);
+        const nEquals = szWord.indexOf('=');
+        if (nEquals > 0) {
+          const szKey = szWord.slice(0, nEquals);
+          let szValue = szWord.slice(nEquals + 1);
+          if (szValue === '' && szLine[nEnd] === '"') {
+            [szValue, nEnd] = ReadQuoted(szLine, nEnd, nLine);
+          }
+          rgTokens.push({ szKind: 'pair', szKey, szValue });
+        } else {
+          rgTokens.push({ szKind: 'word', szValue: szWord });
+        }
+        nIndex = nEnd;
+      }
+    }
+    return rgTokens;
+  }
+
+  // Locations --------------------------------------------------------------------
+
+  // Decimals that keep a written coordinate within 1/20 hex of the tile centre
+  // (0.1 mi for every regional scale; more for yard-scale local maps).
+  function CoordinateDecimals(dHexMiles) {
+    return Math.max(1, Math.ceil(-Math.log10(dHexMiles / 10)));
+  }
+
+  function HexMiles(Doc) {
+    return Doc.Topo ? Doc.Topo.dD * Doc.Topo.dMilesPerEdge : Doc.Local.dHexMiles;
+  }
+
+  function TileLocation(Doc, nTile) {
+    if (Doc.Topo) {
+      return Coordinates.TileToUniversal(Doc.Topo, nTile);
+    }
+    const [nX, nY] = Model.LocalTileXY(Doc, nTile);
+    return Coordinates.LocalTileToUniversal(Doc.Local, nX, nY);
+  }
+
+  function LocationTile(Doc, Location) {
+    if (Doc.Topo) {
+      return Coordinates.UniversalToTile(Doc.Topo, Location);
+    }
+    const rgnXY = Coordinates.UniversalToLocalTile(Doc.Local, Location);
+    return rgnXY ? Model.LocalTileIndex(Doc, rgnXY[0], rgnXY[1]) : -1;
+  }
+
+  // "Eta 187.1W 324.0N", or "187.1W 324.0N" when the panel is szOmitPanel.
+  function FormatLocation(Doc, nTile, szOmitPanel = null) {
+    const Location = TileLocation(Doc, nTile);
+    const szText = Coordinates.FormatUniversal(Location, CoordinateDecimals(HexMiles(Doc)));
+    return Location.szPanel === szOmitPanel ? szText.slice(szText.indexOf(' ') + 1) : szText;
+  }
+
+  // Reads a location from word tokens; szPanel supplies the panel when only the two
+  // distances are given. Returns the tile index.
+  function ParseLocation(Doc, rgszWords, nLine, szPanel = null) {
+    let szText = rgszWords.join(' ');
+    if (rgszWords.length === 2 && szPanel !== null) {
+      szText = `${Projection.Build().Panels[szPanel].szName} ${szText}`;
+    }
+    Check(rgszWords.length === 3 || (rgszWords.length === 2 && szPanel !== null), nLine,
+      `Expected a location like "Alpha 93.5E 108.0N", found "${rgszWords.join(' ')}"`);
+    const Location = AtLine(nLine, () => Coordinates.ParseUniversal(szText));
+    const nTile = LocationTile(Doc, Location);
+    Check(nTile >= 0, nLine, `No tile within ${Coordinates.g_dSnapFraction} hex of ${szText}`);
+    return { nTile, szPanel: Location.szPanel };
+  }
+
+  // Leading word tokens (up to nMax).
+  function TakeWords(rgTokens, nMax) {
+    const rgszWords = [];
+    while (rgTokens.length > 0 && rgTokens[0].szKind === 'word' && rgszWords.length < nMax) {
+      rgszWords.push(rgTokens.shift().szValue);
+    }
+    return rgszWords;
+  }
+
+  // Terrain grids ------------------------------------------------------------------
+
+  // Panel section layout: file column c is lattice column nLatticeColumn + c, file row
+  // r is lattice row nLatticeRow − r; rgnTiles[r·columns + c] is the tile or −1.
+  function PanelGrid(Topo, szPanel) {
+    const Info = Topo.Panels[szPanel];
+    const rgnTiles = new Int32Array(Info.nColumns * Info.nRows).fill(-1);
+    for (let nTile = Info.nFirstTile; nTile < Info.nFirstTile + Info.nTileCount; nTile++) {
+      const Tile = Topo.rgTiles[nTile];
+      rgnTiles[Tile.nRow * Info.nColumns + Tile.nColumn] = nTile;
+    }
+    return { nColumns: Info.nColumns, nRows: Info.nRows, nLatticeColumn: Info.nLatticeColumnMin, nLatticeRow: Info.nLatticeRowMax, rgnTiles };
+  }
+
+  function LocalGrid(Doc) {
+    const { nWidth, nHeight } = Doc.Local;
+    return { nColumns: nWidth, nRows: nHeight, rgnTiles: Int32Array.from({ length: nWidth * nHeight }, (_, nIndex) => nIndex) };
+  }
+
+  function GridLines(Doc, Grid) {
+    const rgszLines = [];
+    for (let nRow = 0; nRow < Grid.nRows; nRow++) {
+      let szLine = '';
+      for (let nColumn = 0; nColumn < Grid.nColumns; nColumn++) {
+        const nTile = Grid.rgnTiles[nRow * Grid.nColumns + nColumn];
+        szLine += nTile < 0 ? g_szReserved : Terrain.ById(Doc.rgnTerrain[nTile]).szChar;
+      }
+      rgszLines.push(szLine);
+    }
+    return rgszLines;
+  }
+
+  // Writer -------------------------------------------------------------------------
+
+  function Write(Doc) {
+    const rgszLines = [g_szMagic, '', '[map]', `kind = ${Doc.szKind}`, `name = ${Quote(Doc.szName)}`];
+    if (Doc.szKind === 'global') {
+      rgszLines.push(`panelHexes = ${Doc.Global.nPanelHexes}`, `tileScale = ${Doc.Global.szTileScale}`);
+    } else {
+      const Local = Doc.Local;
+      rgszLines.push(
+        `width = ${Local.nWidth}`,
+        `height = ${Local.nHeight}`,
+        `system = ${Local.szSystem}`,
+        `size = ${Local.szScale}`,
+        `anchor = ${Coordinates.FormatUniversal(Local.Anchor, CoordinateDecimals(Local.dHexMiles))}`,
+        `panelHexes = ${Local.nPanelHexes}`);
+    }
+    rgszLines.push('', '[legend]', ...Terrain.g_rgTerrains.map((Item) => `${Item.szChar} ${Item.szKey}`));
+    if (Doc.szKind === 'global') {
+      for (const szPanel of GreekPanelOrder()) {
+        const Grid = PanelGrid(Doc.Topo, szPanel);
+        rgszLines.push('', `[panel ${Projection.Build().Panels[szPanel].szName}]`,
+          `columns = ${Grid.nColumns}`, `rows = ${Grid.nRows}`,
+          `latticeColumn = ${Grid.nLatticeColumn}`, `latticeRow = ${Grid.nLatticeRow}`,
+          ...GridLines(Doc, Grid));
+      }
+    } else {
+      const Grid = LocalGrid(Doc);
+      rgszLines.push('', '[local]', `columns = ${Grid.nColumns}`, `rows = ${Grid.nRows}`, ...GridLines(Doc, Grid));
+    }
+    if (Doc.Landmarks.size > 0) {
+      rgszLines.push('', '[landmarks]');
+      for (const nTile of [...Doc.Landmarks.keys()].sort((nA, nB) => nA - nB)) {
+        const Landmark = Doc.Landmarks.get(nTile);
+        let szLine = `${FormatLocation(Doc, nTile)} ${Landmark.szType} ${Quote(Landmark.szName)}`;
+        if (Landmark.szNotes !== '') {
+          szLine += ` notes=${Quote(Landmark.szNotes)}`;
+        }
+        rgszLines.push(szLine);
+      }
+    }
+    if (Doc.rgLabels.length > 0) {
+      rgszLines.push('', '[labels]');
+      for (const Label of Doc.rgLabels) {
+        rgszLines.push([
+          FormatLocation(Doc, Label.nTile), Label.szCategory, `id=${Label.szId}`,
+          `size=${Util.FormatNumber(Label.dSize)}`, `rot=${Util.FormatNumber(Label.dRotation)}`,
+          `dx=${Util.FormatNumber(Label.dDx)}`, `dy=${Util.FormatNumber(Label.dDy)}`, Quote(Label.szText),
+        ].join(' '));
+      }
+    }
+    if (Doc.rgOverlays.length > 0) {
+      rgszLines.push('', '[overlays]');
+      for (const Overlay of Doc.rgOverlays) {
+        const rgszHead = [Overlay.szType, Overlay.szId];
+        if (Overlay.szStyle !== '') {
+          rgszHead.push(`style=${Overlay.szStyle}`);
+        }
+        rgszHead.push(Quote(Overlay.szName));
+        let szPanel = null;
+        const rgszPoints = Overlay.rgnTiles.map((nTile) => {
+          const szText = FormatLocation(Doc, nTile, szPanel);
+          szPanel = TileLocation(Doc, nTile).szPanel;
+          return szText;
+        });
+        rgszLines.push(`${rgszHead.join(' ')} : ${rgszPoints.join('; ')}`);
+      }
+    }
+    return rgszLines.join('\n') + '\n';
+  }
+
+  // Parser -------------------------------------------------------------------------
+
+  // Splits text into sections: [{ szName, szArgument, nLine, rgLines: [{ nLine, szText }] }].
+  // Blank lines and lines starting with '#' are skipped (inside terrain rows too).
+  function SplitSections(szText) {
+    const rgszLines = szText.split(/\r?\n/);
+    let nFirst = 0;
+    while (nFirst < rgszLines.length && rgszLines[nFirst].trim() === '') {
+      nFirst++;
+    }
+    Check(nFirst < rgszLines.length && rgszLines[nFirst].trim() === g_szMagic, nFirst + 1,
+      `Not a map file: the first line must be "${g_szMagic}"`);
+    const rgSections = [];
+    for (let nIndex = nFirst + 1; nIndex < rgszLines.length; nIndex++) {
+      const nLine = nIndex + 1;
+      const szLine = rgszLines[nIndex].trim();
+      if (szLine === '' || szLine.startsWith('#')) {
+        continue;
+      }
+      const Match = /^\[\s*([A-Za-z]+)(?:\s+([^\]]*?))?\s*\]$/.exec(szLine);
+      if (szLine.startsWith('[')) {
+        Check(Match !== null, nLine, `Malformed section header: ${szLine}`);
+        rgSections.push({ szName: Match[1].toLowerCase(), szArgument: Match[2] || '', nLine, rgLines: [] });
+        continue;
+      }
+      Check(rgSections.length > 0, nLine, 'Content before the first [section]');
+      rgSections[rgSections.length - 1].rgLines.push({ nLine, szText: szLine });
+    }
+    return rgSections;
+  }
+
+  // Leading "key = value" lines of a section; returns { Values, nNext }.
+  function ReadKeyValues(Section, rgszAllowed) {
+    const Values = {};
+    let nNext = 0;
+    for (; nNext < Section.rgLines.length; nNext++) {
+      const { nLine, szText } = Section.rgLines[nNext];
+      const Match = /^([A-Za-z]+)\s*=\s*(.*)$/.exec(szText);
+      if (!Match) {
+        break;
+      }
+      const szKey = Match[1];
+      Check(rgszAllowed.includes(szKey), nLine, `Unknown key "${szKey}" in [${Section.szName}]`);
+      Check(!(szKey in Values), nLine, `Duplicate key "${szKey}"`);
+      let szValue = Match[2].trim();
+      if (szValue.startsWith('"')) {
+        const [szText2, nEnd] = ReadQuoted(szValue, 0, nLine);
+        Check(szValue.slice(nEnd).trim() === '', nLine, `Unexpected text after the quoted value of "${szKey}"`);
+        szValue = szText2;
+      }
+      Values[szKey] = { szValue, nLine };
+    }
+    return { Values, nNext };
+  }
+
+  function RequireValue(Values, szKey, Section) {
+    Check(szKey in Values, Section.nLine, `[${Section.szName}] needs "${szKey} = …"`);
+    return Values[szKey];
+  }
+
+  function ParseInteger(Value, szKey) {
+    Check(/^-?\d+$/.test(Value.szValue), Value.nLine, `"${szKey}" must be an integer, found "${Value.szValue}"`);
+    return Number(Value.szValue);
+  }
+
+  function ParseNumber(szValue, szKey, nLine) {
+    Check(/^-?(\d+(\.\d*)?|\.\d+)(e[-+]?\d+)?$/i.test(szValue), nLine, `"${szKey}" must be a number, found "${szValue}"`);
+    return Number(szValue) || 0;
+  }
+
+  function CreateDocument(Section) {
+    const { Values, nNext } = ReadKeyValues(Section,
+      ['kind', 'name', 'panelHexes', 'tileScale', 'width', 'height', 'system', 'size', 'anchor']);
+    Check(nNext === Section.rgLines.length, Section.rgLines[nNext] ? Section.rgLines[nNext].nLine : 0, 'Expected "key = value" in [map]');
+    const Kind = RequireValue(Values, 'kind', Section);
+    const szName = Values.name ? Values.name.szValue : '';
+    const nPanelHexes = Values.panelHexes ? ParseInteger(Values.panelHexes, 'panelHexes') : undefined;
+    if (Kind.szValue === 'global') {
+      for (const szKey of ['width', 'height', 'system', 'size', 'anchor']) {
+        Check(!(szKey in Values), Values[szKey] && Values[szKey].nLine, `"${szKey}" is only for local maps`);
+      }
+      const szTileScale = Values.tileScale ? Values.tileScale.szValue : undefined;
+      return AtLine(Section.nLine, () => Model.CreateGlobalMap({ nPanelHexes, szTileScale, szName }));
+    }
+    Check(Kind.szValue === 'local', Kind.nLine, `Map kind must be "global" or "local", found "${Kind.szValue}"`);
+    Check(!('tileScale' in Values), Values.tileScale && Values.tileScale.nLine, '"tileScale" is only for global maps');
+    const Anchor = RequireValue(Values, 'anchor', Section);
+    const System = RequireValue(Values, 'system', Section);
+    const Size = RequireValue(Values, 'size', Section);
+    Check(System.szValue in Lattice.g_Scales, System.nLine, `Unknown scale system "${System.szValue}"`);
+    Check(Size.szValue in Lattice.g_Scales[System.szValue].Sizes, Size.nLine, `Unknown ${System.szValue} size "${Size.szValue}"`);
+    return AtLine(Section.nLine, () => Model.CreateLocalMap({
+      nWidth: ParseInteger(RequireValue(Values, 'width', Section), 'width'),
+      nHeight: ParseInteger(RequireValue(Values, 'height', Section), 'height'),
+      szSystem: System.szValue,
+      szScale: Size.szValue,
+      Anchor: AtLine(Anchor.nLine, () => Coordinates.ParseUniversal(Anchor.szValue)),
+      nPanelHexes,
+      szName,
+    }));
+  }
+
+  // [legend] lines "<char> <terrain key>"; returns Map char → terrain id.
+  function ParseLegend(Section) {
+    const ByChar = new Map();
+    const Keys = new Set();
+    for (const { nLine, szText } of Section.rgLines) {
+      const Match = /^(\S)\s+(\S+)$/.exec(szText);
+      Check(Match !== null, nLine, `Expected "<char> <terrain>" in [legend], found "${szText}"`);
+      const [, szChar, szKey] = Match;
+      Check(!g_szForbiddenTerrainChars.includes(szChar), nLine, `"${szChar}" cannot stand for a terrain`);
+      const Item = Terrain.ByKey(szKey);
+      Check(Item !== null, nLine, `Unknown terrain "${szKey}"`);
+      Check(!ByChar.has(szChar), nLine, `Character "${szChar}" is defined twice`);
+      Check(!Keys.has(szKey), nLine, `Terrain "${szKey}" is defined twice`);
+      ByChar.set(szChar, Item.nId);
+      Keys.add(szKey);
+    }
+    return ByChar;
+  }
+
+  function DefaultLegend() {
+    return new Map(Terrain.g_rgTerrains.map((Item) => [Item.szChar, Item.nId]));
+  }
+
+  // Reads a terrain grid section into Doc.rgnTerrain.
+  function ParseGrid(Doc, Section, Grid, Legend, rgszExtraKeys) {
+    const { Values, nNext } = ReadKeyValues(Section, ['columns', 'rows', ...rgszExtraKeys]);
+    const szWhere = `[${Section.szName}${Section.szArgument ? ' ' + Section.szArgument : ''}]`;
+    const nColumns = ParseInteger(RequireValue(Values, 'columns', Section), 'columns');
+    const nRows = ParseInteger(RequireValue(Values, 'rows', Section), 'rows');
+    Check(nColumns === Grid.nColumns, Values.columns.nLine, `${szWhere} must have columns = ${Grid.nColumns}, found ${nColumns}`);
+    Check(nRows === Grid.nRows, Values.rows.nLine, `${szWhere} must have rows = ${Grid.nRows}, found ${nRows}`);
+    if (Values.latticeColumn) {
+      Check(ParseInteger(Values.latticeColumn, 'latticeColumn') === Grid.nLatticeColumn, Values.latticeColumn.nLine,
+        `${szWhere} must have latticeColumn = ${Grid.nLatticeColumn}`);
+    }
+    if (Values.latticeRow) {
+      Check(ParseInteger(Values.latticeRow, 'latticeRow') === Grid.nLatticeRow, Values.latticeRow.nLine,
+        `${szWhere} must have latticeRow = ${Grid.nLatticeRow}`);
+    }
+    const rgRows = Section.rgLines.slice(nNext);
+    Check(rgRows.length === nRows, rgRows.length > nRows ? rgRows[nRows].nLine : Section.nLine,
+      `${szWhere} has ${rgRows.length} terrain rows, expected ${nRows}`);
+    rgRows.forEach(({ nLine, szText }, nRow) => {
+      Check(szText.length === nColumns, nLine, `Terrain row is ${szText.length} characters wide, expected ${nColumns}`);
+      for (let nColumn = 0; nColumn < nColumns; nColumn++) {
+        const szChar = szText[nColumn];
+        const nTile = Grid.rgnTiles[nRow * nColumns + nColumn];
+        if (nTile < 0) {
+          Check(szChar === g_szReserved, nLine, `Column ${nColumn + 1} is not a tile of this panel and must be "${g_szReserved}", found "${szChar}"`);
+          continue;
+        }
+        Check(szChar !== g_szReserved, nLine, `Column ${nColumn + 1} is a tile and needs a terrain character, found "${g_szReserved}"`);
+        const nId = Legend.get(szChar);
+        Check(nId !== undefined, nLine, `Unknown terrain character "${szChar}" in column ${nColumn + 1}`);
+        Doc.rgnTerrain[nTile] = nId;
+      }
+    });
+  }
+
+  function ExpectNoTokens(rgTokens, nLine) {
+    Check(rgTokens.length === 0, nLine, `Unexpected "${rgTokens.length ? (rgTokens[0].szKey ? rgTokens[0].szKey + '=' : '') + rgTokens[0].szValue : ''}"`);
+  }
+
+  function TakePairs(rgTokens, rgszAllowed, nLine) {
+    const Pairs = {};
+    for (let nIndex = 0; nIndex < rgTokens.length;) {
+      const Token = rgTokens[nIndex];
+      if (Token.szKind !== 'pair') {
+        nIndex++;
+        continue;
+      }
+      Check(rgszAllowed.includes(Token.szKey), nLine, `Unknown option "${Token.szKey}"`);
+      Check(!(Token.szKey in Pairs), nLine, `Duplicate option "${Token.szKey}"`);
+      Pairs[Token.szKey] = Token.szValue;
+      rgTokens.splice(nIndex, 1);
+    }
+    return Pairs;
+  }
+
+  function TakeString(rgTokens, nLine, szWhat, fRequired) {
+    const nIndex = rgTokens.findIndex((Token) => Token.szKind === 'string');
+    Check(nIndex >= 0 || !fRequired, nLine, `Missing quoted ${szWhat}`);
+    return nIndex < 0 ? '' : rgTokens.splice(nIndex, 1)[0].szValue;
+  }
+
+  // "<location> <type> ["name"] [notes="…"]"
+  function ParseLandmarks(Doc, Section) {
+    for (const { nLine, szText } of Section.rgLines) {
+      const rgTokens = Tokenize(szText, nLine);
+      const { nTile } = ParseLocation(Doc, TakeWords(rgTokens, 3), nLine);
+      const rgszType = TakeWords(rgTokens, 1);
+      Check(rgszType.length === 1, nLine, 'Missing landmark type');
+      const Pairs = TakePairs(rgTokens, ['notes'], nLine);
+      const szName = TakeString(rgTokens, nLine, 'name', false);
+      ExpectNoTokens(rgTokens, nLine);
+      Check(!Doc.Landmarks.has(nTile), nLine, `A landmark already exists at ${FormatLocation(Doc, nTile)} (one per tile)`);
+      AtLine(nLine, () => Model.SetLandmark(Doc, nTile, { szType: rgszType[0], szName, szNotes: Pairs.notes === undefined ? '' : Pairs.notes }));
+    }
+  }
+
+  // "<location> <category> [id=…] [size=…] [rot=…] [dx=…] [dy=…] "text""
+  function ParseLabels(Doc, Section) {
+    for (const { nLine, szText } of Section.rgLines) {
+      const rgTokens = Tokenize(szText, nLine);
+      const { nTile } = ParseLocation(Doc, TakeWords(rgTokens, 3), nLine);
+      const rgszCategory = TakeWords(rgTokens, 1);
+      Check(rgszCategory.length === 1, nLine, 'Missing label category');
+      const Pairs = TakePairs(rgTokens, ['id', 'size', 'rot', 'dx', 'dy'], nLine);
+      const szLabelText = TakeString(rgTokens, nLine, 'label text', true);
+      ExpectNoTokens(rgTokens, nLine);
+      const Props = { nTile, szText: szLabelText, szCategory: rgszCategory[0] };
+      if (Pairs.id !== undefined) {
+        Props.szId = Pairs.id;
+      }
+      for (const [szKey, szProp] of [['size', 'dSize'], ['rot', 'dRotation'], ['dx', 'dDx'], ['dy', 'dDy']]) {
+        if (Pairs[szKey] !== undefined) {
+          Props[szProp] = ParseNumber(Pairs[szKey], szKey, nLine);
+        }
+      }
+      AtLine(nLine, () => Model.AddLabel(Doc, Props));
+    }
+  }
+
+  // "<type> <id> [style=…] ["name"] : <location>; [<panel>] <east> <north>; …"
+  function ParseOverlays(Doc, Section) {
+    for (const { nLine, szText } of Section.rgLines) {
+      const rgTokens = Tokenize(szText, nLine);
+      const nColon = rgTokens.findIndex((Token) => Token.szKind === 'punct' && Token.szValue === ':');
+      Check(nColon >= 0, nLine, 'Missing ":" before the overlay points');
+      const rgHead = rgTokens.slice(0, nColon);
+      const rgPoints = rgTokens.slice(nColon + 1);
+      const rgszHead = TakeWords(rgHead, 2);
+      Check(rgszHead.length === 2, nLine, 'Expected "<type> <id>" before the overlay name');
+      const Pairs = TakePairs(rgHead, ['style'], nLine);
+      const szName = TakeString(rgHead, nLine, 'name', false);
+      ExpectNoTokens(rgHead, nLine);
+      const rgnTiles = [];
+      let szPanel = null;
+      let rgszWords = [];
+      for (let nIndex = 0; nIndex <= rgPoints.length; nIndex++) {
+        const Token = rgPoints[nIndex];
+        if (Token === undefined || (Token.szKind === 'punct' && Token.szValue === ';')) {
+          Check(rgszWords.length > 0, nLine, `Empty overlay point ${rgnTiles.length + 1}`);
+          const Point = ParseLocation(Doc, rgszWords, nLine, szPanel);
+          rgnTiles.push(Point.nTile);
+          szPanel = Point.szPanel;
+          rgszWords = [];
+          continue;
+        }
+        Check(Token.szKind === 'word', nLine, `Unexpected "${Token.szValue}" in overlay point ${rgnTiles.length + 1}`);
+        rgszWords.push(Token.szValue);
+      }
+      AtLine(nLine, () => Model.AddOverlay(Doc, {
+        szType: rgszHead[0], szId: rgszHead[1], szName, szStyle: Pairs.style === undefined ? '' : Pairs.style, rgnTiles,
+      }));
+    }
+  }
+
+  // Text → document. Throws an Error with nLine (1-based) on the first problem.
+  function Parse(szText) {
+    Util.Require(typeof szText === 'string', 'Map file text must be a string');
+    const rgSections = SplitSections(szText);
+    const Seen = new Map();
+    for (const Section of rgSections) {
+      const szKey = Section.szName === 'panel' ? `panel ${Section.szArgument.toLowerCase()}` : Section.szName;
+      Check(['map', 'legend', 'panel', 'local', 'landmarks', 'labels', 'overlays'].includes(Section.szName), Section.nLine,
+        `Unknown section [${Section.szName}]`);
+      Check(Section.szName === 'panel' || Section.szArgument === '', Section.nLine, `[${Section.szName}] takes no argument`);
+      Check(!Seen.has(szKey), Section.nLine, `Duplicate section [${Section.szName}${Section.szArgument ? ' ' + Section.szArgument : ''}] (first on line ${Seen.get(szKey)})`);
+      Seen.set(szKey, Section.nLine);
+    }
+    const MapSection = rgSections.find((Section) => Section.szName === 'map');
+    Check(MapSection !== undefined, 0, 'Missing [map] section');
+    Check(rgSections[0] === MapSection, rgSections[0].nLine, '[map] must be the first section');
+    const Doc = CreateDocument(MapSection);
+    const LegendSection = rgSections.find((Section) => Section.szName === 'legend');
+    const Legend = LegendSection ? ParseLegend(LegendSection) : DefaultLegend();
+    if (Doc.szKind === 'global') {
+      const Built = Projection.Build();
+      const Remaining = new Set(Object.keys(Built.Panels));
+      for (const Section of rgSections) {
+        if (Section.szName === 'local') {
+          throw FileError(Section.nLine, '[local] is only for local maps');
+        }
+        if (Section.szName === 'panel') {
+          const szPanel = Coordinates.PanelIdByName(Section.szArgument);
+          Check(szPanel !== null, Section.nLine, `Unknown panel "${Section.szArgument}"`);
+          ParseGrid(Doc, Section, PanelGrid(Doc.Topo, szPanel), Legend, ['latticeColumn', 'latticeRow']);
+          Remaining.delete(szPanel);
+        }
+      }
+      Check(Remaining.size === 0, 0, `Missing panel sections: ${GreekPanelOrder().filter((sz) => Remaining.has(sz)).map((sz) => Built.Panels[sz].szName).join(', ')}`);
+    } else {
+      for (const Section of rgSections) {
+        Check(Section.szName !== 'panel', Section.nLine, '[panel …] is only for global maps');
+      }
+      const LocalSection = rgSections.find((Section) => Section.szName === 'local');
+      Check(LocalSection !== undefined, 0, 'Missing [local] section');
+      ParseGrid(Doc, LocalSection, LocalGrid(Doc), Legend, []);
+    }
+    for (const Section of rgSections) {
+      if (Section.szName === 'landmarks') {
+        ParseLandmarks(Doc, Section);
+      } else if (Section.szName === 'labels') {
+        ParseLabels(Doc, Section);
+      } else if (Section.szName === 'overlays') {
+        ParseOverlays(Doc, Section);
+      }
+    }
+    Doc.nRevision = 0;
+    return Doc;
+  }
+
+  // A file name from the map name: "<name>.map.txt" with unsafe characters replaced.
+  function FileName(Doc) {
+    const szBase = Doc.szName.trim().replace(/[^A-Za-z0-9 _.-]+/g, '_').replace(/\s+/g, '-').replace(/^[.-]+/, '');
+    return (szBase || 'map') + g_szFileExtension;
+  }
+
+  RpgMap.FileFormat = Object.freeze({
+    g_szMagic,
+    g_szFileExtension,
+    Quote,
+    Tokenize,
+    CoordinateDecimals,
+    Write,
+    Parse,
+    FileName,
+  });
+})(globalThis);
+</script>
+
 <script data-module="Renderer" data-dom="true">
 (function (Root) {
   'use strict';
@@ -3406,9 +4066,11 @@
 (function (Root) {
   'use strict';
   const RpgMap = Root.RpgMap = Root.RpgMap || {};
-  const { Util, Projection, Coordinates, Terrain, Model, History, View, Edit, Renderer } = RpgMap;
+  const { Util, Projection, Coordinates, Terrain, Model, History, View, Edit, FileFormat, Renderer } = RpgMap;
 
-  const g_szVersion = '0.3.0';
+  const g_szVersion = '0.4.0';
+  const g_szAutosaveKey = 'rpgmap.autosave';
+  const g_nAutosaveDelayMs = 2000;
   // [id, label, hotkey, title]
   const g_rgTools = [
     ['pan', 'Pan', 'h', 'Pan the view (H). Middle/right drag or Space+drag pans with any tool.'],
@@ -3444,6 +4106,8 @@
     MiniCamera: null,
     fFrameQueued: false,
     LastDraw: null,
+    nSavedRevision: 0,
+    nAutosaveTimer: 0,
   };
 
   function Element(szTag, Props = {}, rgChildren = []) {
@@ -3482,6 +4146,7 @@
     const szView = State.Layout.szMode === 'net' ? 'Net view' : `Focus: ${Projection.Build().Panels[State.Layout.szFocus].szName}`;
     const Draw = State.LastDraw;
     Root.document.getElementById('status-message').textContent = [
+      `${Doc.szName || 'Untitled'}${IsDirty() ? ' *' : ''}`,
       State.szMessage,
       szView,
       `n=${Doc.Global.nPanelHexes} ${Doc.Global.szTileScale}`,
@@ -3521,6 +4186,7 @@
       Renderer.MarkTilesChanged(State.Renderer, State.Doc, rgnTiles);
     }
     SyncUndoButtons();
+    ScheduleAutosave();
     RequestDraw();
   }
 
@@ -3603,6 +4269,159 @@
     Root.document.getElementById('redo').disabled = !History.CanRedo(State.History);
   }
 
+  // Files ---------------------------------------------------------------------------
+
+  function IsDirty() {
+    return State.Doc.nRevision !== State.nSavedRevision;
+  }
+
+  function ConfirmDiscard(szAction) {
+    return !IsDirty() || Root.confirm(`Discard unsaved changes to "${State.Doc.szName || 'Untitled'}" and ${szAction}?`);
+  }
+
+  // Replaces the open document; fDirty marks it unsaved (e.g. a restored autosave).
+  function LoadDocument(Doc, szMessage, fDirty = false) {
+    EndStroke();
+    State.Doc = Doc;
+    State.History = History.Create(Doc);
+    State.nHoverTile = -1;
+    State.rgnPreviewTiles = [];
+    State.nSavedRevision = fDirty ? -1 : Doc.nRevision;
+    State.Layout = View.BuildNetLayout();
+    Root.document.title = `${Doc.szName || 'Untitled'} \u2013 RPG World Map Editor`;
+    SyncUndoButtons();
+    SyncControls();
+    FitNet();
+    SetMessage(szMessage);
+  }
+
+  function NewMap() {
+    if (ConfirmDiscard('start a new map')) {
+      const { nPanelHexes, szTileScale } = State.Doc.Global;
+      LoadDocument(Model.CreateGlobalMap({ nPanelHexes, szTileScale, szName: 'Untitled' }), 'New map');
+      ClearAutosave();
+    }
+  }
+
+  function OpenMap() {
+    if (ConfirmDiscard('open another map')) {
+      Root.document.getElementById('open-file').click();
+    }
+  }
+
+  // Parses map text; returns the document or null after reporting the error.
+  function ParseMap(szText, szSource) {
+    try {
+      const Doc = FileFormat.Parse(szText);
+      if (Doc.szKind !== 'global') {
+        SetMessage(`${szSource}: local maps can't be edited yet`);
+        return null;
+      }
+      return Doc;
+    } catch (Caught) {
+      SetMessage(`${szSource}: ${Caught.message}`);
+      return null;
+    }
+  }
+
+  function OpenFileChosen(Input) {
+    const File = Input.files && Input.files[0];
+    Input.value = '';
+    if (File) {
+      File.text().then((szText) => {
+        const Doc = ParseMap(szText, `Can't open ${File.name}`);
+        if (Doc) {
+          LoadDocument(Doc, `Opened ${File.name}`);
+          ClearAutosave();
+        }
+      }, (Caught) => SetMessage(`Can't read ${File.name}: ${Caught.message}`));
+    }
+  }
+
+  function SaveMap() {
+    EndStroke();
+    const szName = FileFormat.FileName(State.Doc);
+    const Url = Root.URL.createObjectURL(new Root.Blob([FileFormat.Write(State.Doc)], { type: 'text/plain' }));
+    const Link = Element('a', { href: Url, download: szName });
+    Root.document.body.append(Link);
+    Link.click();
+    Link.remove();
+    Root.setTimeout(() => Root.URL.revokeObjectURL(Url), 0);
+    State.nSavedRevision = State.Doc.nRevision;
+    ClearAutosave();
+    SetMessage(`Saved ${szName}`);
+  }
+
+  // Autosave keeps unsaved work in localStorage; it is cleared on save, open and new.
+  function ScheduleAutosave() {
+    Root.clearTimeout(State.nAutosaveTimer);
+    State.nAutosaveTimer = Root.setTimeout(Autosave, g_nAutosaveDelayMs);
+  }
+
+  function Autosave() {
+    Root.clearTimeout(State.nAutosaveTimer);
+    State.nAutosaveTimer = 0;
+    // Keep the earlier autosave while its restore offer is still showing.
+    if (!IsDirty() || !Root.document.getElementById('restore-banner').hidden) {
+      return;
+    }
+    try {
+      Root.localStorage.setItem(g_szAutosaveKey, JSON.stringify({ szText: FileFormat.Write(State.Doc), nTime: Date.now() }));
+    } catch (Caught) {
+      SetMessage(`Autosave failed: ${Caught.message}`);
+    }
+  }
+
+  function ClearAutosave() {
+    Root.clearTimeout(State.nAutosaveTimer);
+    State.nAutosaveTimer = 0;
+    Root.document.getElementById('restore-banner').hidden = true;
+    try {
+      Root.localStorage.removeItem(g_szAutosaveKey);
+    } catch (Caught) {
+      // Storage unavailable: nothing to clear.
+    }
+  }
+
+  function ReadAutosave() {
+    try {
+      const Saved = JSON.parse(Root.localStorage.getItem(g_szAutosaveKey) || 'null');
+      return Saved && typeof Saved.szText === 'string' ? Saved : null;
+    } catch (Caught) {
+      return null;
+    }
+  }
+
+  function OfferRestore() {
+    const Saved = ReadAutosave();
+    const Banner = Root.document.getElementById('restore-banner');
+    if (!Saved) {
+      return;
+    }
+    const Doc = ParseMap(Saved.szText, 'Autosave is unreadable');
+    if (!Doc) {
+      ClearAutosave();
+      return;
+    }
+    Root.document.getElementById('restore-text').textContent =
+      `Unsaved map "${Doc.szName || 'Untitled'}" from ${new Date(Saved.nTime).toLocaleString()} was found.`;
+    Root.document.getElementById('restore-accept').onclick = () => {
+      if (ConfirmDiscard('restore the autosaved map')) {
+        Banner.hidden = true;
+        LoadDocument(Doc, 'Restored unsaved work', true);
+      }
+    };
+    Root.document.getElementById('restore-discard').onclick = () => {
+      Banner.hidden = true;
+      ClearAutosave();
+      SetMessage('Discarded the autosaved map');
+      if (IsDirty()) {
+        ScheduleAutosave();
+      }
+    };
+    Banner.hidden = false;
+  }
+
   function FitNet() {
     View.FitBounds(State.Camera, State.Layout.rgdBounds);
     RequestDraw();
@@ -3669,7 +4488,14 @@
       ...rgszGreek.map((szPanel) => Element('option', { value: szPanel, textContent: `${Built.Panels[szPanel].szLetter} ${Built.Panels[szPanel].szName}` })),
     ]);
     Select.addEventListener('change', () => (Select.value ? ShowFocus(Select.value) : ShowNet()));
+    const OpenInput = Element('input', { id: 'open-file', type: 'file', accept: `.txt,${FileFormat.g_szFileExtension},text/plain`, hidden: true });
+    OpenInput.addEventListener('change', () => OpenFileChosen(OpenInput));
     const rgButtons = [
+      Element('button', { id: 'file-new', type: 'button', textContent: 'New', title: 'New all-water world of the same size', onclick: NewMap }),
+      Element('button', { id: 'file-open', type: 'button', textContent: 'Open\u2026', title: 'Open a .map.txt file (Ctrl+O)', onclick: OpenMap }),
+      Element('button', { id: 'file-save', type: 'button', textContent: 'Save', title: 'Download the map as a .map.txt file (Ctrl+S)', onclick: SaveMap }),
+      OpenInput,
+      Element('span', { className: 'toolbar-gap' }),
       Element('button', { id: 'view-net', type: 'button', textContent: 'Net view', title: 'Show the whole net (N)', onclick: ShowNet }),
       Select,
       Element('button', { id: 'fit-net', type: 'button', textContent: 'Fit all', title: 'Fit the whole view (Home)', onclick: FitNet }),
@@ -3854,6 +4680,12 @@
         if (szKey === 'z' || szKey === 'y') {
           Event.preventDefault();
           UndoOrRedo(szKey === 'z' && !Event.shiftKey);
+        } else if (szKey === 's') {
+          Event.preventDefault();
+          SaveMap();
+        } else if (szKey === 'o') {
+          Event.preventDefault();
+          OpenMap();
         }
         return;
       }
@@ -3912,6 +4744,7 @@
     State.MiniCanvas = Root.document.getElementById('minimap');
     State.Renderer = Renderer.Create(Canvas);
     State.Doc = CreateDemoDocument();
+    State.nSavedRevision = State.Doc.nRevision;
     State.History = History.Create(State.Doc);
     State.Layout = View.BuildNetLayout();
     BuildToolbar();
@@ -3928,11 +4761,13 @@
     View.ResizeCamera(State.Camera, Rect.width, Rect.height);
     View.FitBounds(State.Camera, State.Layout.rgdBounds);
     new Root.ResizeObserver(RequestDraw).observe(Canvas);
+    Root.addEventListener('pagehide', Autosave);
     SyncControls();
+    OfferRestore();
     RequestDraw();
   }
 
-  RpgMap.App = Object.freeze({ g_szVersion, State, Start, ShowFocus, ShowNet, FitNet, FitPanel, SetTool, SetTerrain, SetBrushRadius, UndoOrRedo });
+  RpgMap.App = Object.freeze({ g_szVersion, State, Start, ShowFocus, ShowNet, FitNet, FitPanel, SetTool, SetTerrain, SetBrushRadius, UndoOrRedo, NewMap, SaveMap, Autosave, IsDirty });
 
   if (Root.document.readyState === 'loading') {
     Root.document.addEventListener('DOMContentLoaded', Start);

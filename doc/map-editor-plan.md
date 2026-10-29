@@ -25,13 +25,14 @@ tests/
   model.test.cjs                                                                         [done]
   view.test.cjs                 # camera, layouts, hit testing, culling, demo terrain    [done]
   edit.test.cjs                 # brush, stroke, flood fill, undo of edits               [done]
-  fileformat.test.cjs  regions.test.cjs  svgexport.test.cjs
-  fixtures/sample-global.map.txt  fixtures/sample-local.map.txt
+  fileformat.test.cjs           # round trips, fixtures, line-numbered errors           [done]
+  fixtures/sample-global.map.txt  fixtures/sample-local.map.txt                         [done]
+  regions.test.cjs  svgexport.test.cjs
 tools/generate_map_projection.py                                                         [done]
 doc/
   equilateral-chamfered-cube.{json,svg}   # generated with --labels                      [done]
   map-editor-plan.md  map-editor-status.md
-  file-format.md                          # milestone 7
+  file-format.md                          # the .map.txt spec                            [done]
 README.md
 ```
 
@@ -54,7 +55,7 @@ Every module is an inline block that registers one frozen object:
 - Blocks appear in dependency order; `Util` is first and `App` is last.
 - Blocks that touch the DOM carry `data-dom="true"`. The tests skip these, so every other block must be DOM-free.
 - `tests/_load.cjs` `LoadModules()` blanks out HTML comments, compiles each DOM-free block with `vm.compileFunction` (passing a sandbox object as `globalThis`, with `lineOffset` so errors report `index.html` line numbers), and returns `RpgMap`.
-- **Planned modules, in order:** `Util` ✅ → `Projection` ✅ → `Lattice` ✅ → `Topology` ✅ → `Coordinates` ✅ → `Terrain` ✅ → `Model` ✅ → `History` ✅ → `View` ✅ → `Edit` ✅ → `FileFormat` → `Regions` → `SvgExport` → `Renderer`* ✅ → `App`* ✅. Modules marked * use the DOM. The tool UI (palette, pointer and key handling) lives in `App`; the testable tool logic is the DOM-free `Edit` module (§11.32), so there is no separate `Tools` module.
+- **Planned modules, in order:** `Util` ✅ → `Projection` ✅ → `Lattice` ✅ → `Topology` ✅ → `Coordinates` ✅ → `Terrain` ✅ → `Model` ✅ → `History` ✅ → `View` ✅ → `Edit` ✅ → `FileFormat` ✅ → `Regions` → `SvgExport` → `Renderer`* ✅ → `App`* ✅. Modules marked * use the DOM. The tool UI (palette, pointer and key handling) lives in `App`; the testable tool logic is the DOM-free `Edit` module (§11.32), so there is no separate `Tools` module.
 
 ## 3. Projection module (port of the Python geometry)
 
@@ -178,7 +179,7 @@ MapDoc {
 # RPGMAP 1
 [map]
 kind = global
-name = Aerth
+name = "Aerth"
 panelHexes = 24
 tileScale = XL
 # local maps instead: width, height, system, size, anchor = Eta 187.1W 324.0N
@@ -190,20 +191,23 @@ tileScale = XL
 
 [panel Alpha]            # one section per panel, in Greek order; a local map has a single [local] section
 columns = 24             # characters per line
-rows = 25                # the section covers the panel's whole bounding rectangle
+rows = 24                # the section covers the panel's whole bounding rectangle
+latticeColumn = 0        # lattice column of the first character (informational, validated)
+latticeRow = 11          # lattice row of the first line (informational, validated)
 ~~~~....                 # `rows` lines of `columns` chars, north line first; odd columns are ½ hex north; `_` = not a tile
 
 [landmarks]
 Alpha 93.5E 108.0N city "Karador" notes="Capital of the north"
 
 [labels]
-Alpha 93.5E 216.0N region size=28 rot=-15 dx=0 dy=0 "The Northern Wastes"
+Alpha 93.5E 216.0N region id=label1 size=28 rot=-15 dx=0 dy=0 "The Northern Wastes"
 
 [overlays]
-road r1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Zeta 93.5W 216.0N
+road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Zeta 93.5W 216.0N
 ```
 
-- **Coordinates** are universal (panel, miles), written to 0.1 mi. The parser snaps each one to a tile centre.
+- **Coordinates** are universal (panel, miles), written to 0.1 mi (finer for yard-scale local maps, §11.39). The parser snaps each one to a tile centre within 0.25 hex.
+- **Strings** are double-quoted with `\"`, `\\` and `\uXXXX` escapes, so files stay pure ASCII (§11.38).
 - **Overlays:** the panel name may be left out when it hasn't changed from the previous point.
 - **Writer:** output is deterministic so files diff cleanly in git.
 - **Parser:**
@@ -306,7 +310,7 @@ road r1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Zeta
 4. ✅ **Terrain table, Model, History.**
 5. ✅ **Renderer and viewport:** pan, zoom, culling, clipped panels, outlines, minimap, panel focus view, status bar coordinates.
 6. ✅ **Terrain tools:** brush, fill, eyedropper, undo/redo.
-7. **File format:** `doc/file-format.md`, writer, parser, open/save/autosave, fixtures.
+7. ✅ **File format:** `doc/file-format.md`, writer, parser, open/save/autosave, fixtures.
 8. **Overlays, landmarks, labels:** tools, properties panel, A* gap filling.
 9. **Local maps:** new-map dialog, scales, anchor snapping, conversion to universal coordinates.
 10. **SVG export, part 1:** per-panel options popup, regions, shoreline, colours, hex overlay, overlays, landmarks, labels.
@@ -353,6 +357,21 @@ road r1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Zeta
 35. **Flood fill** replaces the connected region of the clicked tile's terrain (BFS across seams, no size cap) with the active terrain, as one command labelled `Fill <terrain>`; filling with the same terrain is a no-op. Even the whole world at n = 24 L (218,088 tiles) fills in well under a second, so no confirmation is asked.
 36. **Tool input (replaces §11.31's "any button pans"):** tools are Pan (`H`), Brush (`B`), Fill (`G`) and Pick/eyedropper (`I`); `[`/`]` change the brush radius. The left button drives the active tool; the middle or right button, Space+drag, or the Pan tool pans. Alt+click picks a terrain with any tool. A double-click opens the focus view only with the Pan tool, so quick brush clicks never change view. Clicking a terrain in the properties legend makes it active (default: plain). Ctrl+Z undoes; Ctrl+Y and Ctrl+Shift+Z redo; toolbar Undo/Redo buttons are disabled when unavailable. The status message leads with the last action (`Paint Forest: 37 tiles`, `Undo Fill Water: 1,999 tiles`).
 37. **Incremental raster:** after an edit, undo or redo, `Renderer.MarkTilesChanged` marks the changed tiles on each cached raster of that document. The next draw clears an integer-pixel box around each tile in every placement it is drawn in (its own panel, plus the strip neighbours for equatorial tiles) and redraws whatever overlaps the boxes, clipped to them. More than 3,000 changed tiles redraws the whole raster in place. Colour buckets are painted in terrain-id order so a partial repaint matches a full redraw (apart from a few hundred anti-aliased pixels, which are invisible).
+38. **File details:** one module, `FileFormat` (after `Edit`), writes and parses `*.map.txt` (spec: `doc/file-format.md`).
+    - The writer always emits `[legend]`, but a missing legend means the default characters; a legend may remap characters (except space, `#`, `[`, `]`, `"`, `\` and `_`).
+    - Panel sections also carry `latticeColumn`/`latticeRow` (the lattice cell of the first character), which are validated like `columns`/`rows`.
+    - Quoted strings escape `\"` and `\\`, and write everything outside printable ASCII as `\uXXXX`, so files are pure ASCII but keep any Unicode name.
+    - Labels write their `id=` and all style keys. Overlays are written `<type> <id> [style=…] "<name>" : points`.
+    - Empty item sections are left out. Comments only cover whole lines, because `#` is legal inside strings.
+    - Unknown or duplicate sections and keys are errors (they would otherwise silently lose data). Parsing resets `nRevision` to 0.
+39. **Coordinate precision:** locations are written with `max(1, ceil(−log10(hexMiles / 10)))` decimals. That gives 0.1 mi for every global and regional map (always well inside the 0.25-hex snap; checked for every tile at n = 24 L), and enough digits for yard-scale local hexes.
+40. **File UI and autosave:** the toolbar has New, Open… and Save.
+    - New (until the milestone 9 dialog): an all-water world with the current n and tile scale.
+    - Open: errors show `Line N: …` in the status bar and keep the current map. Local maps are rejected until milestone 9.
+    - Save: a `Blob` download named `FileFormat.FileName` (the map name, sanitised, plus `.map.txt`). Ctrl+S saves and Ctrl+O opens.
+    - Dirty tracking compares `Doc.nRevision` with the saved revision. The status bar shows `name *`, and New/Open/Restore ask before discarding unsaved changes.
+    - Autosave writes `{ szText, nTime }` to `localStorage['rpgmap.autosave']` 2 s after the last edit (and on `pagehide`) when the map is dirty. Save, Open and New clear it.
+    - On start, a non-blocking banner offers Restore or Discard. Until the user chooses, autosave doesn't overwrite the copy on offer.
 
 ## 12. Open questions
 
