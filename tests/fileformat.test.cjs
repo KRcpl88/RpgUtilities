@@ -77,6 +77,28 @@ test('fixtures parse and are in canonical form', () => {
   assert.equal(FileFormat.Write(Local), g_szLocalFixture);
 });
 
+test('version 2 files round trip and version 1 and unknown versions are rejected', () => {
+  const rgDocs = [
+    Model.CreateGlobalMap({ nPanelHexes: 4 }),
+    Model.CreatePanelMap({ nPanelHexes: 2, szPanel: Coordinates.PanelIdByName('Alpha'), szTileScale: 'M' }),
+    Model.CreateLocalMap({ nWidth: 3, nHeight: 3, szSystem: 'regional', szScale: 'M',
+      Anchor: Coordinates.ParseUniversal('Eta 0.0E 0.0N') }),
+  ];
+  for (const Doc of rgDocs) {
+    const szText = FileFormat.Write(Doc);
+    assert.ok(szText.startsWith('# RPGMAP 2\n'));
+    assert.equal(FileFormat.Parse(szText).nVersion, 2);
+    for (const nVersion of [0, 1, 3, 99]) {
+      const szOtherVersion = szText.replace('# RPGMAP 2', `# RPGMAP ${nVersion}`);
+      const reWarning = nVersion < 2
+        ? new RegExp(`Older map file version ${nVersion} is no longer supported\\. Expected "# RPGMAP 2"`)
+        : new RegExp(`Newer map file version ${nVersion} is not recognized by this editor\\. Expected "# RPGMAP 2"`);
+      AssertFileError(szOtherVersion, 1, reWarning);
+      AssertFileError('\n\n' + szOtherVersion, 3, reWarning);
+    }
+  }
+});
+
 test('global round trips: demo terrain at n = 4, 24 XL and 4 L, with every item kind', () => {
   for (const [nPanelHexes, szTileScale] of [[4, 'XL'], [24, 'XL'], [4, 'L']]) {
     const Doc = Model.CreateGlobalMap({ nPanelHexes, szTileScale, szName: `World ${nPanelHexes}${szTileScale}` });
