@@ -115,7 +115,13 @@ test('all eight local scales use the same normalized SVG dimensions and label un
       const Match = /<text data-id="label1" transform="matrix\(([^)]+)\)"/.exec(Text);
       const Actual = Match[1].split(' ').map(Number);
       const ToSvg = [48, 0, 0, -48, -Size.rgdBounds[0] * 48, Size.rgdBounds[3] * 48];
-      const Expected = Projection.ComposeTransforms(View.LabelTransform(View.MapGeometry(Doc), Doc.rgLabels[0]), ToSvg);
+      // Local maps that span a seam draw in their anchor panel's frame (edge units).
+      const Geometry = View.MapGeometry(Doc);
+      const rgdToHex = Geometry.Span
+        ? Projection.ComposeTransforms(View.FeatureCopies(Geometry, View.MapLayout(Doc), Doc.rgLabels[0].nTile)[0].rgdFrameToWorld,
+          [1 / Geometry.dD, 0, 0, 1 / Geometry.dD, 0, 0])
+        : [1, 0, 0, 1, 0, 0];
+      const Expected = Projection.ComposeTransforms(View.LabelTransform(Geometry, Doc.rgLabels[0]), Projection.ComposeTransforms(rgdToHex, ToSvg));
       Actual.forEach((dValue, nIndex) => assert.ok(Math.abs(dValue - Expected[nIndex]) <= 1e-6));
       assert.ok(Math.abs(Math.hypot(Actual[0], Actual[1]) - 1) < 1e-6, 'a label unit is one SVG viewBox unit');
     }

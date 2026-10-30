@@ -208,6 +208,8 @@
 </footer>
 <dialog id="new-map-dialog" class="map-dialog" aria-labelledby="new-map-title"></dialog>
 <dialog id="export-map-dialog" class="map-dialog" aria-labelledby="export-map-title"></dialog>
+<dialog id="crop-map-dialog" class="map-dialog" aria-labelledby="crop-map-title"></dialog>
+<dialog id="rescale-map-dialog" class="map-dialog" aria-labelledby="rescale-map-title"></dialog>
 
 <script data-module="Util">
 (function (Root) {
@@ -1437,20 +1439,29 @@
 
   // Lattice hexes overlapping the panel (or, for equatorial panels, the strip near
   // the panel's own columns), with partial tiles clipped into per-region pieces.
-  function CollectPanelTiles(Info, rgRegions, dHexArea) {
+  // Clip (optional, for local spans) narrows the search box and filters centres.
+  function CollectPanelTiles(Info, rgRegions, dHexArea, Clip = null) {
     const PanelLatticeInfo = Info.Lattice;
     const { dD, dW } = PanelLatticeInfo;
     const dRadius = Lattice.HexRadius(dD);
     const Box = Bounds(rgRegions);
+    if (Clip) {
+      Box.dMinEast = Math.max(Box.dMinEast, Clip.Box.dMinEast);
+      Box.dMaxEast = Math.min(Box.dMaxEast, Clip.Box.dMaxEast);
+      Box.dMinNorth = Math.max(Box.dMinNorth, Clip.Box.dMinNorth);
+      Box.dMaxNorth = Math.min(Box.dMaxNorth, Clip.Box.dMaxNorth);
+      if (Box.dMinEast > Box.dMaxEast || Box.dMinNorth > Box.dMaxNorth) {
+        return [];
+      }
+    }
     const rgEdgeLines = EdgeLines(rgRegions[0].rgrgdPolygon);
-    let nQMin;
-    let nQMax;
+    let nQMin = Math.floor((Box.dMinEast - dRadius - PanelLatticeInfo.dOriginEast) / dW) - 1;
+    let nQMax = Math.ceil((Box.dMaxEast + dRadius - PanelLatticeInfo.dOriginEast) / dW) + 1;
     if (PanelLatticeInfo.fEquatorial && !Info.fSinglePanel) {
-      nQMin = PanelLatticeInfo.nColumnShift;
-      nQMax = nQMin + PanelLatticeInfo.nColumns - 1;
-    } else {
-      nQMin = Math.floor((Box.dMinEast - dRadius - PanelLatticeInfo.dOriginEast) / dW) - 1;
-      nQMax = Math.ceil((Box.dMaxEast + dRadius - PanelLatticeInfo.dOriginEast) / dW) + 1;
+      const nOwnMin = PanelLatticeInfo.nColumnShift;
+      const nOwnMax = nOwnMin + PanelLatticeInfo.nColumns - 1;
+      nQMin = Clip ? Math.max(nQMin, nOwnMin) : nOwnMin;
+      nQMax = Clip ? Math.min(nQMax, nOwnMax) : nOwnMax;
     }
     const nJMin = Math.floor((Box.dMinNorth - dRadius) / dD) - 1;
     const nJMax = Math.ceil((Box.dMaxNorth + dRadius) / dD) + 1;
@@ -1460,6 +1471,9 @@
         const rgdCenter = LatticeCenter(PanelLatticeInfo, nQ, nJ);
         if (rgdCenter[0] + dRadius < Box.dMinEast || rgdCenter[0] - dRadius > Box.dMaxEast
           || rgdCenter[1] + dRadius < Box.dMinNorth || rgdCenter[1] - dRadius > Box.dMaxNorth) {
+          continue;
+        }
+        if (Clip && !Clip.fnAccept(rgdCenter)) {
           continue;
         }
         const dInside = InsideDistance(rgEdgeLines, rgdCenter);
@@ -1520,7 +1534,8 @@
     return nCount >= 2 && dMax > dMin ? [dMin, dMax] : null;
   }
 
-  function BuildAdjacency(Topo, RegionsByPanel, Built) {
+  // fnSeamLinked (optional) limits which seams connect partial tiles (local spans).
+  function BuildAdjacency(Topo, RegionsByPanel, Built, fnSeamLinked = null) {
     const rgNeighborSets = Topo.rgTiles.map(() => new Set());
     const dEpsilon = 1e-6 * Topo.dD;
     const Link = (nFirst, nSecond) => {
@@ -1560,7 +1575,8 @@
       }
     }
     for (const Seam of Built.Seams) {
-      if (!Topo.Panels[Seam.szPanelA] || !Topo.Panels[Seam.szPanelB]) {
+      if (!Topo.Panels[Seam.szPanelA] || !Topo.Panels[Seam.szPanelB]
+        || (fnSeamLinked && !fnSeamLinked(Seam.szPanelA, Seam.szPanelB))) {
         continue;
       }
       if (Built.Panels[Seam.szPanelA].fEquatorial && Built.Panels[Seam.szPanelB].fEquatorial) {
@@ -1683,6 +1699,294 @@
     return Topo;
   }
 
+  // Local spans ------------------------------------------------------------------
+  // A regional local map whose rectangle crosses a seam is unfolded from its anchor
+  // panel across every seam it meets. Each panel keeps its own lattice and the global
+  // clipping rules, so tiles turn to the neighbour's orientation at the seam. World
+  // space is the anchor panel's frame (edge units) minus the anchor tile centre.
+  const g_dSpanMargin = 0.6; // hex heights; covers every selected tile's outline
+  const g_SpanCache = new Map();
+  const g_nSpanCacheSize = 8;
+
+  function SpanLattice(Local) {
+    return PanelLattice(Local.Anchor.szPanel, Local.nPanelHexes, Lattice.ScaleRatio('regional', 'XL', Local.szScale));
+  }
+
+  // The box around a W × H block of local tiles (world units), widened by dMargin hexes.
+  function SpanRectangle(nParity, nWidth, nHeight, dD, dMargin = g_dSpanMargin) {
+    const dRadius = Lattice.HexRadius(1);
+    const dShift = nWidth > 1 ? (nParity ? -0.5 : 0.5) : 0;
+    const dLeft = (-dRadius - dMargin) * dD;
+    const dRight = ((nWidth - 1) * Lattice.ColumnSpacing(1) + dRadius + dMargin) * dD;
+    const dBottom = (-(nHeight - 1) + Math.min(0, dShift) - 0.5 - dMargin) * dD;
+    const dTop = (Math.max(0, dShift) + 0.5 + dMargin) * dD;
+    return [[dLeft, dBottom], [dRight, dBottom], [dRight, dTop], [dLeft, dTop]];
+  }
+
+  function CrossesInterior(rgdA, rgdB, rgrgdClip, dTolerance) {
+    const rgdInterval = Util.ClipSegmentToConvex(rgdA, rgdB, rgrgdClip);
+    return rgdInterval !== null && (rgdInterval[1] - rgdInterval[0]) * Util.Distance(rgdA, rgdB) > dTolerance;
+  }
+
+  function SameTransform(rgdFirst, rgdSecond) {
+    return rgdFirst.every((dValue, nIndex) => Math.abs(dValue - rgdSecond[nIndex]) <= 1e-9);
+  }
+
+  // Each panel edge in the panel's frame, with the transform from the neighbour's frame.
+  function PanelEdges(Built, szPanel) {
+    const Frame = Built.Frames[szPanel];
+    return Built.Seams.filter((Seam) => Seam.szPanelA === szPanel || Seam.szPanelB === szPanel).map((Seam) => {
+      const fA = Seam.szPanelA === szPanel;
+      return {
+        szOther: fA ? Seam.szPanelB : Seam.szPanelA,
+        rgdOtherToPanel: fA ? Seam.rgdBToA : Seam.rgdAToB,
+        rgrgdEnds: Seam.rgszVertices.map((szId) => Projection.SolidToFrame(Frame, Built.Vertices[szId])),
+      };
+    });
+  }
+
+  // Largest n in [1, nMax] for which fnBlocked(n) is false (0 if none); fnBlocked is
+  // monotone (the rectangle only grows with n).
+  function LargestClear(nMax, fnBlocked) {
+    if (nMax < 1 || fnBlocked(1)) {
+      return 0;
+    }
+    let nLow = 1;
+    let nHigh = nMax;
+    while (nLow < nHigh) {
+      const nMid = Math.ceil((nLow + nHigh) / 2);
+      if (fnBlocked(nMid)) {
+        nHigh = nMid - 1;
+      } else {
+        nLow = nMid;
+      }
+    }
+    return nLow;
+  }
+
+  // Unfolds panels across the seams that the local rectangle meets. A panel reached
+  // twice with different placements is a tear: the map would wrap around a panel corner
+  // vertex, which cannot lie flat. The rectangle is then cut back (width or height,
+  // whichever keeps more area) so its edge stops before the tear, and unfolding repeats.
+  // Local needs { nWidth, nHeight, szScale, nPanelHexes, Anchor, nParity, rgnAnchorLattice }.
+  // Returns { nWidth, nHeight, dD, rgdAnchor, rgrgdRectangle, Placed: Map panel → frame-to-world }.
+  function UnfoldSpan(Local) {
+    const Built = Projection.Build();
+    const PanelLatticeInfo = SpanLattice(Local);
+    const { dD } = PanelLatticeInfo;
+    const szHome = Local.Anchor.szPanel;
+    const rgdAnchor = LatticeCenter(PanelLatticeInfo, Local.rgnAnchorLattice[0], Local.rgnAnchorLattice[1]);
+    const rgdHomeToWorld = [1, 0, 0, 1, -rgdAnchor[0], -rgdAnchor[1]];
+    const dTolerance = 1e-9 * dD;
+    const EdgesByPanel = new Map();
+    const Edges = (szPanel) => EdgesByPanel.get(szPanel) || EdgesByPanel.set(szPanel, PanelEdges(Built, szPanel)).get(szPanel);
+    let { nWidth, nHeight } = Local;
+    for (;;) {
+      const rgrgdRectangle = SpanRectangle(Local.nParity, nWidth, nHeight, dD);
+      const Placed = new Map([[szHome, rgdHomeToWorld]]);
+      const rgszQueue = [szHome];
+      let rgrgdTear = null;
+      for (let nHead = 0; nHead < rgszQueue.length && !rgrgdTear; nHead++) {
+        const rgdToWorld = Placed.get(rgszQueue[nHead]);
+        for (const Edge of Edges(rgszQueue[nHead])) {
+          const [rgdA, rgdB] = Edge.rgrgdEnds.map((rgdPoint) => Projection.ApplyTransform(rgdToWorld, rgdPoint));
+          if (!CrossesInterior(rgdA, rgdB, rgrgdRectangle, dTolerance)) {
+            continue;
+          }
+          const rgdOtherToWorld = Projection.ComposeTransforms(Edge.rgdOtherToPanel, rgdToWorld);
+          if (!Placed.has(Edge.szOther)) {
+            Placed.set(Edge.szOther, rgdOtherToWorld);
+            rgszQueue.push(Edge.szOther);
+          } else if (!SameTransform(Placed.get(Edge.szOther), rgdOtherToWorld)) {
+            rgrgdTear = [rgdA, rgdB];
+            break;
+          }
+        }
+      }
+      if (!rgrgdTear) {
+        return { nWidth, nHeight, dD, rgdAnchor, rgrgdRectangle, Placed };
+      }
+      const fnBlocked = (nW, nH) => CrossesInterior(rgrgdTear[0], rgrgdTear[1], SpanRectangle(Local.nParity, nW, nH, dD), dTolerance);
+      const nClearWidth = LargestClear(nWidth - 1, (nW) => fnBlocked(nW, nHeight));
+      const nClearHeight = LargestClear(nHeight - 1, (nH) => fnBlocked(nWidth, nH));
+      Require(nClearWidth > 0 || nClearHeight > 0,
+        'The local map would wrap around a panel corner next to its anchor; move the anchor away from the corner');
+      if (nClearWidth * nHeight > nWidth * nClearHeight) {
+        nWidth = nClearWidth;
+      } else {
+        nHeight = nClearHeight;
+      }
+    }
+  }
+
+  // The tiles of a regional local map that crosses panel seams (null when the map lies
+  // inside its anchor panel and stays a flat local grid). Local must already be cropped
+  // by UnfoldSpan. Tiles follow the global rules of each panel (whole hexes at equatorial
+  // east/west seams, clipped partial tiles at the others) and are kept when their centre,
+  // unfolded into the anchor frame, falls in a cell of the local W × H block.
+  function BuildSpan(Local) {
+    if (Local.szSystem !== 'regional') {
+      return null;
+    }
+    const szKey = [Local.nPanelHexes, Local.szScale, Local.Anchor.szPanel, ...Local.rgnAnchorLattice, Local.nWidth, Local.nHeight].join(':');
+    if (g_SpanCache.has(szKey)) {
+      return g_SpanCache.get(szKey);
+    }
+    const Unfold = UnfoldSpan(Local);
+    Require(Unfold.nWidth === Local.nWidth && Unfold.nHeight === Local.nHeight, 'Local map size must be cropped at panel corners');
+    let Topo = null;
+    if (Unfold.Placed.size > 1) {
+      Topo = AssembleSpan(Local, Unfold);
+    }
+    if (g_SpanCache.size >= g_nSpanCacheSize) {
+      g_SpanCache.delete(g_SpanCache.keys().next().value);
+    }
+    g_SpanCache.set(szKey, Topo);
+    return Topo;
+  }
+
+  function AssembleSpan(Local, Unfold) {
+    const Built = Projection.Build();
+    const { dD, Placed, rgrgdRectangle } = Unfold;
+    const nRatio = Lattice.ScaleRatio('regional', 'XL', Local.szScale);
+    const dHexArea = Lattice.HexArea(dD);
+    const dColumn = Lattice.ColumnSpacing(1);
+    const { nWidth, nHeight, nParity } = Local;
+    const fnInBlock = (rgdWorld) => {
+      const [nQ, nJ] = Lattice.PointToOffset(rgdWorld[0] / dD + nParity * dColumn, rgdWorld[1] / dD + nParity / 2, 1);
+      const nX = nQ - nParity;
+      const nY = -nJ;
+      return nX >= 0 && nY >= 0 && nX < nWidth && nY < nHeight;
+    };
+    // Drawing is clipped to the tile rectangle itself; unfolding used a margin so it
+    // could see corners just beyond the map edge.
+    const rgrgdOutline = SpanRectangle(nParity, nWidth, nHeight, dD, 0);
+    const FrameOutlines = new Map();
+    for (const [szPanel, rgdToWorld] of Placed) {
+      const rgdToFrame = Projection.InvertTransform(rgdToWorld);
+      const rgrgdClip = Util.ClipPolygonToConvex(Built.Frames[szPanel].rgrgdPolygon,
+        rgrgdOutline.map((rgdPoint) => Projection.ApplyTransform(rgdToFrame, rgdPoint)));
+      if (rgrgdClip.length >= 3 && Math.abs(Util.PolygonArea(rgrgdClip)) > 1e-9 * dHexArea) {
+        FrameOutlines.set(szPanel, rgrgdClip);
+      }
+    }
+    // Panels unfolded side by side across a seam, in both directions ("A>B").
+    const Links = {};
+    for (const Seam of Built.Seams) {
+      const rgdA = Placed.get(Seam.szPanelA);
+      const rgdB = Placed.get(Seam.szPanelB);
+      if (FrameOutlines.has(Seam.szPanelA) && FrameOutlines.has(Seam.szPanelB)
+        && SameTransform(Projection.ComposeTransforms(Seam.rgdBToA, rgdA), rgdB)) {
+        Links[`${Seam.szPanelA}>${Seam.szPanelB}`] = true;
+        Links[`${Seam.szPanelB}>${Seam.szPanelA}`] = true;
+      }
+    }
+    const rgszPlaced = Object.keys(Built.Panels).filter((szPanel) => FrameOutlines.has(szPanel));
+    const fnLinked = (szFrom, szTo) => Links[`${szFrom}>${szTo}`] === true;
+    const rgszStrip = Built.rgszEquatorialWestToEast;
+    const rgTiles = [];
+    const Panels = {};
+    const Lookups = {};
+    const RegionsByPanel = {};
+    const Placements = {};
+    let fFlat = true;
+    for (const szPanel of rgszPlaced) {
+      const rgdToWorld = Placed.get(szPanel);
+      const rgdToFrame = Projection.InvertTransform(rgdToWorld);
+      const rgrgdFrameRectangle = rgrgdRectangle.map((rgdPoint) => Projection.ApplyTransform(rgdToFrame, rgdPoint));
+      const PanelLatticeInfo = PanelLattice(szPanel, Local.nPanelHexes, nRatio);
+      const rgRegions = BuildRegions(Built, szPanel);
+      RegionsByPanel[szPanel] = rgRegions;
+      const rgrgdFrameOutline = FrameOutlines.get(szPanel);
+      // Keep tiles whose centre lies in a cell of the block and that are visible in it.
+      const rgCandidates = CollectPanelTiles({ Lattice: PanelLatticeInfo, fSinglePanel: false }, rgRegions, dHexArea, {
+        Box: Bounds([{ rgrgdPolygon: rgrgdFrameRectangle }]),
+        fnAccept: (rgdCenter) => fnInBlock(Projection.ApplyTransform(rgdToWorld, rgdCenter)),
+      }).filter((Candidate) => (Candidate.rgPieces
+        ? Candidate.rgPieces.filter((Piece) => Piece.szPanel === szPanel).map((Piece) => Piece.rgrgdPolygon)
+        : [Lattice.HexPolygon(Candidate.rgdCenter, dD)])
+        .some((rgrgdPolygon) => Math.abs(Util.PolygonArea(Util.ClipPolygonToConvex(rgrgdPolygon, rgrgdFrameOutline))) > g_dMinAreaFraction * dHexArea));
+      rgCandidates.sort((Left, Right) => (Right.nJ - Left.nJ) || (Left.nQ - Right.nQ));
+      const nQMin = rgCandidates.reduce((nMin, Candidate) => Math.min(nMin, Candidate.nQ), Infinity);
+      const nQMax = rgCandidates.reduce((nMax, Candidate) => Math.max(nMax, Candidate.nQ), -Infinity);
+      const nJMax = rgCandidates.length ? rgCandidates[0].nJ : 0;
+      const nJMin = rgCandidates.length ? rgCandidates[rgCandidates.length - 1].nJ : 0;
+      const Lookup = new Map();
+      const nFirstTile = rgTiles.length;
+      for (const Candidate of rgCandidates) {
+        const nIndex = rgTiles.length;
+        fFlat = fFlat && szPanel === Local.Anchor.szPanel && Candidate.rgPieces === null;
+        Lookup.set(Key(Candidate.nQ, Candidate.nJ), nIndex);
+        rgTiles.push(Object.freeze({
+          nIndex,
+          szPanel,
+          nColumn: Candidate.nQ - nQMin,
+          nRow: nJMax - Candidate.nJ,
+          nLatticeColumn: Candidate.nQ,
+          nLatticeRow: Candidate.nJ,
+          rgdCenter: Object.freeze(Candidate.rgdCenter),
+          dArea: Candidate.dArea,
+          fPartial: Candidate.rgPieces !== null,
+          rgPieces: Candidate.rgPieces ? Object.freeze(Candidate.rgPieces) : null,
+        }));
+      }
+      Lookups[szPanel] = Lookup;
+      const nStrip = rgszStrip.indexOf(szPanel);
+      const szWest = nStrip >= 0 ? rgszStrip[(nStrip + 5) % 6] : null;
+      const szEast = nStrip >= 0 ? rgszStrip[(nStrip + 1) % 6] : null;
+      Panels[szPanel] = Object.freeze({
+        szPanel,
+        Lattice: PanelLatticeInfo,
+        nFirstTile,
+        nTileCount: rgTiles.length - nFirstTile,
+        nColumns: rgCandidates.length ? nQMax - nQMin + 1 : 0,
+        nRows: rgCandidates.length ? nJMax - nJMin + 1 : 0,
+        nLatticeColumnMin: rgCandidates.length ? nQMin : 0,
+        nLatticeRowMax: nJMax,
+        szWest: szWest && fnLinked(szPanel, szWest) ? szWest : null,
+        szEast: szEast && fnLinked(szPanel, szEast) ? szEast : null,
+      });
+      Placements[szPanel] = Object.freeze({
+        rgdFrameToWorld: Object.freeze([...rgdToWorld]),
+        rgrgdFrameOutline: Object.freeze(rgrgdFrameOutline.map((rgdPoint) => Object.freeze(rgdPoint))),
+      });
+    }
+    if (fFlat && rgTiles.length === nWidth * nHeight) {
+      return null;
+    }
+    const Topo = {
+      nPanelHexes: Local.nPanelHexes,
+      szTileScale: Local.szScale,
+      szSinglePanel: null,
+      nRatio,
+      dMilesPerEdge: Projection.MilesPerEdge(Local.nPanelHexes),
+      dD,
+      dW: Lattice.ColumnSpacing(dD),
+      dHexArea,
+      rgszPanels: Object.freeze(rgszPlaced.filter((szPanel) => Panels[szPanel].nTileCount > 0)),
+      Panels: Object.freeze(Panels),
+      Lookups: Object.freeze(Lookups),
+      rgTiles: Object.freeze(rgTiles),
+      nTiles: rgTiles.length,
+      Span: Object.freeze({
+        szHome: Local.Anchor.szPanel,
+        rgdAnchor: Object.freeze([...Unfold.rgdAnchor]),
+        rgrgdOutline: Object.freeze(rgrgdOutline.map((rgdPoint) => Object.freeze(rgdPoint))),
+        Placements: Object.freeze(Placements),
+        Links: Object.freeze(Links),
+      }),
+    };
+    const { rgnOffsets, rgnNeighbors } = BuildAdjacency(Topo, RegionsByPanel, Built, fnLinked);
+    Topo.rgnAdjacencyOffsets = rgnOffsets;
+    Topo.rgnAdjacency = rgnNeighbors;
+    return Object.freeze(Topo);
+  }
+
+  // True when tiles of szFrom are also drawn (by seam transform) in szTo's placement.
+  function SpanLinked(Topo, szFrom, szTo) {
+    return szFrom === szTo || !Topo.Span || Topo.Span.Links[`${szFrom}>${szTo}`] === true;
+  }
+
   function TileAt(Topo, szPanel, nQ, nJ) {
     const Lookup = Topo.Lookups[szPanel];
     Require(Lookup !== undefined, `Unknown panel: ${szPanel}`);
@@ -1694,14 +1998,18 @@
   // to the neighbouring strip panel (the strip lattice is continuous and wraps).
   function LocateLattice(Topo, szPanel, nQ, nJ) {
     const Info = Topo.Panels[szPanel];
+    if (!Info && Topo.Span) {
+      return -1;
+    }
     const PanelLatticeInfo = Info.Lattice;
     if (PanelLatticeInfo.fEquatorial && !Topo.szSinglePanel) {
       const nColumn = nQ - PanelLatticeInfo.nColumnShift;
+      // Local spans omit strip neighbours that are absent or not unfolded beside this panel.
       if (nColumn < 0) {
-        return TileAt(Topo, Info.szWest, nQ + PanelLatticeInfo.nColumns, nJ);
+        return Info.szWest ? TileAt(Topo, Info.szWest, nQ + PanelLatticeInfo.nColumns, nJ) : -1;
       }
       if (nColumn >= PanelLatticeInfo.nColumns) {
-        return TileAt(Topo, Info.szEast, nQ - PanelLatticeInfo.nColumns, nJ);
+        return Info.szEast ? TileAt(Topo, Info.szEast, nQ - PanelLatticeInfo.nColumns, nJ) : -1;
       }
     }
     return TileAt(Topo, szPanel, nQ, nJ);
@@ -1737,6 +2045,11 @@
     LatticeCenter,
     LatticeNearest,
     Build,
+    g_dSpanMargin,
+    SpanRectangle,
+    UnfoldSpan,
+    BuildSpan,
+    SpanLinked,
     TileAt,
     LocateLattice,
     TileByColumnRow,
@@ -1777,6 +2090,9 @@
   // Nearest tile of the location's panel, or −1 if none lies within 0.25·d.
   function UniversalToTile(Topo, Location) {
     const Info = Topo.Panels[Location.szPanel];
+    if (Info === undefined && Topo.Span && Projection.Build().Panels[Location.szPanel]) {
+      return -1;
+    }
     Require(Info !== undefined, `Unknown panel: ${Location.szPanel}`);
     const rgdPoint = [Location.dEast / Topo.dMilesPerEdge, Location.dNorth / Topo.dMilesPerEdge];
     const [nQ, nJ] = Topology.LatticeNearest(Info.Lattice, rgdPoint[0], rgdPoint[1]);
@@ -1863,6 +2179,8 @@
   // A flat local map: nWidth × nHeight flat-top hexes, tile (0, 0) in the north-west,
   // x east and y south, oriented to panel north at the anchor (centre of tile (0, 0)).
   // Regional anchors snap to the global lattice of the same scale, so local tiles nest.
+  // A regional map may cross panel seams (Topology.BuildSpan) but is cropped so it stops
+  // short of any panel corner it would wrap around; Options.fFlat skips that cropping.
   function CreateLocalMap(Options) {
     const { nWidth, nHeight, szSystem, szScale, Anchor } = Options;
     const nPanelHexes = Options.nPanelHexes === undefined ? Topology.g_nDefaultPanelHexes : Options.nPanelHexes;
@@ -1886,9 +2204,34 @@
       nParity = Lattice.IsOdd(nQ) ? 1 : 0;
       rgnAnchorLattice = Object.freeze([nQ, nJ]);
     }
+    const fFlat = szSystem !== 'regional' || Options.fFlat === true;
+    let nCroppedWidth = nWidth;
+    let nCroppedHeight = nHeight;
+    if (!fFlat) {
+      // Regional maps may cross panel seams but must stop short of panel corner vertices.
+      const Unfold = Topology.UnfoldSpan({
+        nWidth, nHeight, szScale, nPanelHexes, Anchor: SnappedAnchor, nParity, rgnAnchorLattice,
+      });
+      nCroppedWidth = Unfold.nWidth;
+      nCroppedHeight = Unfold.nHeight;
+    }
     return Object.freeze({
-      nWidth, nHeight, szSystem, szScale, nPanelHexes, dHexMiles, Anchor: SnappedAnchor, nParity, rgnAnchorLattice,
+      nWidth: nCroppedWidth, nHeight: nCroppedHeight, szSystem, szScale, nPanelHexes, dHexMiles, Anchor: SnappedAnchor,
+      nParity, rgnAnchorLattice,
     });
+  }
+
+  // The panels holding a regional local map's tiles and its size after cropping at panel
+  // corners: for previews (the span is cached, so creating the map afterwards is quick).
+  function PreviewLocalSpan(Options) {
+    const Local = CreateLocalMap(Options);
+    if (Local.szSystem !== 'regional' || Options.fFlat === true) {
+      return Object.freeze({ nWidth: Local.nWidth, nHeight: Local.nHeight, rgszPanels: [Local.Anchor.szPanel] });
+    }
+    const Topo = Topology.BuildSpan(Local);
+    const szHome = Local.Anchor.szPanel;
+    const rgszPanels = Topo ? [...Topo.rgszPanels].sort((szA, szB) => (szB === szHome) - (szA === szHome)) : [szHome];
+    return Object.freeze({ nWidth: Local.nWidth, nHeight: Local.nHeight, rgszPanels });
   }
 
   // Local display coordinates: one hex high, with tile (0, 0) at the origin.
@@ -1943,6 +2286,7 @@
     FormatTrue,
     TrueDecimals,
     CreateLocalMap,
+    PreviewLocalSpan,
     LocalTilePoint,
     LocalPointToTile,
     LocalTileToUniversal,
@@ -2138,12 +2482,16 @@
     return Doc;
   }
 
-  // Options as Coordinates.CreateLocalMap, plus szName.
+  // Options as Coordinates.CreateLocalMap (fFlat: true keeps one flat grid even across
+  // panel seams, as in files written before maps could span seams), plus szName.
   function CreateLocalMap(Options) {
     const Local = Coordinates.CreateLocalMap(Options);
+    // Regional maps crossing panel seams take per-panel tiles (Topo.Span); others stay flat.
+    const Topo = Options.fFlat === true ? null : Topology.BuildSpan(Local);
     const Doc = NewDocument('local', CheckText(Options.szName === undefined ? '' : Options.szName, 'Map name'),
-      Local.nWidth * Local.nHeight);
+      Topo ? Topo.nTiles : Local.nWidth * Local.nHeight);
     Doc.Local = Local;
+    Doc.Topo = Topo;
     return Doc;
   }
 
@@ -2650,7 +2998,7 @@
   // Camera -------------------------------------------------------------------------
 
   function CreateCamera(nWidth = 800, nHeight = 600) {
-    return { dCenterX: 0, dCenterY: 0, dScale: 100, dMinScale: g_dMinScale, nWidth, nHeight };
+    return { dCenterX: 0, dCenterY: 0, dScale: 100, dMinScale: g_dMinScale, dMaxScale: g_dMaxScale, nWidth, nHeight };
   }
 
   function ResizeCamera(Camera, nWidth, nHeight) {
@@ -2658,8 +3006,8 @@
     Camera.nHeight = Math.max(1, nHeight);
   }
 
-  function ClampScale(dScale, dMinScale = g_dMinScale) {
-    return Math.min(g_dMaxScale, Math.max(dMinScale, dScale));
+  function ClampScale(dScale, dMinScale = g_dMinScale, dMaxScale = g_dMaxScale) {
+    return Math.min(dMaxScale, Math.max(dMinScale, dScale));
   }
 
   // [a, b, c, d, e, f] taking world points to screen pixels.
@@ -2691,7 +3039,7 @@
   // Zooms by dFactor, keeping the world point under rgdScreen fixed.
   function ZoomAt(Camera, rgdScreen, dFactor) {
     const rgdBefore = ScreenToWorld(Camera, rgdScreen);
-    Camera.dScale = ClampScale(Camera.dScale * dFactor, Camera.dMinScale);
+    Camera.dScale = ClampScale(Camera.dScale * dFactor, Camera.dMinScale, Camera.dMaxScale);
     const rgdAfter = ScreenToWorld(Camera, rgdScreen);
     Camera.dCenterX += rgdBefore[0] - rgdAfter[0];
     Camera.dCenterY += rgdBefore[1] - rgdAfter[1];
@@ -2711,7 +3059,9 @@
     const dFitScale = Math.min(dAvailableX / dWidth, dAvailableY / dHeight);
     // Large local rectangles must still fit; allow a further fourfold zoom out.
     Camera.dMinScale = Math.min(g_dMinScale, dFitScale / 4);
-    Camera.dScale = ClampScale(dFitScale, Camera.dMinScale);
+    // Small local spans are measured in panel edge units; let them zoom in as far.
+    Camera.dMaxScale = Math.max(g_dMaxScale, dFitScale * 64);
+    Camera.dScale = ClampScale(dFitScale, Camera.dMinScale, Camera.dMaxScale);
     CenterOn(Camera, [(rgdBounds[0] + rgdBounds[2]) / 2, (rgdBounds[1] + rgdBounds[3]) / 2]);
   }
 
@@ -2750,18 +3100,21 @@
 
   // Layouts: where each panel's frame sits in world space -----------------------------
 
-  function MakePlacement(szPanel, rgdFrameToWorld) {
+  // rgrgdFrameOutline (optional) replaces the panel polygon, e.g. the part of a panel
+  // inside a local map that spans seams.
+  function MakePlacement(szPanel, rgdFrameToWorld, rgrgdFrameOutline = null) {
     const Built = Projection.Build();
-    const rgrgdOutline = Built.Frames[szPanel].rgrgdPolygon.map((rgdPoint) => Projection.ApplyTransform(rgdFrameToWorld, rgdPoint));
+    const rgrgdFrame = rgrgdFrameOutline || Built.Frames[szPanel].rgrgdPolygon;
+    const rgrgdOutline = rgrgdFrame.map((rgdPoint) => Projection.ApplyTransform(rgdFrameToWorld, rgdPoint));
     return Object.freeze({
       szPanel,
       szName: Built.Panels[szPanel].szName,
       rgdFrameToWorld: Object.freeze([...rgdFrameToWorld]),
       rgdWorldToFrame: Object.freeze(Projection.InvertTransform(rgdFrameToWorld)),
-      rgrgdFrameOutline: Built.Frames[szPanel].rgrgdPolygon,
+      rgrgdFrameOutline: rgrgdFrame,
       rgrgdOutline: Object.freeze(rgrgdOutline.map((rgdPoint) => Object.freeze(rgdPoint))),
       rgdBounds: Object.freeze(BoundsOf(rgrgdOutline)),
-      rgdCenter: Object.freeze(Projection.ApplyTransform(rgdFrameToWorld, [0, 0])),
+      rgdCenter: Object.freeze(Projection.ApplyTransform(rgdFrameToWorld, rgrgdFrameOutline ? Util.Center(rgrgdFrame) : [0, 0])),
     });
   }
 
@@ -2778,6 +3131,7 @@
   const g_FocusLayouts = new Map();
   const g_PanelLayouts = new Map();
   const g_LocalGeometry = new WeakMap();
+  const g_SpanLayouts = new WeakMap();
 
   // A rendering-only geometry adapter. Local maps keep Doc.Topo null and use Model's
   // rectangular adjacency; no projection, partial tiles or seam graph is invented.
@@ -2826,17 +3180,54 @@
       }
       return g_PanelLayouts.get(szPanel);
     }
+    if (Doc.Topo && Doc.Topo.Span) {
+      return SpanLayout(Doc.Topo);
+    }
     return Doc.Topo ? BuildNetLayout() : MapGeometry(Doc).Layout;
   }
 
+  // A local map spanning seams: each panel's part of the rectangle, unfolded around the
+  // anchor panel (world = anchor frame, edge units, origin at tile (0, 0)).
+  function SpanLayout(Topo) {
+    if (!g_SpanLayouts.has(Topo)) {
+      const { Placements, szHome } = Topo.Span;
+      // The anchor panel draws last so it is on top.
+      const rgszPanels = Object.keys(Placements).sort((szA, szB) => (szA === szHome) - (szB === szHome));
+      g_SpanLayouts.set(Topo, MakeLayout('span', null, rgszPanels.map((szPanel) =>
+        MakePlacement(szPanel, Placements[szPanel].rgdFrameToWorld, Placements[szPanel].rgrgdFrameOutline))));
+    }
+    return g_SpanLayouts.get(Topo);
+  }
+
+  // The drawable outline of a panel (frame units), or of the whole map for 'local'
+  // (local world units).
   function FrameOutline(Geometry, szPanel) {
+    if (Geometry.Span) {
+      return szPanel === 'local' ? Geometry.Span.rgrgdOutline : Geometry.Span.Placements[szPanel].rgrgdFrameOutline;
+    }
     return Geometry.Local ? Geometry.Layout.rgPlacements[0].rgrgdFrameOutline
       : Projection.Build().Frames[szPanel].rgrgdPolygon;
   }
 
   // Intersect the actual equatorial plane and polar rays with the drawing frame.
+  // rgrgrgdEquatorSegments lists every equator segment (several for a span 'local' scope).
   function ReferenceGeometry(Doc, szPanel) {
     const Geometry = MapGeometry(Doc);
+    if (Geometry.Span) {
+      if (szPanel !== 'local') {
+        return PanelReference(Geometry, szPanel, Projection.Build().Frames[szPanel], (Point) => Point, (Point) => Point);
+      }
+      // Whole span: each placement's references, in local world units.
+      const rgrgrgdEquatorSegments = [];
+      const rgPoles = [];
+      for (const [szPart, Placement] of Object.entries(Geometry.Span.Placements)) {
+        const Reference = PanelReference(Geometry, szPart, Projection.Build().Frames[szPart], (Point) => Point, (Point) => Point);
+        const ToWorld = (Point) => Projection.ApplyTransform(Placement.rgdFrameToWorld, Point);
+        rgrgrgdEquatorSegments.push(...Reference.rgrgrgdEquatorSegments.map((rgrgdSegment) => rgrgdSegment.map(ToWorld)));
+        rgPoles.push(...Reference.rgPoles.map((Pole) => ({ szLabel: Pole.szLabel, rgdPoint: ToWorld(Pole.rgdPoint) })));
+      }
+      return { rgrgdEquator: rgrgrgdEquatorSegments.length === 1 ? rgrgrgdEquatorSegments[0] : [], rgrgrgdEquatorSegments, rgPoles };
+    }
     const Local = Doc.Local;
     const Frame = Projection.Build().Frames[Local ? Local.Anchor.szPanel : szPanel];
     const dMilesPerEdge = Local ? Projection.MilesPerEdge(Local.nPanelHexes) : Geometry.dMilesPerEdge;
@@ -2844,6 +3235,10 @@
     const rgdOrigin = Local ? [Local.Anchor.dEast / dMilesPerEdge, Local.Anchor.dNorth / dMilesPerEdge] : [0, 0];
     const ToFrame = (Point) => Util.Add(rgdOrigin, Util.Scale(Point, dUnit));
     const FromFrame = (Point) => Util.Scale(Util.Subtract(Point, rgdOrigin), 1 / dUnit);
+    return PanelReference(Geometry, szPanel, Frame, ToFrame, FromFrame);
+  }
+
+  function PanelReference(Geometry, szPanel, Frame, ToFrame, FromFrame) {
     const Polygon = FrameOutline(Geometry, szPanel);
     const rgrgdEquator = [];
     for (const [A, B] of Util.Boundary(Polygon)) {
@@ -2869,7 +3264,7 @@
         rgPoles.push({ szLabel, rgdPoint });
       }
     }
-    return { rgrgdEquator, rgPoles };
+    return { rgrgdEquator, rgrgrgdEquatorSegments: rgrgdEquator.length === 2 ? [rgrgdEquator] : [], rgPoles };
   }
 
   // Every panel at its place in the net.
@@ -2949,6 +3344,9 @@
       const dHalfWidth = Built.dEquatorialWidth / 2;
       const dRadius = Lattice.HexRadius(Topo.dD);
       for (const szOther of [Info.szWest, Info.szEast]) {
+        if (!szOther || !Topo.Panels[szOther]) {
+          continue;
+        }
         const Seam = Projection.FindSeam(szOther, szPanel);
         const rgdToPanel = Seam.szPanelA === szOther ? Seam.rgdAToB : Seam.rgdBToA;
         const Other = Topo.Panels[szOther];
@@ -3024,8 +3422,19 @@
     return Seam.szPanelA === szFrom ? Seam.rgdAToB : Seam.rgdBToA;
   }
 
-  function PanelCopies(szPanel) {
+  // The panel itself and each edge neighbour it is drawn beside. In a local span only
+  // neighbours unfolded next to it count; global feature drawing uses every seam.
+  function PanelCopies(szPanel, Topo = null) {
     const rgCopies = [{ szPanel, rgdTransform: g_rgdIdentity }];
+    if (Topo && Topo.Span) {
+      for (const Seam of Projection.Build().Seams) {
+        const szOther = Seam.szPanelA === szPanel ? Seam.szPanelB : Seam.szPanelB === szPanel ? Seam.szPanelA : null;
+        if (szOther && Topology.SpanLinked(Topo, szPanel, szOther)) {
+          rgCopies.push({ szPanel: szOther, rgdTransform: Seam.szPanelA === szPanel ? Seam.rgdAToB : Seam.rgdBToA });
+        }
+      }
+      return rgCopies;
+    }
     for (const Seam of Projection.Build().Seams) {
       if (Seam.szPanelA === szPanel) {
         rgCopies.push({ szPanel: Seam.szPanelB, rgdTransform: Seam.rgdAToB });
@@ -3049,7 +3458,7 @@
   }
 
   function FeatureCopies(Topo, Layout, nTile) {
-    return PanelCopies(Topo.rgTiles[nTile].szPanel).flatMap((Copy) => {
+    return PanelCopies(Topo.rgTiles[nTile].szPanel, Topo).flatMap((Copy) => {
       const Placement = FindPlacement(Layout, Copy.szPanel);
       return Placement ? [{
         Placement,
@@ -3086,7 +3495,7 @@
         Projection.ApplyTransform(PanelTransform(szB, szA), rgdControlB),
         rgdB,
       ];
-      for (const Copy of PanelCopies(szA)) {
+      for (const Copy of PanelCopies(szA, Topo)) {
         const rgrgdMapped = rgrgdControl.map((rgdPoint) => Projection.ApplyTransform(Copy.rgdTransform, rgdPoint));
         if (BoundsIntersect(BoundsOf(rgrgdMapped), BoundsOf(FrameOutline(Topo, Copy.szPanel)))) {
           rgCurves.push({ szPanel: Copy.szPanel, nPoint: nIndex, rgrgdControl: rgrgdMapped });
@@ -3641,6 +4050,292 @@
 })(globalThis);
 </script>
 
+<script data-module="Resample">
+(function (Root) {
+  'use strict';
+  const RpgMap = Root.RpgMap = Root.RpgMap || {};
+  const { Util, Projection, Lattice, Topology, Coordinates, Terrain, Model, View, Edit } = RpgMap;
+  const { Require } = Util;
+
+  // Cropping and rescaling copy a map onto a new tile grid through panel-frame points, so
+  // global, single-panel, flat local and seam-crossing local maps all mix freely.
+  // Same or finer tiles take the source tile under their centre (upscaled tiles repeat
+  // the original); coarser tiles take the most common source terrain among the source
+  // tiles whose anchors fall inside them (ties: the terrain under the centre, else the
+  // lowest id).
+
+  const g_PanelEdges = new Map();
+
+  // Each panel edge as { szOther, rgdA, rgdB, nInside } in the panel's frame, where
+  // nInside is the sign of Cross(B − A, P − A) for points P inside the panel.
+  function PanelEdges(szPanel) {
+    if (!g_PanelEdges.has(szPanel)) {
+      const Built = Projection.Build();
+      const Frame = Built.Frames[szPanel];
+      const rgEdges = Built.Seams.filter((Seam) => Seam.szPanelA === szPanel || Seam.szPanelB === szPanel).map((Seam) => {
+        const [rgdA, rgdB] = Seam.rgszVertices.map((szId) => Projection.SolidToFrame(Frame, Built.Vertices[szId]));
+        return { szOther: Seam.szPanelA === szPanel ? Seam.szPanelB : Seam.szPanelA, rgdA, rgdB };
+      });
+      const rgdCenter = Util.Center(rgEdges.flatMap((Edge) => [Edge.rgdA, Edge.rgdB]));
+      g_PanelEdges.set(szPanel, rgEdges.map((Edge) => Object.freeze({ ...Edge, nInside: Math.sign(Side(Edge, rgdCenter)) })));
+    }
+    return g_PanelEdges.get(szPanel);
+  }
+
+  function Side(Edge, rgdPoint) {
+    const rgdEdge = Util.Subtract(Edge.rgdB, Edge.rgdA);
+    return (rgdEdge[0] * (rgdPoint[1] - Edge.rgdA[1]) - rgdEdge[1] * (rgdPoint[0] - Edge.rgdA[0])) / Math.hypot(...rgdEdge);
+  }
+
+  // A frame point that may lie beyond its panel (flat local maps run past seams), moved
+  // across the seams it lies beyond into the panel that holds it.
+  function NormalizePoint(szPanel, rgdPoint) {
+    for (let nStep = 0; nStep < 4; nStep++) {
+      let Worst = null;
+      let dWorst = 1e-12;
+      for (const Edge of PanelEdges(szPanel)) {
+        const dOutside = -Edge.nInside * Side(Edge, rgdPoint);
+        if (dOutside > dWorst) {
+          dWorst = dOutside;
+          Worst = Edge;
+        }
+      }
+      if (!Worst) {
+        break;
+      }
+      rgdPoint = Projection.ApplyTransform(View.PanelTransform(szPanel, Worst.szOther), rgdPoint);
+      szPanel = Worst.szOther;
+    }
+    return { szPanel, rgdPoint };
+  }
+
+  function MilesPerEdge(Doc) {
+    return Model.MilesPerEdge(Doc);
+  }
+
+  // The tile's feature anchor as { szPanel, rgdPoint } (panel frame, edge units).
+  function TilePoint(Doc, nTile) {
+    if (Doc.Topo) {
+      return { szPanel: Doc.Topo.rgTiles[nTile].szPanel, rgdPoint: View.FeatureAnchor(Doc.Topo, nTile) };
+    }
+    const Location = Model.TileToUniversal(Doc, nTile);
+    const dMilesPerEdge = MilesPerEdge(Doc);
+    return NormalizePoint(Location.szPanel, [Location.dEast / dMilesPerEdge, Location.dNorth / dMilesPerEdge]);
+  }
+
+  // The tile of Doc containing a panel-frame point, or −1 when the map does not cover it.
+  function TileAtPoint(Doc, szPanel, rgdPoint) {
+    if (Doc.Topo) {
+      const Info = Doc.Topo.Panels[szPanel];
+      if (!Info) {
+        return -1;
+      }
+      const [nQ, nJ] = Topology.LatticeNearest(Info.Lattice, rgdPoint[0], rgdPoint[1]);
+      return Topology.LocateLattice(Doc.Topo, szPanel, nQ, nJ);
+    }
+    const Local = Doc.Local;
+    let rgdFrame = rgdPoint;
+    if (szPanel !== Local.Anchor.szPanel) {
+      if (!Projection.FindSeam(szPanel, Local.Anchor.szPanel)) {
+        return -1;
+      }
+      rgdFrame = Projection.ApplyTransform(View.PanelTransform(szPanel, Local.Anchor.szPanel), rgdPoint);
+    }
+    const dScale = MilesPerEdge(Doc) / Local.dHexMiles;
+    const rgnXY = Coordinates.LocalPointToTile(Local, [
+      rgdFrame[0] * dScale - Local.Anchor.dEast / Local.dHexMiles,
+      rgdFrame[1] * dScale - Local.Anchor.dNorth / Local.dHexMiles,
+    ]);
+    return rgnXY ? Model.LocalTileIndex(Doc, rgnXY[0], rgnXY[1]) : -1;
+  }
+
+  function PanelHexes(Doc) {
+    return Doc.Global ? Doc.Global.nPanelHexes : Doc.Local.nPanelHexes;
+  }
+
+  // For each Source tile, the Target tile holding its anchor (or −1).
+  function MapSourceTiles(Source, Target) {
+    const rgnMap = new Int32Array(Source.nTiles);
+    for (let nTile = 0; nTile < Source.nTiles; nTile++) {
+      const Point = TilePoint(Source, nTile);
+      rgnMap[nTile] = TileAtPoint(Target, Point.szPanel, Point.rgdPoint);
+    }
+    return rgnMap;
+  }
+
+  // Copies terrain, landmarks, labels and overlays from Source onto the empty Target
+  // (both must use the same panel size). Returns Target.
+  function Transfer(Source, Target) {
+    Require(PanelHexes(Source) === PanelHexes(Target), 'Both maps must use the same panel size');
+    const dRatio = Model.HexMiles(Source) / Model.HexMiles(Target);
+    const rgnSourceToTarget = MapSourceTiles(Source, Target);
+    const rgnCenterSource = new Int32Array(Target.nTiles);
+    for (let nTile = 0; nTile < Target.nTiles; nTile++) {
+      const Point = TilePoint(Target, nTile);
+      rgnCenterSource[nTile] = TileAtPoint(Source, Point.szPanel, Point.rgdPoint);
+    }
+    const CenterTerrain = (nTile) => (rgnCenterSource[nTile] >= 0 ? Source.rgnTerrain[rgnCenterSource[nTile]] : Terrain.g_nWaterId);
+    if (dRatio > 1 - 1e-9) {
+      for (let nTile = 0; nTile < Target.nTiles; nTile++) {
+        Target.rgnTerrain[nTile] = CenterTerrain(nTile);
+      }
+    } else {
+      const nTerrains = Terrain.g_rgTerrains.length;
+      const Votes = new Map();
+      rgnSourceToTarget.forEach((nTarget, nSource) => {
+        if (nTarget >= 0) {
+          if (!Votes.has(nTarget)) {
+            Votes.set(nTarget, new Uint32Array(nTerrains));
+          }
+          Votes.get(nTarget)[Source.rgnTerrain[nSource]]++;
+        }
+      });
+      for (let nTile = 0; nTile < Target.nTiles; nTile++) {
+        Target.rgnTerrain[nTile] = Votes.has(nTile) ? MostCommon(Votes.get(nTile), CenterTerrain(nTile)) : CenterTerrain(nTile);
+      }
+    }
+    for (const nSource of [...Source.Landmarks.keys()].sort((nA, nB) => nA - nB)) {
+      const nTarget = rgnSourceToTarget[nSource];
+      if (nTarget >= 0 && !Target.Landmarks.has(nTarget)) {
+        Model.SetLandmark(Target, nTarget, Source.Landmarks.get(nSource));
+      }
+    }
+    const Round = (dValue) => Math.round(dValue * 100) / 100 || 0;
+    for (const Label of Source.rgLabels) {
+      const nTarget = rgnSourceToTarget[Label.nTile];
+      if (nTarget >= 0) {
+        // Label units are 1/48 hex: keep the label's size and offset on the ground.
+        Model.AddLabel(Target, {
+          ...Label, nTile: nTarget, dSize: Math.max(0.01, Round(Label.dSize * dRatio)),
+          dDx: Round(Label.dDx * dRatio), dDy: Round(Label.dDy * dRatio),
+        });
+      }
+    }
+    const UsedIds = new Set(Source.rgOverlays.map((Overlay) => Overlay.szId));
+    for (const Overlay of Source.rgOverlays) {
+      OverlayPieces(Target, Overlay.rgnTiles.map((nTile) => rgnSourceToTarget[nTile])).forEach((rgnTiles, nPiece) => {
+        let szId = Overlay.szId;
+        if (nPiece > 0) {
+          let nSuffix = nPiece + 1;
+          while (UsedIds.has(`${Overlay.szId}_${nSuffix}`)) {
+            nSuffix++;
+          }
+          szId = `${Overlay.szId}_${nSuffix}`;
+          UsedIds.add(szId);
+        }
+        Model.AddOverlay(Target, { szType: Overlay.szType, szName: Overlay.szName, szStyle: Overlay.szStyle, szId, rgnTiles });
+      });
+    }
+    Target.nRevision = 0;
+    return Target;
+  }
+
+  function MostCommon(rgnVotes, nCenter) {
+    const nBest = Math.max(...rgnVotes);
+    return rgnVotes[nCenter] === nBest ? nCenter : rgnVotes.indexOf(nBest);
+  }
+
+  // Splits a mapped overlay path where it leaves the map, drops repeats, and bridges
+  // tiles that are no longer adjacent with shortest paths. Pieces need two tiles.
+  function OverlayPieces(Target, rgnMapped) {
+    const rgPieces = [];
+    let rgnPiece = [];
+    const Finish = () => {
+      if (rgnPiece.length >= 2) {
+        rgPieces.push(rgnPiece);
+      }
+      rgnPiece = [];
+    };
+    for (const nTile of rgnMapped) {
+      if (nTile < 0) {
+        Finish();
+        continue;
+      }
+      const nLast = rgnPiece.length > 0 ? rgnPiece[rgnPiece.length - 1] : -1;
+      if (nLast === nTile) {
+        continue;
+      }
+      if (nLast < 0 || Model.AreAdjacent(Target, nLast, nTile)) {
+        rgnPiece.push(nTile);
+        continue;
+      }
+      const rgnPath = Edit.FindPath(Target, nLast, nTile);
+      if (rgnPath) {
+        rgnPiece.push(...rgnPath.slice(1));
+      } else {
+        Finish();
+        rgnPiece.push(nTile);
+      }
+    }
+    Finish();
+    return rgPieces;
+  }
+
+  // Options: { szName?, nWidth, nHeight, szSystem, szScale, Anchor } (as Model.CreateLocalMap;
+  // the panel size comes from Source). A new local map copied from part of Source.
+  function Crop(Source, Options) {
+    const Target = Model.CreateLocalMap({
+      szName: Options.szName === undefined ? Source.szName : Options.szName,
+      nWidth: Options.nWidth, nHeight: Options.nHeight, szSystem: Options.szSystem, szScale: Options.szScale,
+      Anchor: Options.Anchor, nPanelHexes: PanelHexes(Source),
+    });
+    return Transfer(Source, Target);
+  }
+
+  // Tile scales a map of this kind can be rescaled to, as [szSystem, szScale] pairs.
+  function RescaleOptions(Doc) {
+    if (Doc.szKind === 'global') {
+      return Topology.g_rgszTileScales.map((szScale) => ['regional', szScale]);
+    }
+    if (Doc.szKind === 'panel') {
+      return ['XL', 'L', 'M'].map((szScale) => ['regional', szScale]);
+    }
+    return Object.keys(Lattice.g_Scales).flatMap((szSystem) =>
+      Object.keys(Lattice.g_Scales[szSystem].Sizes).map((szScale) => [szSystem, szScale]));
+  }
+
+  // Local map options at a new scale: the same ground (at least one tile) and the same
+  // north-west corner. Hexes are one unit high with a circumradius of 1/√3, so the west
+  // tip and top edge of tile (0, 0) stay put.
+  function LocalRescaleOptions(Local, szSystem, szScale) {
+    const dNewMiles = Lattice.ScaleMiles(szSystem, szScale);
+    const dRatio = Local.dHexMiles / dNewMiles;
+    return {
+      nWidth: Math.max(1, Math.round(Local.nWidth * dRatio)),
+      nHeight: Math.max(1, Math.round(Local.nHeight * dRatio)),
+      szSystem, szScale, nPanelHexes: Local.nPanelHexes,
+      Anchor: Coordinates.MakeLocation(Local.Anchor.szPanel,
+        Local.Anchor.dEast + (dNewMiles - Local.dHexMiles) / Math.sqrt(3),
+        Local.Anchor.dNorth + (Local.dHexMiles - dNewMiles) / 2),
+    };
+  }
+
+  // A copy of Doc at another tile scale. Global and panel maps keep their extent; a local
+  // map keeps its ground size and north-west corner.
+  function Rescale(Doc, szSystem, szScale) {
+    Require(RescaleOptions(Doc).some(([szS, szZ]) => szS === szSystem && szZ === szScale),
+      `A ${Doc.szKind} map cannot use the ${szSystem} ${szScale} scale`);
+    if (Doc.szKind !== 'local') {
+      const Options = { szName: Doc.szName, nPanelHexes: Doc.Global.nPanelHexes, szTileScale: szScale };
+      const Target = Doc.szKind === 'global' ? Model.CreateGlobalMap(Options)
+        : Model.CreatePanelMap({ ...Options, szPanel: Doc.Global.szPanel });
+      return Transfer(Doc, Target);
+    }
+    return Crop(Doc, LocalRescaleOptions(Doc.Local, szSystem, szScale));
+  }
+
+  RpgMap.Resample = Object.freeze({
+    NormalizePoint,
+    TilePoint,
+    TileAtPoint,
+    Transfer,
+    Crop,
+    RescaleOptions,
+    LocalRescaleOptions,
+    Rescale,
+  });
+})(globalThis);
+</script>
 <script data-module="FileFormat">
 (function (Root) {
   'use strict';
@@ -3873,7 +4568,7 @@
       Doc = { ...Doc, Local: Coordinates.CreateLocalMap({ ...Doc.Local, Anchor }) };
     }
     const rgszLines = [g_szMagic, '', '[map]', `kind = ${Doc.szKind}`, `name = ${Quote(Doc.szName)}`];
-    if (Doc.Topo) {
+    if (!Doc.Local) {
       rgszLines.push(`panelHexes = ${Doc.Global.nPanelHexes}`, `tileScale = ${Doc.Global.szTileScale}`);
       if (Doc.szKind === 'panel') {
         rgszLines.push(`panel = ${Projection.Build().Panels[Doc.Global.szPanel].szName}`);
@@ -3890,7 +4585,8 @@
     }
     rgszLines.push('', '[legend]', ...Terrain.g_rgTerrains.map((Item) => `${Item.szChar} ${Item.szKey}`));
     if (Doc.Topo) {
-      for (const szPanel of GreekPanelOrder().filter((sz) => Object.hasOwn(Doc.Topo.Panels, sz))) {
+      // Local maps that span seams list only the panels holding some of their tiles.
+      for (const szPanel of GreekPanelOrder().filter((sz) => Doc.Topo.rgszPanels.includes(sz))) {
         const Grid = PanelGrid(Doc.Topo, szPanel);
         rgszLines.push('', `[panel ${Projection.Build().Panels[szPanel].szName}]`,
           `columns = ${Grid.nColumns}`, `rows = ${Grid.nRows}`,
@@ -4012,7 +4708,9 @@
     return Number(szValue) || 0;
   }
 
-  function CreateDocument(Section) {
+  // fFlat: the file has a [local] grid, so the map stays one flat grid even if it
+  // crosses a panel seam (files written before local maps could span seams).
+  function CreateDocument(Section, fFlat = false) {
     const { Values, nNext } = ReadKeyValues(Section,
       ['kind', 'name', 'panelHexes', 'tileScale', 'panel', 'width', 'height', 'system', 'size', 'anchor']);
     Check(nNext === Section.rgLines.length, Section.rgLines[nNext] ? Section.rgLines[nNext].nLine : 0, 'Expected "key = value" in [map]');
@@ -4049,6 +4747,7 @@
       Anchor: AtLine(Anchor.nLine, () => Coordinates.ParseUniversal(Anchor.szValue)),
       nPanelHexes,
       szName,
+      fFlat,
     }));
   }
 
@@ -4226,7 +4925,7 @@
     const MapSection = rgSections.find((Section) => Section.szName === 'map');
     Check(MapSection !== undefined, 0, 'Missing [map] section');
     Check(rgSections[0] === MapSection, rgSections[0].nLine, '[map] must be the first section');
-    const Doc = CreateDocument(MapSection);
+    const Doc = CreateDocument(MapSection, rgSections.some((Section) => Section.szName === 'local'));
     const LegendSection = rgSections.find((Section) => Section.szName === 'legend');
     const Legend = LegendSection ? ParseLegend(LegendSection) : DefaultLegend();
     if (Doc.Topo) {
@@ -4239,7 +4938,7 @@
         if (Section.szName === 'panel') {
           const szPanel = Coordinates.PanelIdByName(Section.szArgument);
           Check(szPanel !== null, Section.nLine, `Unknown panel "${Section.szArgument}"`);
-          Check(Object.hasOwn(Doc.Topo.Panels, szPanel), Section.nLine, `Panel "${Section.szArgument}" is outside this map`);
+          Check(Doc.Topo.rgszPanels.includes(szPanel), Section.nLine, `Panel "${Section.szArgument}" is outside this map`);
           ParseGrid(Doc, Section, PanelGrid(Doc.Topo, szPanel), Legend, ['latticeColumn', 'latticeRow']);
           Remaining.delete(szPanel);
         }
@@ -4247,7 +4946,7 @@
       Check(Remaining.size === 0, 0, `Missing panel sections: ${GreekPanelOrder().filter((sz) => Remaining.has(sz)).map((sz) => Built.Panels[sz].szName).join(', ')}`);
     } else {
       for (const Section of rgSections) {
-        Check(Section.szName !== 'panel', Section.nLine, '[panel …] is only for global maps');
+        Check(Section.szName !== 'panel', Section.nLine, '[panel …] is only for global maps and local maps that cross panel seams');
       }
       const LocalSection = rgSections.find((Section) => Section.szName === 'local');
       Check(LocalSection !== undefined, 0, 'Missing [local] section');
@@ -4330,6 +5029,41 @@
   function Build(Doc, szPanel = Doc.Local ? 'local' : Doc.Global.szPanel || null) {
     const Geometry = View.MapGeometry(Doc);
     const rgrgdOutline = Outline(Doc, szPanel);
+    const rgdToHex = [1 / Geometry.dD, 0, 0, 1 / Geometry.dD, 0, 0];
+    let Data;
+    if (Geometry.Span && szPanel === 'local') {
+      // A local map spanning seams: each panel's part is built in its own unfolded place.
+      // Parts are not stitched, so regions and shorelines stop at the seams.
+      Data = { rgrgdPoints: [], rgCells: [], rgEdges: [], rgRegions: [], rgShorelines: [] };
+      for (const [szPart, Placement] of Object.entries(Geometry.Span.Placements)) {
+        const rgdPartToHex = Projection.ComposeTransforms(Placement.rgdFrameToWorld, rgdToHex);
+        const Part = BuildPart(Doc, Geometry, szPart, rgdPartToHex,
+          Placement.rgrgdFrameOutline.map((Point) => Projection.ApplyTransform(rgdPartToHex, Point)));
+        const nPoints = Data.rgrgdPoints.length, nCells = Data.rgCells.length, nRegions = Data.rgRegions.length;
+        for (const Edge of Part.rgEdges) {
+          Edge.nA += nPoints;
+          Edge.nB += nPoints;
+          Edge.rgnCells = Edge.rgnCells.map((nCell) => nCell + nCells);
+        }
+        for (const Cell of Part.rgCells) {
+          Cell.rgnVertices = Cell.rgnVertices.map((nVertex) => nVertex + nPoints);
+          Cell.nRegion += nRegions;
+        }
+        Data.rgrgdPoints.push(...Part.rgrgdPoints);
+        Data.rgCells.push(...Part.rgCells);
+        Data.rgEdges.push(...Part.rgEdges);
+        Data.rgRegions.push(...Part.rgRegions);
+        Data.rgShorelines.push(...Part.rgShorelines);
+      }
+    } else {
+      Data = BuildPart(Doc, Geometry, szPanel, rgdToHex, rgrgdOutline);
+    }
+    return { szPanel, rgrgdOutline, rgdBounds: View.BoundsOf(rgrgdOutline), ...Data };
+  }
+
+  // Cells, regions and shorelines of szPanel's tiles: rgdPanelToHex maps its frame to
+  // export units, and rgrgdClip (export units) bounds the drawing.
+  function BuildPart(Doc, Geometry, szPanel, rgdPanelToHex, rgrgdClip) {
     const rgrgdPoints = [], rgCells = [], rgEdges = [];
     const Buckets = new Map(), Edges = new Map();
     // Adjacent hexes and clipped seam copies can differ in their last float bits.
@@ -4357,14 +5091,15 @@
       return nVertex;
     };
     for (const Group of View.PanelTileGroups(Geometry, szPanel)) {
+      const rgdToHex = Projection.ComposeTransforms(Group.rgdToPanel, rgdPanelToHex);
       for (const nTile of Group.rgnTiles) {
         const Tile = Geometry.rgTiles[nTile];
         const rgPolygons = Tile.rgPieces
           ? Tile.rgPieces.filter((Piece) => Piece.szPanel === szPanel).map((Piece) => Piece.rgrgdPolygon)
           : [Lattice.HexPolygon(Tile.rgdCenter, Geometry.dD)];
         for (const Polygon of rgPolygons) {
-          const Mapped = Polygon.map((Point) => Util.Scale(Projection.ApplyTransform(Group.rgdToPanel, Point), 1 / Geometry.dD));
-          const Clipped = Util.ClipPolygonToConvex(Mapped, rgrgdOutline);
+          const Mapped = Polygon.map((Point) => Projection.ApplyTransform(rgdToHex, Point));
+          const Clipped = Util.ClipPolygonToConvex(Mapped, rgrgdClip);
           if (Clipped.length < 3 || Math.abs(Util.PolygonArea(Clipped)) < 1e-12) {
             continue;
           }
@@ -4431,10 +5166,7 @@
         ShoreEdges.push(fFirstWater ? { nA: Edge.nB, nB: Edge.nA } : Edge);
       }
     }
-    return {
-      szPanel, rgrgdOutline, rgdBounds: View.BoundsOf(rgrgdOutline), rgrgdPoints, rgCells, rgEdges, rgRegions,
-      rgShorelines: TracePaths(ShoreEdges, rgrgdPoints),
-    };
+    return { rgrgdPoints, rgCells, rgEdges, rgRegions, rgShorelines: TracePaths(ShoreEdges, rgrgdPoints) };
   }
 
   // Chaikin corner cutting, preserving the endpoints of panel-clipped coastlines.
@@ -4895,6 +5627,20 @@
     return `M${Mapped[0]}C${Mapped.slice(1).join(' ')}`;
   }
 
+  // Overlay curves for the export scope, in its world units. A spanning local map draws
+  // each segment once, from the panel of its first tile; the seam copies of a segment
+  // coincide once unfolded, and the map clip trims it.
+  function SvgCurves(Geometry, Layout, Overlay, szPanel) {
+    const rgCurves = View.OverlayCurves(Geometry, Overlay);
+    if (!Geometry.Span) {
+      return rgCurves.filter((Item) => Item.szPanel === szPanel);
+    }
+    return rgCurves.filter((Item) => Item.szPanel === Geometry.rgTiles[Overlay.rgnTiles[Item.nPoint]].szPanel).map((Item) => {
+      const Placement = View.FindPlacement(Layout, Item.szPanel);
+      return { nPoint: Item.nPoint, rgrgdControl: Item.rgrgdControl.map((Point) => Projection.ApplyTransform(Placement.rgdFrameToWorld, Point)) };
+    });
+  }
+
   function Write(Doc, Options = {}) {
     const szPanel = Options.szPanel === undefined ? (Doc.Local ? 'local' : Doc.Global.szPanel) : Options.szPanel;
     const Layers = Object.fromEntries(g_Layers.map(([szKey, , fDefault]) => [szKey, fDefault]));
@@ -4907,7 +5653,9 @@
     const Size = Dimensions(Doc, szPanel, Options.nWidth === undefined ? g_nDefaultWidth : Options.nWidth, Layers.reference);
     const Geometry = View.MapGeometry(Doc);
     const RegionsData = Regions.Build(Doc, szPanel);
-    const Layout = { rgPlacements: [View.FindPlacement(Doc.Local ? View.MapLayout(Doc) : View.BuildFocusLayout(szPanel), szPanel)] };
+    // Local maps that span seams draw every panel part at its unfolded place.
+    const Layout = Geometry.Span ? View.MapLayout(Doc)
+      : { rgPlacements: [View.FindPlacement(Doc.Local ? View.MapLayout(Doc) : View.BuildFocusLayout(szPanel), szPanel)] };
     const rgdHexToSvg = [g_dHexUnits, 0, 0, -g_dHexUnits, -Size.rgdBounds[0] * g_dHexUnits, Size.rgdBounds[3] * g_dHexUnits];
     const rgdFrameToSvg = Projection.ComposeTransforms([1 / Geometry.dD, 0, 0, 1 / Geometry.dD, 0, 0], rgdHexToSvg);
     const Outline = { rgrgdPoints: [...RegionsData.rgrgdOutline, RegionsData.rgrgdOutline[0]], fClosed: true };
@@ -5007,7 +5755,7 @@
           Lines.push(`<circle cx="${NumberText(Point[0])}" cy="${NumberText(Point[1])}" r="3" fill="${Style.szColor}" stroke="none"/>`);
         }
       }
-      for (const Curve of View.OverlayCurves(Geometry, Overlay).filter((Item) => Item.szPanel === szPanel)) {
+      for (const Curve of SvgCurves(Geometry, Layout, Overlay, szPanel)) {
         if (Overlay.szType !== 'river') {
           Lines.push(`<path data-point="${Curve.nPoint}" d="${CurveData(Curve.rgrgdControl, rgdFrameToSvg)}"/>`);
           continue;
@@ -5064,8 +5812,8 @@
       const dPixel = Size.dWidth / g_nDefaultWidth;
       const dRadius = 9 * dPixel;
       Lines.push(`<g id="layer-reference" fill="none" stroke="#d32f2f" stroke-width="${NumberText(1.5 * dPixel)}">`);
-      if (Reference.rgrgdEquator.length === 2) {
-        Lines.push(`<path data-reference="equator" d="${PathData({ rgrgdPoints: Reference.rgrgdEquator, fClosed: false }, rgdFrameToSvg)}"/>`);
+      for (const rgrgdSegment of Reference.rgrgrgdEquatorSegments) {
+        Lines.push(`<path data-reference="equator" d="${PathData({ rgrgdPoints: rgrgdSegment, fClosed: false }, rgdFrameToSvg)}"/>`);
       }
       const Center = Projection.ApplyTransform(rgdFrameToSvg, Util.Center(View.FrameOutline(Geometry, szPanel)));
       for (const Pole of Reference.rgPoles) {
@@ -5764,7 +6512,7 @@
 (function (Root) {
   'use strict';
   const RpgMap = Root.RpgMap = Root.RpgMap || {};
-  const { Util, Projection, Lattice, Coordinates, Terrain, Model, History, View, Edit, FileFormat, SvgExport, Renderer } = RpgMap;
+  const { Util, Projection, Lattice, Coordinates, Terrain, Model, History, View, Edit, Resample, FileFormat, SvgExport, Renderer } = RpgMap;
 
   const g_szVersion = '1.0.0';
   const g_nLargeExportBytes = 4e6;
@@ -5854,7 +6602,7 @@
     let szCoordinates = '\u00a0';
     if (State.nHoverTile >= 0) {
       const Tile = View.MapGeometry(Doc).rgTiles[State.nHoverTile];
-      const szPanel = Doc.Local ? 'Local' : `${Projection.Build().Panels[Tile.szPanel].szName} (${Projection.Build().Panels[Tile.szPanel].szLetter})`;
+      const szPanel = Doc.Local && !Doc.Topo ? 'Local' : `${Projection.Build().Panels[Tile.szPanel].szName} (${Projection.Build().Panels[Tile.szPanel].szLetter})`;
       szCoordinates = [
         TileLocationText(State.nHoverTile),
         TrueLocationText(State.nHoverTile),
@@ -5867,7 +6615,7 @@
       ].join(' \u00b7 ');
     }
     Root.document.getElementById('status-coordinates').textContent = szCoordinates;
-    const szView = Doc.Local ? 'Local view' : State.Layout.szMode === 'net' ? 'Net view'
+    const szView = Doc.Local ? (Doc.Topo ? `Local view across ${Doc.Topo.rgszPanels.length} panels` : 'Local view') : State.Layout.szMode === 'net' ? 'Net view'
       : `${Doc.szKind === 'panel' ? 'Single panel' : 'Focus'}: ${Projection.Build().Panels[State.Layout.szFocus].szName}`;
     const Draw = State.LastDraw;
     Root.document.getElementById('status-message').textContent = [
@@ -6134,10 +6882,11 @@
         return;
       }
       try {
-        const Checked = Coordinates.CreateLocalMap(LocalOptions());
+        const Options = LocalOptions();
+        const Checked = Coordinates.CreateLocalMap(Options);
         const nDecimals = FileFormat.CoordinateDecimals(Checked.dHexMiles);
         Preview.textContent = `${Checked.szSystem === 'regional' ? 'Snapped anchor' : 'Free anchor'}: ${Coordinates.FormatUniversal(Checked.Anchor, Math.max(5, nDecimals))}. `
-          + 'The local grid stays flat in this panel frame, even beyond its boundary. New maps start as water.';
+          + LocalSpanText(Options) + ' New maps start as water.';
       } catch (Caught) {
         Preview.textContent = `Check local settings: ${Caught.message}`;
       }
@@ -6189,6 +6938,230 @@
     });
     Dialog.replaceChildren(Form);
     UpdateScales(Local ? Local.szScale : 'M');
+    State.fSpaceDown = false;
+    Dialog.showModal();
+  }
+
+  // Describes how a local map meets panel seams, for dialog previews.
+  function LocalSpanText(Options) {
+    if (Options.szSystem !== 'regional') {
+      return 'Yard-scale maps are always one flat grid.';
+    }
+    const Span = Coordinates.PreviewLocalSpan(Options);
+    const szCrop = Span.nWidth !== Options.nWidth || Span.nHeight !== Options.nHeight
+      ? ` Cropped to ${Span.nWidth} x ${Span.nHeight} so it stops at a panel corner.` : '';
+    if (Span.rgszPanels.length === 1) {
+      return `The map lies in one panel.${szCrop}`;
+    }
+    const szPanels = Span.rgszPanels.map((szPanel) => Projection.Build().Panels[szPanel].szName).join(', ');
+    return `The map crosses panel seams (${szPanels}); tiles follow each panel's grid, as on the global map.${szCrop}`;
+  }
+
+  function ScaleText(szSystem, szScale) {
+    return `${szSystem} ${szScale} - ${Lattice.g_Scales[szSystem].Sizes[szScale]} ${Lattice.g_Scales[szSystem].szUnit} per hex`;
+  }
+
+  function CurrentScale(Doc) {
+    return Doc.Local ? [Doc.Local.szSystem, Doc.Local.szScale] : ['regional', Doc.Global.szTileScale];
+  }
+
+  // Shared ending for Crop and Rescale: build the new map after the busy state paints,
+  // then open it (replacing the current map) or download it.
+  function FinishResample(Dialog, Form, Preview, ErrorText, fnBuild, fOpen, szVerb, fnRefresh) {
+    if (fOpen && !ConfirmDiscard(`replace it with the ${szVerb} map`)) {
+      return;
+    }
+    SetBusy(Form, true);
+    Preview.textContent = 'Building map\u2026';
+    RunAfterPaint(() => {
+      let Doc;
+      try {
+        Doc = fnBuild();
+      } catch (Caught) {
+        fnRefresh();
+        ErrorText.textContent = Caught.message;
+        return;
+      } finally {
+        SetBusy(Form, false);
+      }
+      Dialog.close();
+      if (fOpen) {
+        LoadDocument(Doc, `Opened the ${szVerb} map (${Doc.nTiles.toLocaleString('en-US')} tiles); save it to keep it`, true);
+        ClearAutosave();
+        ScheduleAutosave();
+      } else {
+        const szName = FileFormat.FileName(Doc);
+        Download(FileFormat.Write(Doc), 'text/plain', szName);
+        SetMessage(`Downloaded the ${szVerb} map as ${szName}`);
+      }
+    });
+  }
+
+  // Copies part of the open map (any kind) into a new local map at any scale.
+  function CropMap() {
+    const Dialog = Root.document.getElementById('crop-map-dialog');
+    if (Dialog.open) {
+      return;
+    }
+    if (State.Stroke || State.LabelDrag) {
+      SetMessage('Finish the current edit before cropping');
+      return;
+    }
+    const Doc = State.Doc;
+    const [szSourceSystem, szSourceScale] = CurrentScale(Doc);
+    const NumberInput = (nValue) => Element('input', {
+      type: 'number', required: true, min: '1', step: '1', max: String(Number.MAX_SAFE_INTEGER), value: String(nValue),
+    });
+    const Name = Element('input', { type: 'text', value: `${Doc.szName || 'Untitled'} crop`, autofocus: true });
+    const Width = NumberInput(32);
+    const Height = NumberInput(24);
+    const Scale = SelectControl(Object.keys(Lattice.g_Scales).flatMap((szSystem) => Lattice.g_rgszSizes.map((szSize) =>
+      [`${szSystem} ${szSize}`, ScaleText(szSystem, szSize)])), `${szSourceSystem} ${szSourceScale}`, () => Update());
+    // Centre the default crop on the selected tile, or else on the view centre.
+    const Hit = View.HitTest(View.MapGeometry(Doc), State.Layout, [State.Camera.dCenterX, State.Camera.dCenterY]);
+    const nCenterTile = State.nSelectedTile >= 0 ? State.nSelectedTile : Hit ? Hit.nTile : 0;
+    const Center = Model.TileToUniversal(Doc, nCenterTile);
+    const dHexMiles = Model.HexMiles(Doc);
+    const Anchor = Element('input', { type: 'text', required: true });
+    let fAnchorEdited = false;
+    Anchor.addEventListener('input', () => {
+      fAnchorEdited = true;
+    });
+    // Until the anchor is edited, keep the crop centred as its size and scale change.
+    const CenterAnchor = () => {
+      if (fAnchorEdited) {
+        return;
+      }
+      const dNewMiles = Lattice.ScaleMiles(...Scale.value.split(' '));
+      const nWidth = Math.max(1, Number(Width.value) || 1);
+      const nHeight = Math.max(1, Number(Height.value) || 1);
+      Anchor.value = Coordinates.FormatUniversal(Coordinates.MakeLocation(Center.szPanel,
+        Center.dEast - (nWidth - 1) / 2 * Lattice.ColumnSpacing(dNewMiles), Center.dNorth + (nHeight - 1) / 2 * dNewMiles), 10);
+    };
+    const Preview = Element('p', { id: 'crop-map-preview', className: 'tool-help' });
+    const ErrorText = Element('p', { id: 'crop-map-error', className: 'dialog-error', role: 'alert' });
+    const OpenButton = Element('button', { id: 'crop-open', type: 'submit', className: 'tool-button', textContent: 'Open crop' });
+    const Form = Element('form', { id: 'crop-map-form', noValidate: true }, [
+      Element('h2', { id: 'crop-map-title', textContent: 'Crop to local map' }),
+      Field('crop-name', 'Name', Name),
+      Field('crop-width', 'Width (hexes)', Width), Field('crop-height', 'Height (hexes)', Height),
+      Field('crop-scale', 'Hex size', Scale),
+      Field('crop-anchor', 'Anchor of tile (0, 0), in miles', Anchor),
+      Element('p', { className: 'tool-help', textContent: 'Larger hexes take the most common terrain of the tiles they cover; smaller hexes repeat the tile they lie in. Landmarks, labels, roads, trails and rivers are copied where they fall inside the crop.' }),
+      Preview, ErrorText,
+      Element('div', { className: 'property-actions' }, [
+        OpenButton,
+        ActionButton('crop-download', 'Download', () => Submit(false)),
+        ActionButton('crop-cancel', 'Cancel', () => Dialog.close()),
+      ]),
+    ]);
+    const Options = () => {
+      const [szSystem, szScale] = Scale.value.split(' ');
+      return {
+        szName: Name.value, nWidth: Number(Width.value), nHeight: Number(Height.value), szSystem, szScale,
+        Anchor: Coordinates.ParseUniversal(Anchor.value), nPanelHexes: Doc.Global ? Doc.Global.nPanelHexes : Doc.Local.nPanelHexes,
+      };
+    };
+    function Update() {
+      ErrorText.textContent = '';
+      CenterAnchor();
+      try {
+        const Checked = Options();
+        Coordinates.CreateLocalMap(Checked);
+        const dRatio = dHexMiles / Lattice.ScaleMiles(Checked.szSystem, Checked.szScale);
+        const szRatio = Math.abs(dRatio - 1) < 1e-9 ? 'Same hex size as this map.'
+          : dRatio > 1 ? `Each hex here becomes about ${Util.FormatNumber(dRatio, 1)} hexes across.`
+            : `Each new hex covers about ${Util.FormatNumber(1 / dRatio, 1)} hexes across.`;
+        Preview.textContent = `${szRatio} ${LocalSpanText(Checked)} Tiles outside this map start as water.`;
+      } catch (Caught) {
+        Preview.textContent = `Check crop settings: ${Caught.message}`;
+      }
+    }
+    function Submit(fOpen) {
+      ErrorText.textContent = '';
+      if (!Form.reportValidity()) {
+        ErrorText.textContent = 'Check the highlighted crop settings.';
+        return;
+      }
+      let Checked;
+      try {
+        Checked = Options();
+      } catch (Caught) {
+        ErrorText.textContent = Caught.message;
+        return;
+      }
+      FinishResample(Dialog, Form, Preview, ErrorText, () => Resample.Crop(Doc, Checked), fOpen, 'cropped', Update);
+    }
+    Form.addEventListener('input', Update);
+    Form.addEventListener('submit', (Event) => {
+      Event.preventDefault();
+      Submit(true);
+    });
+    Dialog.replaceChildren(Form);
+    Update();
+    State.fSpaceDown = false;
+    Dialog.showModal();
+  }
+
+  // Changes the tile scale of the open map, resampling terrain and features.
+  function RescaleMap() {
+    const Dialog = Root.document.getElementById('rescale-map-dialog');
+    if (Dialog.open) {
+      return;
+    }
+    if (State.Stroke || State.LabelDrag) {
+      SetMessage('Finish the current edit before rescaling');
+      return;
+    }
+    const Doc = State.Doc;
+    const [szSystem, szScale] = CurrentScale(Doc);
+    const rgOptions = Resample.RescaleOptions(Doc).filter(([szS, szZ]) => szS !== szSystem || szZ !== szScale);
+    const Scale = SelectControl(rgOptions.map(([szS, szZ]) => [`${szS} ${szZ}`, ScaleText(szS, szZ)]),
+      rgOptions.length ? `${rgOptions[0][0]} ${rgOptions[0][1]}` : '', () => Update());
+    const Preview = Element('p', { id: 'rescale-map-preview', className: 'tool-help' });
+    const ErrorText = Element('p', { id: 'rescale-map-error', className: 'dialog-error', role: 'alert' });
+    const Form = Element('form', { id: 'rescale-map-form', noValidate: true }, [
+      Element('h2', { id: 'rescale-map-title', textContent: 'Rescale map' }),
+      Element('p', { className: 'tool-help', textContent: `Current scale: ${ScaleText(szSystem, szScale)}.` }),
+      Field('rescale-scale', 'New hex size', Scale),
+      Element('p', { className: 'tool-help', textContent: 'Larger hexes take the most common terrain of the tiles they cover; smaller hexes repeat the tile they lie in. Undo history is cleared.' }),
+      Preview, ErrorText,
+      Element('div', { className: 'property-actions' }, [
+        Element('button', { id: 'rescale-open', type: 'submit', className: 'tool-button', textContent: 'Rescale', disabled: rgOptions.length === 0 }),
+        ActionButton('rescale-download', 'Download', () => Submit(false), rgOptions.length === 0),
+        ActionButton('rescale-cancel', 'Cancel', () => Dialog.close()),
+      ]),
+    ]);
+    const Selected = () => Scale.value.split(' ');
+    function Update() {
+      ErrorText.textContent = '';
+      if (rgOptions.length === 0) {
+        Preview.textContent = 'This map has no other tile scale.';
+        return;
+      }
+      try {
+        const [szNewSystem, szNewScale] = Selected();
+        if (!Doc.Local) {
+          Preview.textContent = Doc.szKind === 'global' ? 'The whole world at the new tile scale.' : 'The whole panel at the new tile scale.';
+          return;
+        }
+        const Options = Resample.LocalRescaleOptions(Doc.Local, szNewSystem, szNewScale);
+        Preview.textContent = `${Options.nWidth} x ${Options.nHeight} hexes covering the same ground, keeping the north-west corner. ${LocalSpanText(Options)}`;
+      } catch (Caught) {
+        Preview.textContent = `Check the scale: ${Caught.message}`;
+      }
+    }
+    function Submit(fOpen) {
+      const [szNewSystem, szNewScale] = Selected();
+      FinishResample(Dialog, Form, Preview, ErrorText, () => Resample.Rescale(Doc, szNewSystem, szNewScale), fOpen, 'rescaled', Update);
+    }
+    Form.addEventListener('input', Update);
+    Form.addEventListener('submit', (Event) => {
+      Event.preventDefault();
+      Submit(true);
+    });
+    Dialog.replaceChildren(Form);
+    Update();
     State.fSpaceDown = false;
     Dialog.showModal();
   }
@@ -6512,6 +7485,8 @@
       Element('button', { id: 'file-open', type: 'button', textContent: 'Open\u2026', title: 'Open a .map.txt file (Ctrl+O)', onclick: OpenMap }),
       Element('button', { id: 'file-save', type: 'button', textContent: 'Save', title: 'Download the map as a .map.txt file (Ctrl+S)', onclick: SaveMap }),
       Element('button', { id: 'file-export', type: 'button', textContent: 'Export SVG', title: 'Export one panel or a local map as SVG', onclick: ExportMap }),
+      Element('button', { id: 'file-crop', type: 'button', textContent: 'Crop\u2026', title: 'Copy part of this map into a new local map, at any scale', onclick: CropMap }),
+      Element('button', { id: 'file-rescale', type: 'button', textContent: 'Rescale\u2026', title: 'Change the tile scale of this map', onclick: RescaleMap }),
       OpenInput,
       Element('span', { className: 'toolbar-gap' }),
       Element('button', { id: 'view-net', type: 'button', textContent: 'Net view', title: 'Show the whole net (N)', onclick: ShowNet }),
@@ -6528,7 +7503,7 @@
   function BuildLayerList() {
     const rgRows = g_rgLayerToggles.map(([szKey, szLabel]) => {
       const Box = Element('input', { type: 'checkbox', checked: State.Layers[szKey], id: `layer-${szKey}` });
-      Box.disabled = szKey === 'fNames' && State.Doc.szKind === 'local';
+      Box.disabled = szKey === 'fNames' && State.Doc.szKind === 'local' && !State.Doc.Topo;
       Box.addEventListener('change', () => {
         State.Layers[szKey] = Box.checked;
         BuildProperties();

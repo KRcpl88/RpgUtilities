@@ -67,9 +67,29 @@ width, height and universal anchor for tile (0, 0), such as `Eta 187.1W 324.0N`.
 | Local | 1 yd | 10 yd | 100 yd | 600 yd |
 
 Regional anchors snap to their same-scale world lattice; the dialog previews the
-result. Yard-scale anchors remain free. Local grids continue flat in the anchor
-panel's frame, without wrapping at panel boundaries. All terrain and feature
-tools work on all three map kinds. **Fit all** and the minimap navigate every kind;
+result. Yard-scale anchors remain free.
+
+A regional local map (1 mi per hex or larger) that crosses panel seams follows the
+global map's rules at each seam. It uses whole edge hexes at equatorial east/west
+seams and clipped partial tiles at other seams. Its hexes turn to match each panel's
+grid, so the map looks bent at the seam. It may cross several seams, but it stops
+short of any panel corner where several panels meet: the dialog shows the reduced
+size and the panels crossed. Yard-scale maps always stay one flat grid, as do local
+files saved with a `[local]` section. All terrain and feature tools work on all
+three map kinds.
+
+**Crop…** copies part of any map into a new local map of any size, scale and anchor.
+The anchor starts out centred on the selected tile or the view centre. **Rescale…**
+changes the hex size of the open map:
+
+- global worlds: XL or L;
+- single panels: XL, L or M;
+- local maps: any regional or yard scale, keeping the same ground and north-west corner.
+
+Both use the same resampling. Smaller hexes repeat the tile they lie in. Larger hexes
+take the most common terrain of the tiles they cover. Landmarks, labels, roads, trails
+and rivers follow their tiles. Each dialog can open the result in place of the current
+map (unsaved, with no undo history) or download it. **Fit all** and the minimap navigate every kind;
 panel focus with neighbours and net-view controls apply only to global worlds.
 
 The **Equator and poles** layer shows a red equator and crosshair circles labeled

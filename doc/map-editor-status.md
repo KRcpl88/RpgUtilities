@@ -14,6 +14,22 @@ uses `View.ReferenceGeometry` for a red equator and N/S polar crosshairs on both
 canvas and SVG (also translated into local-map coordinates). It does not change
 saved map data. See `panelmap.test.cjs` and `reference-layer.test.cjs`.
 
+Post-plan additions (2026-10-30): local maps across panel seams, and crop/rescale (plan §11.68–69).
+
+- **Seam-crossing local maps:**
+  - A regional local map that crosses panel seams now gets a span topology from `Topology.BuildSpan`, and `Doc.Topo.Span` is set. It follows the global-map tile rules in each panel, so the grid turns (bends) at seams, and it may cross several seams.
+  - Its width and height are reduced so it stops short of any panel corner vertex. `Coordinates.PreviewLocalSpan` reports the reduced size and the panels crossed.
+  - It is saved with `[panel]` sections. Yard-scale maps, maps inside one panel and files with a `[local]` section stay flat.
+  - The view uses a `span` layout with one placement per panel.
+- **`Resample` module:**
+  - `Crop(Source, Options)`: any map → a local map of any size, scale and anchor.
+  - `Rescale(Doc, szSystem, szScale)`: global XL↔L, panel XL/L/M, local any scale with the same ground.
+  - Also exported: `RescaleOptions`, `LocalRescaleOptions`, `Transfer`, `TileAtPoint`, `TilePoint` and `NormalizePoint`.
+  - Upscaling repeats tiles and downscaling takes the most common terrain. Features follow their tiles.
+- **App:** the toolbar has **Crop…** and **Rescale…** dialogs (open or download). The status bar shows panel names on span maps. The New dialog previews the span and any crop.
+- **Tests:** see `localspan.test.cjs` and `resample.test.cjs`.
+- **Known limitation:** SVG regions and shorelines are not merged across span seams.
+
 | # | Milestone | Status |
 |---|---|---|
 | 1 | Scaffold: HTML shell, module convention, test loader, Util, projection tool, golden JSON | ✅ Done |
@@ -152,7 +168,7 @@ saved map data. See `panelmap.test.cjs` and `reference-layer.test.cjs`.
 
 ## Plan complete
 
-All twelve milestones are done; the editor reports v1.0.0. The user guide is [`../README.md`](../README.md) and the manual browser test is [`manual-checklist.md`](manual-checklist.md). Possible follow-ups are the open questions in plan §12 (merging sliver partial tiles, local maps spanning seams, palette tuning) and any new requests in `prompt.md`.
+All twelve milestones are done; the editor reports v1.0.0. The user guide is [`../README.md`](../README.md) and the manual browser test is [`manual-checklist.md`](manual-checklist.md). Possible follow-ups are the open questions in plan §12 (merging sliver partial tiles, palette tuning) and any new requests in `prompt.md`.
 
 ## How to continue (for an unattended or auto-mode session)
 

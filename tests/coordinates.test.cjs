@@ -66,7 +66,7 @@ test('regional local maps snap their anchor and nest in the global lattice', () 
     for (const szPanel of ['Hxz+-', g_Built.rgszEquatorialWestToEast[3], 'Sy+']) {
       const Local = Coordinates.CreateLocalMap({
         nWidth: 20, nHeight: 15, szSystem: 'regional', szScale,
-        Anchor: Coordinates.MakeLocation(szPanel, -123.4, 456.7), nPanelHexes: 24,
+        Anchor: Coordinates.MakeLocation(szPanel, -123.4, 456.7), nPanelHexes: 24, fFlat: true,
       });
       const dD = Lattice.ScaleDistance('regional', szScale);
       assert.ok(Math.hypot(Local.Anchor.dEast + 123.4, Local.Anchor.dNorth - 456.7) <= dD, 'anchor moves less than a hex');

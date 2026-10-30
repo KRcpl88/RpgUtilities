@@ -52,6 +52,9 @@ Use this checklist to test a release by hand in a current Chromium, Firefox or S
 - [ ] Single panel: choose an equatorial, polar or square panel and create it at M, L and XL. Only the complete selected panel appears; edge hexes have no gaps, and brush/fill/paths stop at its boundary. Net/focus controls are disabled; Fit all, Fit panel, minimap, undo and all feature tools work.
 - [ ] Switching from single-panel M to global world removes the M option. Cancel preserves the previous map. Save/reopen and autosave/restore preserve the single-panel kind, selected panel, scale and edits.
 - [ ] Local: create a map at each of the eight scales (regional S/M/L/XL, local S/M/L/XL). Regional anchors preview their snapped position; yard anchors stay free. Net/focus controls and panel names are disabled for local maps, and all tools work.
+- [ ] Local across seams: create a regional L map 30 × 10 at `Alpha 1531.1E 510.4N`. The preview lists Alpha and Zeta, and the map shows both panels. Then create a map 40 × 30 at `Eta 1148.3E 765.5N`. Its hexes turn to Omicron's grid at the seam. Then create one 60 × 60 at `Eta 1148.3E 1275.9N`; the preview says it is cropped at a panel corner.
+- [ ] **Crop…** on the demo world: the anchor recentres when the size or scale changes. Open crop shows the upscaled terrain in blocks. Download saves a `.map.txt` without changing the open map.
+- [ ] **Rescale…** a local map to a larger hex size: the preview gives the new size, and the result keeps the ground and the north-west corner. Rescale a global XL world to L and back.
 - [ ] Global n = 24 with L tiles: "Building map…" appears and the buttons are disabled for about a second; then a 218,088-tile map appears.
 
 ## Save, open and autosave

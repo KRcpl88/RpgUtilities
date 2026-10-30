@@ -50,7 +50,7 @@ test('regional S through XL anchors of either parity align with each panel latti
       for (const nQ of [-3, -2, 0, 1]) {
         const rgdAnchor = Topology.LatticeCenter(Grid, nQ, 2).map((d) => d * Grid.dMilesPerEdge);
         const Doc = Model.CreateLocalMap({
-          nWidth: 5, nHeight: 4, szSystem: 'regional', szScale,
+          nWidth: 5, nHeight: 4, szSystem: 'regional', szScale, fFlat: true,
           Anchor: Coordinates.MakeLocation(szPanel, rgdAnchor[0] + Grid.dD * Grid.dMilesPerEdge / 10, rgdAnchor[1]),
         });
         assert.equal(Doc.Local.nParity, Lattice.IsOdd(nQ) ? 1 : 0);

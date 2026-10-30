@@ -61,11 +61,13 @@ and `\` are not allowed, and neither is `_`, which marks "no tile".
 Terrain keys are `water islands lakes firth plain hills mountains mountainPeak desert
 sandDunes forest marsh mangrove tundra canyon badlands farmland`.
 
-### `[panel <Name>]` (global maps: one for every panel)
+### `[panel <Name>]` (global maps: one for every panel; local maps that cross seams)
 
 `<Name>` is the panel's Greek name (case-insensitive). The editor writes panels in
 Greek-alphabet order. Every panel is required for a global world; only the chosen
-panel is required (or permitted) for a single-panel map. The header keys are:
+panel is required (or permitted) for a single-panel map. A regional local map that
+crosses panel seams has one section for each panel holding its tiles (see
+`[local]` below). The header keys are:
 
 ```
 columns = 4        # grid width (lattice columns spanned by the panel's tiles)
@@ -95,8 +97,21 @@ characters. Grid line *y* is local row *y* (row 0 is the northernmost), and char
 from the anchor's lattice parity.
 
 Regional anchors snap to the same-scale lattice of their named panel, using
-`panelHexes` for alignment. Yard-scale anchors remain free. Local grids continue
-flat in that panel's frame, even beyond its boundary; their coordinates never
+`panelHexes` for alignment. Yard-scale anchors remain free.
+
+A regional local map (1 mile per hex or larger) whose rectangle crosses a panel seam
+is written with `[panel <Name>]` sections instead of `[local]`. They use the same rules
+as global maps. The rectangle is unfolded flat across the seams from the anchor panel,
+and its tiles are that panel's lattice cells whose centres lie in the rectangle. The
+same seam ownership and partial-tile clipping apply, so the grid turns to follow each
+panel. The map's `width` and `height` are reduced, when it is created, so that the map
+stops short of any panel corner vertex it would otherwise wrap around. The written
+`width`/`height` are those reduced values. Only panels that hold tiles get a section, and
+their headers are derived from the map keys, as for global maps.
+
+Yard-scale maps, maps inside one panel, and files with a `[local]` section are flat. A
+file with a `[local]` section stays one flat grid in the anchor panel's frame, even
+beyond the panel boundary, so older files keep their tiles. Its coordinates never
 switch to an adjacent panel.
 
 When writing a yard-scale map, the anchor is rounded to the file's coordinate
