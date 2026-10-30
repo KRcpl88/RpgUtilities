@@ -31,14 +31,24 @@ editor always writes every key that applies.
 
 | Key | Global | Local | Value |
 |---|---|---|---|
-| `kind` | ✔ | ✔ | `global` or `local` |
+| `kind` | ✔ | ✔ | `global`, `panel` (single panel), or `local` |
 | `name` | optional | optional | quoted string (default `""`) |
-| `panelHexes` | optional | optional | even integer *n*, hexes along a panel edge (default 24) |
+| `panelHexes` | optional | optional | even integer *n*, panel size in XL hexes regardless of tile scale (default 24) |
 | `tileScale` | optional | – | `L` (the tile is the hex) or `XL` (a 3-hex-wide super-tile); default `XL` |
 | `width`, `height` | – | ✔ | local map size in hexes |
 | `system` | – | ✔ | `regional` (S/M/L/XL) or `local` (yard scales) |
 | `size` | – | ✔ | hex-size name for that system, as in prompt.md |
 | `anchor` | – | ✔ | universal location of tile (0, 0), e.g. `Eta 187.1W 324.0N` |
+
+Single-panel maps (`kind = panel`) use the same `name`, `panelHexes` and
+`tileScale` keys as global maps, plus a required `panel` key containing the
+panel's Greek name (case-insensitive). Their tile scale may be `M` (6 mi),
+`L` (36 mi) or `XL` (216 mi); it defaults to `XL`.
+They contain exactly one `[panel <Name>]` section, matching `panel`.
+The whole panel polygon is tiled, including independently clipped edge tiles.
+No tiles, adjacency or feature locations wrap into neighbouring panels.
+The equator/poles reference layer is computed from projection geometry and is
+not stored in map files.
 
 ### `[legend]` (optional)
 
@@ -54,7 +64,8 @@ sandDunes forest marsh mangrove tundra canyon badlands farmland`.
 ### `[panel <Name>]` (global maps: one for every panel)
 
 `<Name>` is the panel's Greek name (case-insensitive). The editor writes panels in
-Greek-alphabet order. Every panel is required. The header keys are:
+Greek-alphabet order. Every panel is required for a global world; only the chosen
+panel is required (or permitted) for a single-panel map. The header keys are:
 
 ```
 columns = 4        # grid width (lattice columns spanned by the panel's tiles)
@@ -72,6 +83,9 @@ sit half a hex north of cells in even columns ("odd-q up"). A cell that is not a
 tile of this panel is `_`. Seams resolve tile ownership as defined in prompt.md:
 partial edge hexes belong to exactly one panel, and the other panel has `_` there.
 A `_` on a tile, or a terrain character on a non-tile, is an error.
+Single-panel equatorial maps include all lattice cells intersecting their
+polygon, including edge cells whose centres lie beyond the panel boundary;
+unlike global-world seams, these cells belong to this panel and are clipped to it.
 
 ### `[local]` (local maps only)
 

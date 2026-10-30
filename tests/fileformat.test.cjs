@@ -168,7 +168,7 @@ test('errors report the offending line', () => {
   const nLegend = LineOf(g_szGlobalFixture, '~ water');
 
   AssertFileError('hello', 1, /Not a map file/);
-  AssertFileError(WithLine(nMap + 1, () => 'kind = flat'), nMap + 1, /global" or "local/);
+  AssertFileError(WithLine(nMap + 1, () => 'kind = flat'), nMap + 1, /"global", "panel" or "local"/);
   AssertFileError(WithLine(nMap + 3, () => 'panelHexes = 5'), nMap, /even/);
   AssertFileError(WithLine(nMap + 3, () => 'color = red'), nMap + 3, /Unknown key "color"/);
   AssertFileError(WithLine(nLegend, () => '~ lava'), nLegend, /Unknown terrain "lava"/);

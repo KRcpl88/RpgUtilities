@@ -4,6 +4,16 @@ Last updated: 2026-10-29 (after milestone 12; the plan is complete). See [`map-e
 
 ## Summary
 
+Post-plan additions (2026-10-29): New offers a third `panel` map kind, selecting
+one complete panel with M/L/XL tiles and no wrapping or neighbours. The model
+exports `CreatePanelMap`; `Doc.Global.szPanel` identifies its sole panel, and
+`Doc.Topo` contains only that panel's clipped tiles and adjacency. All tools,
+save/open/autosave and SVG export support it. World panel size is explicitly
+in XL hexes regardless of tile scale. The optional virtual `reference` layer
+uses `View.ReferenceGeometry` for a red equator and N/S polar crosshairs on both
+canvas and SVG (also translated into local-map coordinates). It does not change
+saved map data. See `panelmap.test.cjs` and `reference-layer.test.cjs`.
+
 | # | Milestone | Status |
 |---|---|---|
 | 1 | Scaffold: HTML shell, module convention, test loader, Util, projection tool, golden JSON | ✅ Done |
