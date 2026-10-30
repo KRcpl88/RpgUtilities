@@ -69,6 +69,11 @@ width, height and universal anchor for tile (0, 0), such as `Eta 187.1W 324.0N`.
 Regional anchors snap to their same-scale world lattice; the dialog previews the
 result. Yard-scale anchors remain free.
 
+Equatorial east/west panel boundaries lie between columns at every resolution;
+the first and last owned columns are half a column spacing inside those edges.
+Files use `# RPGMAP 2` after this alignment correction. Version 1 files are rejected,
+not automatically migrated.
+
 A regional local map (1 mi per hex or larger) that crosses panel seams follows the
 global map's rules at each seam. It uses whole edge hexes at equatorial east/west
 seams and clipped partial tiles at other seams. Its hexes turn to match each panel's
@@ -79,7 +84,9 @@ files saved with a `[local]` section. All terrain and feature tools work on all
 three map kinds.
 
 **Crop…** copies part of any map into a new local map of any size, scale and anchor.
-The anchor starts out centred on the selected tile or the view centre. **Rescale…**
+The anchor starts out centred on the selected tile or the view centre. Choose
+**Entire panel** to crop a complete panel at XL, L or M, rescaling in the same step;
+**Download** exports an editable `.map.txt` without changing the open map. **Rescale…**
 changes the hex size of the open map:
 
 - global worlds: XL or L;
@@ -101,6 +108,19 @@ small transparent margin so the full circle and crosshairs remain visible.
 `map-editor/samples/` and the test fixtures in `tests/fixtures/`. **Save** (Ctrl+S) downloads a canonical text file. New maps start
 unsaved and are autosaved even before their first edit. Canceling New or rejecting
 its discard confirmation preserves the current map.
+
+**Import / merge…** reads another `.map.txt` into the open map without changing its
+name, extent or hex size. Imported terrain and features replace the contents of
+overlapping hexes, including imported water; existing content outside that area
+is preserved. A panel or local rectangle clips the import at its boundary, and
+an entirely outside file changes nothing. Smaller/larger incoming hexes use the
+same repeat/majority resampling as Crop and Rescale. Crossing paths are split at
+the replacement boundary, feature IDs are made unique, and label sizes/offsets
+retain their ground size. The entire merge is one undo step.
+
+Both files must use the same world panel size and hex system: regional (miles) or
+local (yards). A rectangular map using regional hexes can merge with a globe or
+panel. Yard-scale and mile-scale hexes cannot be mixed.
 
 ### Feature editing
 
@@ -133,6 +153,16 @@ names, labels, and the equator/poles reference layer.
 The initial visibility follows the canvas where applicable, but export settings
 do not change the canvas.
 
+**Shorelines** draws every shared boundary between water (including islands,
+lakes and firth) and land with a deterministic, gently wandering curve. There is
+one point per hex edge, displaced from its midpoint along the centre-to-face ray
+by up to 30% of a hex's full width. The smooth curve passes directly between these
+points without interpolating hex corners; short clipped edges vary less.
+When terrain colours are enabled, both adjacent fills follow that
+same curve; embellishments are clipped to the adjusted regions. Turning
+Shorelines off restores the original hex-edge fills. Canvas rendering and saved
+terrain are unchanged.
+
 The SVG is self-contained and deterministic, with transparent space outside the
 map and where terrain colours are omitted. Regions preserve holes; panel edges
 are clipped without inventing coastlines along the cut. Feature placement and
@@ -149,7 +179,7 @@ fields) are white.
 
 ### Large maps and performance
 
-An n = 24 world with L (36-mile) hexes has 218,088 tiles. Building it takes about
+An n = 24 world with L (36-mile) hexes has 218,070 tiles. Building it takes about
 a second ("Building map…" shows meanwhile); painting, filling and undo stay
 interactive. Zoomed far out, the map is drawn from a cached image; the hex grid
 appears once hexes are at least 8 px across.
