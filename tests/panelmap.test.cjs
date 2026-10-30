@@ -21,6 +21,15 @@ for (const szName of Object.keys(Projection.g_SectorLabels).map((sz) => Projecti
       assert.equal(Layout.rgPlacements[0].szPanel, szPanel);
       assert.equal(View.PanelTileGroups(Topo, szPanel).length, 1);
       const Polygon = Projection.Build().Frames[szPanel].rgrgdPolygon;
+      if (Projection.Build().Panels[szPanel].fEquatorial) {
+        const dHalfWidth = Projection.Build().dEquatorialWidth / 2;
+        for (const Tile of Topo.rgTiles) {
+          assert.ok(Math.abs(Math.abs(Tile.rgdCenter[0]) - dHalfWidth) >= Topo.dW / 2 - 1e-12,
+            `${szTileScale}: neither east/west edge passes through a column`);
+          assert.ok(Math.abs(Tile.rgdCenter[0]) >= Topo.dW / 2 - 1e-12,
+            `${szTileScale}: the centreline is between columns`);
+        }
+      }
       const dArea = Topo.rgTiles.reduce((dSum, Tile) => dSum + Tile.dArea, 0);
       assert.ok(Math.abs(dArea - Util.PolygonArea(Polygon)) < 1e-8, 'no holes or duplicated edge-hex area');
       for (const Tile of Topo.rgTiles) {

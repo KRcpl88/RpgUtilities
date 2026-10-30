@@ -108,10 +108,9 @@ for (const [nPanelHexes, szScale] of g_rgCases) {
       const Lattice0 = Info.Lattice;
       const rgdFirst = Topology.LatticeCenter(Lattice0, Lattice0.nColumnShift, 0);
       const rgdLast = Topology.LatticeCenter(Lattice0, Lattice0.nColumnShift + Lattice0.nColumns - 1, 0);
-      if (Topo.nRatio === 1) {
-        assert.ok(Math.abs(rgdLast[1] - rgdFirst[1] - Topo.dD / 2) < 1e-12, 'last column is half a hex north');
-        assert.ok(Math.abs(rgdFirst[0] + dWidth / 2 - Topo.dW / 2) < 1e-12, 'first column half a column from the edge');
-      }
+      assert.ok(Math.abs(Math.abs(rgdLast[1] - rgdFirst[1]) - Topo.dD / 2) < 1e-12, 'first and last columns are staggered by half a hex');
+      assert.ok(Math.abs(rgdFirst[0] + dWidth / 2 - Topo.dW / 2) < 1e-12, 'first column half a column from the west edge');
+      assert.ok(Math.abs(dWidth / 2 - rgdLast[0] - Topo.dW / 2) < 1e-12, 'last column half a column from the east edge');
       const rgdNext = Util.Add(Topology.LatticeCenter(Lattice0, Lattice0.nColumnShift + Lattice0.nColumns, 0), [-dWidth, 0]);
       AssertPointClose(rgdNext, rgdFirst, 'the strip lattice repeats every panel');
     }
@@ -182,15 +181,30 @@ test('n=24 XL: about 10.33·n² tiles and an equatorial width of ≈4489 mi', ()
   }
 });
 
-test('XL equatorial centres nest in the L lattice', () => {
-  const szPanel = g_Built.rgszEquatorialWestToEast[2];
-  const Coarse = Topology.PanelLattice(szPanel, 8, 1);
-  for (const nRatio of [6, 36]) {
-    const Fine = Topology.PanelLattice(szPanel, 8, nRatio);
-    for (const [nQ, nJ] of [[0, 0], [1, 0], [7, -3], [4, 5]]) {
-      const rgdCenter = Topology.LatticeCenter(Coarse, nQ, nJ);
-      const [nFineQ, nFineJ] = Topology.LatticeNearest(Fine, ...rgdCenter);
-      AssertPointClose(Topology.LatticeCenter(Fine, nFineQ, nFineJ), rgdCenter, `ratio ${nRatio}`, 1e-12);
+test('equatorial seams bisect column gaps at every regional scale and panel size', () => {
+  const dWidth = g_Built.dEquatorialWidth;
+  for (const nPanelHexes of [2, 4, 8, 24]) {
+    for (const szScale of ['XL', 'L', 'M', 'S']) {
+      const nRatio = Lattice.ScaleRatio('regional', 'XL', szScale);
+      for (const [nPanel, szPanel] of g_Built.rgszEquatorialWestToEast.entries()) {
+        const Info = Topology.PanelLattice(szPanel, nPanelHexes, nRatio);
+        const First = Topology.LatticeCenter(Info, Info.nColumnShift, 0);
+        const Last = Topology.LatticeCenter(Info, Info.nColumnShift + Info.nColumns - 1, 0);
+        const szCase = `${szPanel} n=${nPanelHexes} ${szScale}`;
+        assert.ok(Math.abs(First[0] + dWidth / 2 - Info.dW / 2) < 1e-12, `${szCase}: west seam between columns`);
+        assert.ok(Math.abs(dWidth / 2 - Last[0] - Info.dW / 2) < 1e-12, `${szCase}: east seam between columns`);
+        assert.ok(Math.abs(First[0] + Last[0]) < 1e-12, `${szCase}: symmetric east/west columns`);
+        const [nQ, nJ] = Topology.LatticeNearest(Info, 0, 0);
+        const Middle = Topology.LatticeCenter(Info, nQ, nJ);
+        assert.ok(Math.abs(Math.abs(Middle[0]) - Info.dW / 2) < 1e-12, `${szCase}: no centreline column`);
+        const szNext = g_Built.rgszEquatorialWestToEast[(nPanel + 1) % 6];
+        const Seam = Projection.FindSeam(szPanel, szNext);
+        const Transform = Seam.szPanelA === szPanel ? Seam.rgdAToB : Seam.rgdBToA;
+        const Beyond = Topology.LatticeCenter(Info, Info.nColumnShift + Info.nColumns, 0);
+        const Next = Topology.PanelLattice(szNext, nPanelHexes, nRatio);
+        AssertPointClose(Projection.ApplyTransform(Transform, Beyond), Topology.LatticeCenter(Next, Next.nColumnShift, 0),
+          `${szCase}: continuous wrap into ${szNext}`, 1e-12);
+      }
     }
   }
 });
