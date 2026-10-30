@@ -41,12 +41,16 @@ Use this checklist to test a release by hand in a current Chromium, Firefox or S
 - [ ] **Select (V)**: on a tile with several features, choose each from **Features on this tile**. Delete/Backspace removes the selected feature.
 - [ ] **Erase (E)**: each target layer erases only that layer. Terrain erase turns just the clicked tile to water.
 - [ ] Hide a feature layer: its features disappear and cannot be selected or erased. Show it again.
-- [ ] Toggle every layer (Terrain, Hex grid, Panel outlines, Panel names, Roads, Trails, Rivers, Landmarks, Labels).
+- [ ] Toggle every layer (Terrain, Hex grid, Panel outlines, Panel names, Roads, Trails, Rivers, Landmarks, Labels, Equator and poles).
+- [ ] Equator and poles: the red equator follows true latitude 0 across Alpha–Zeta in net and focus views. Crosshair circles labeled N/S mark the polar vertices on Eta/Theta/Iota and Kappa/Lambda/Mu. Hiding the layer removes all references without changing the map.
 
 ## New map dialog
 
 - [ ] **New** opens a dialog. While it is open, editor shortcuts (B, Ctrl+Z, arrows…) do nothing. Cancel leaves the map unchanged.
 - [ ] Global: try invalid panel hexes (odd, 0, blank) and see the validation messages. Create n = 8 XL; if the current map has unsaved changes, confirm the discard prompt. Rejecting the prompt keeps the old map.
+- [ ] The panel-size label explicitly says XL hexes regardless of tile scale; switching L/XL changes tile density, not the physical panel size.
+- [ ] Single panel: choose an equatorial, polar or square panel and create it at M, L and XL. Only the complete selected panel appears; edge hexes have no gaps, and brush/fill/paths stop at its boundary. Net/focus controls are disabled; Fit all, Fit panel, minimap, undo and all feature tools work.
+- [ ] Switching from single-panel M to global world removes the M option. Cancel preserves the previous map. Save/reopen and autosave/restore preserve the single-panel kind, selected panel, scale and edits.
 - [ ] Local: create a map at each of the eight scales (regional S/M/L/XL, local S/M/L/XL). Regional anchors preview their snapped position; yard anchors stay free. Net/focus controls and panel names are disabled for local maps, and all tools work.
 - [ ] Global n = 24 with L tiles: "Building map…" appears and the buttons are disabled for about a second; then a 218,088-tile map appears.
 
@@ -62,6 +66,7 @@ Use this checklist to test a release by hand in a current Chromium, Firefox or S
 
 - [ ] **Export SVG** opens a dialog. The scope defaults to the focused, selected or centre panel (or **Whole local map**). Width validation rejects 0 and non-integers.
 - [ ] Layer checkboxes start from the canvas visibility, with shorelines and terrain embellishments on and landmark names off. Changing them does not change the canvas.
+- [ ] A single-panel map exports only its chosen panel (scope cannot change). Equator and poles follow their checkbox in global, single-panel and local exports.
 - [ ] **Download SVG** downloads `<name>-<Panel>.svg` (or `<name>.svg` locally). The map stays unsaved (`*`) and undo history is unchanged. The status bar reports the size and time.
 - [ ] Open the SVG in the browser: the panel is north-up and clipped, outside areas are transparent, and the content matches the editor:
   - [ ] terrain colours, terrain patterns (hills, peaks, trees with trunks on southern forest edges, dunes, fields…) clipped to their regions;

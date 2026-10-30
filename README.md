@@ -53,8 +53,12 @@ Properties for a selected landmark or label show the same information.
 
 ### Creating and opening maps
 
-**New** creates an all-water global world or local rectangle. Global maps use an
-even panel-hex count and regional L (36 mi) or XL (216 mi) hexes. Local maps take a
+**New** creates an all-water global world, single panel or local rectangle. World
+panel size is always an even count of **XL hexes**, independent of tile scale.
+Global worlds use regional L (36 mi) or XL (216 mi) tiles. **Single panel** lets
+you select any of the 18 panels and use M (6 mi), L or XL tiles; it contains the
+complete panel only, including clipped edge hexes, with no neighbours or wrapping.
+Local maps take a
 width, height and universal anchor for tile (0, 0), such as `Eta 187.1W 324.0N`.
 
 | Local-map system | S | M | L | XL |
@@ -65,10 +69,15 @@ width, height and universal anchor for tile (0, 0), such as `Eta 187.1W 324.0N`.
 Regional anchors snap to their same-scale world lattice; the dialog previews the
 result. Yard-scale anchors remain free. Local grids continue flat in the anchor
 panel's frame, without wrapping at panel boundaries. All terrain and feature
-tools work on both map kinds. **Fit all** and the minimap navigate either kind;
-panel focus and net-view controls apply only to global maps.
+tools work on all three map kinds. **Fit all** and the minimap navigate every kind;
+panel focus with neighbours and net-view controls apply only to global worlds.
 
-**Open** accepts either kind of `.map.txt`, including the samples in
+The **Equator and poles** layer shows a red equator and crosshair circles labeled
+N/S at the true poles. It is virtual reference geometry, not editable map data,
+and can also be toggled independently in SVG export. Polar exports include a
+small transparent margin so the full circle and crosshairs remain visible.
+
+**Open** accepts all three kinds of `.map.txt`, including the samples in
 `map-editor/samples/` and the test fixtures in `tests/fixtures/`. **Save** (Ctrl+S) downloads a canonical text file. New maps start
 unsaved and are autosaved even before their first edit. Canceling New or rejecting
 its discard confirmation preserves the current map.
@@ -96,11 +105,11 @@ browser autosave.
 
 ### SVG export
 
-**Export SVG** downloads one selected global panel, north-up, or the entire local
-map. Choose the output width (default 1600 px); height preserves the map's aspect
+**Export SVG** downloads one selected global panel, the complete single-panel map,
+or the entire local map, north-up. Choose the output width (default 1600 px); height preserves the map's aspect
 ratio. Layer options include terrain colours, terrain embellishments, smoothed
 shorelines, hex grid, roads, trails, tapered rivers, landmarks, optional landmark
-names, and labels.
+names, labels, and the equator/poles reference layer.
 The initial visibility follows the canvas where applicable, but export settings
 do not change the canvas.
 
