@@ -1,4 +1,4 @@
-# RPGMAP 1
+# RPGMAP 2
 
 [map]
 kind = global
