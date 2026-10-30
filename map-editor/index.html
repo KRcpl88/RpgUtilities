@@ -139,6 +139,7 @@
   .tool-option input[type="range"] { flex: 1; min-width: 0; }
   .tool-option[hidden] { display: none; }
   .property-field { display: block; margin: 8px 0; }
+  .property-field[hidden] { display: none; }
   .property-field span { display: block; color: var(--text-dim); }
   .property-field input, .property-field select {
     width: 100%; padding: 4px; background: #383a40; color: var(--text);
@@ -1347,8 +1348,8 @@
 
   // Lattice placement for one panel. Column q is centred at east = dOriginEast + q·dW.
   // Non-equatorial panels: q = 0 is the north-south bisector and hex (0, 0) is the
-  // panel centre. Equatorial panels: the lattice is anchored on XL hex centres, so
-  // finer scales nest; panel column i = q − nColumnShift runs 0 … nColumns−1 west to east.
+  // panel centre. Equatorial panels: every scale starts half a column inside the west
+  // edge; panel column i = q − nColumnShift runs 0 … nColumns−1 west to east.
   function PanelLattice(szPanel, nPanelHexes = g_nDefaultPanelHexes, nRatio = 1) {
     ValidatePanelHexes(nPanelHexes);
     Require(nRatio === 1 || (Number.isInteger(nRatio) && nRatio > 0 && nRatio % 2 === 0),
@@ -1365,7 +1366,7 @@
     if (Panel.fEquatorial) {
       nColumns = nPanelHexes * nRatio;
       nColumnShift = nRatio === 1 ? 0 : nRatio / 2;
-      dOriginEast = -Built.dEquatorialWidth / 2 + ((nRatio === 1 ? 0.5 : 0) - nColumnShift) * dW;
+      dOriginEast = -Built.dEquatorialWidth / 2 + (0.5 - nColumnShift) * dW;
     }
     return Object.freeze({
       szPanel, fEquatorial: Panel.fEquatorial, nPanelHexes, nRatio, dMilesPerEdge, dD, dW, dOriginEast, nColumns, nColumnShift,
@@ -2428,7 +2429,7 @@
   // A map document. Mutators validate their input, apply the change, and return a
   // change record { szLayer, Key, nIndex, Before, After } (or null for a no-op) that
   // History stores and ApplyChange replays in either direction.
-  const g_nFormatVersion = 1;
+  const g_nFormatVersion = 2;
   const g_rgszOverlayTypes = Object.freeze(['road', 'trail', 'river']);
   const g_rgszLabelCategories = Object.freeze(['region', 'location', 'city']);
   const g_LabelDefaultSizes = Object.freeze({ region: 28, location: 14, city: 18 });
@@ -3535,8 +3536,8 @@
     return rgPoints;
   }
 
-  function SplitCurve(rg) {
-    const Mid = (A, B) => Util.Scale(Util.Add(A, B), 0.5);
+  function SplitCurve(rg, dT = 0.5) {
+    const Mid = (A, B) => Util.Add(Util.Scale(A, 1 - dT), Util.Scale(B, dT));
     const A = Mid(rg[0], rg[1]), B = Mid(rg[1], rg[2]), C = Mid(rg[2], rg[3]);
     const D = Mid(A, B), E = Mid(B, C), F = Mid(D, E);
     return [[rg[0], A, D, F], [F, E, C, rg[3]]];
@@ -4131,7 +4132,14 @@
         return -1;
       }
       const [nQ, nJ] = Topology.LatticeNearest(Info.Lattice, rgdPoint[0], rgdPoint[1]);
-      return Topology.LocateLattice(Doc.Topo, szPanel, nQ, nJ);
+      const nTile = Topology.LocateLattice(Doc.Topo, szPanel, nQ, nJ);
+      if (nTile < 0) {
+        return -1;
+      }
+      const szOwner = Doc.Topo.rgTiles[nTile].szPanel;
+      const rgdOwnPoint = szOwner === szPanel ? rgdPoint
+        : Projection.ApplyTransform(View.PanelTransform(szPanel, szOwner), rgdPoint);
+      return Topology.TilePolygons(Doc.Topo, nTile).some((Polygon) => Util.PointInConvex(rgdOwnPoint, Polygon)) ? nTile : -1;
     }
     const Local = Doc.Local;
     let rgdFrame = rgdPoint;
@@ -4164,34 +4172,43 @@
   }
 
   // Copies terrain, landmarks, labels and overlays from Source onto the empty Target
-  // (both must use the same panel size). Returns Target.
-  function Transfer(Source, Target) {
+  // (both must use the same panel size). Options: rgfCovered (output bitmap),
+  // fKeepPoints (single-tile paths), fPartialCoverage (include source slivers).
+  // Returns Target.
+  function Transfer(Source, Target, Options = {}) {
     Require(PanelHexes(Source) === PanelHexes(Target), 'Both maps must use the same panel size');
+    const rgfCovered = Options.rgfCovered;
+    if (rgfCovered) {
+      Require(rgfCovered.length === Target.nTiles, 'Coverage must match the target grid');
+      rgfCovered.fill(0);
+    }
     const dRatio = Model.HexMiles(Source) / Model.HexMiles(Target);
     const rgnSourceToTarget = MapSourceTiles(Source, Target);
     const rgnCenterSource = new Int32Array(Target.nTiles);
     for (let nTile = 0; nTile < Target.nTiles; nTile++) {
       const Point = TilePoint(Target, nTile);
       rgnCenterSource[nTile] = TileAtPoint(Source, Point.szPanel, Point.rgdPoint);
+      if (rgfCovered && rgnCenterSource[nTile] >= 0) {
+        rgfCovered[nTile] = 1;
+      }
     }
     const CenterTerrain = (nTile) => (rgnCenterSource[nTile] >= 0 ? Source.rgnTerrain[rgnCenterSource[nTile]] : Terrain.g_nWaterId);
-    if (dRatio > 1 - 1e-9) {
-      for (let nTile = 0; nTile < Target.nTiles; nTile++) {
-        Target.rgnTerrain[nTile] = CenterTerrain(nTile);
-      }
-    } else {
-      const nTerrains = Terrain.g_rgTerrains.length;
-      const Votes = new Map();
-      rgnSourceToTarget.forEach((nTarget, nSource) => {
-        if (nTarget >= 0) {
-          if (!Votes.has(nTarget)) {
-            Votes.set(nTarget, new Uint32Array(nTerrains));
-          }
-          Votes.get(nTarget)[Source.rgnTerrain[nSource]]++;
+    const fCoarser = dRatio < 1 - 1e-9;
+    const Votes = new Map();
+    rgnSourceToTarget.forEach((nTarget, nSource) => {
+      // Imports also retain clipped source slivers whose target anchor falls outside
+      // Source (e.g. a clipped tip at an isolated panel's equatorial boundary).
+      if (nTarget >= 0 && (fCoarser || Options.fPartialCoverage && rgnCenterSource[nTarget] < 0)) {
+        if (!Votes.has(nTarget)) {
+          Votes.set(nTarget, new Uint32Array(Terrain.g_rgTerrains.length));
         }
-      });
-      for (let nTile = 0; nTile < Target.nTiles; nTile++) {
-        Target.rgnTerrain[nTile] = Votes.has(nTile) ? MostCommon(Votes.get(nTile), CenterTerrain(nTile)) : CenterTerrain(nTile);
+        Votes.get(nTarget)[Source.rgnTerrain[nSource]]++;
+      }
+    });
+    for (let nTile = 0; nTile < Target.nTiles; nTile++) {
+      Target.rgnTerrain[nTile] = Votes.has(nTile) ? MostCommon(Votes.get(nTile), CenterTerrain(nTile)) : CenterTerrain(nTile);
+      if (rgfCovered && Votes.has(nTile)) {
+        rgfCovered[nTile] = 1;
       }
     }
     for (const nSource of [...Source.Landmarks.keys()].sort((nA, nB) => nA - nB)) {
@@ -4213,7 +4230,7 @@
     }
     const UsedIds = new Set(Source.rgOverlays.map((Overlay) => Overlay.szId));
     for (const Overlay of Source.rgOverlays) {
-      OverlayPieces(Target, Overlay.rgnTiles.map((nTile) => rgnSourceToTarget[nTile])).forEach((rgnTiles, nPiece) => {
+      OverlayPieces(Target, Overlay.rgnTiles.map((nTile) => rgnSourceToTarget[nTile]), Options.fKeepPoints ? 1 : 2).forEach((rgnTiles, nPiece) => {
         let szId = Overlay.szId;
         if (nPiece > 0) {
           let nSuffix = nPiece + 1;
@@ -4236,12 +4253,12 @@
   }
 
   // Splits a mapped overlay path where it leaves the map, drops repeats, and bridges
-  // tiles that are no longer adjacent with shortest paths. Pieces need two tiles.
-  function OverlayPieces(Target, rgnMapped) {
+  // tiles that are no longer adjacent with shortest paths.
+  function OverlayPieces(Target, rgnMapped, nMinimum = 2) {
     const rgPieces = [];
     let rgnPiece = [];
     const Finish = () => {
-      if (rgnPiece.length >= 2) {
+      if (rgnPiece.length >= nMinimum) {
         rgPieces.push(rgnPiece);
       }
       rgnPiece = [];
@@ -4271,15 +4288,101 @@
     return rgPieces;
   }
 
-  // Options: { szName?, nWidth, nHeight, szSystem, szScale, Anchor } (as Model.CreateLocalMap;
-  // the panel size comes from Source). A new local map copied from part of Source.
+  // A rectangular crop uses local-map options. A whole-panel crop uses
+  // { szKind: 'panel', szPanel, szScale, szName? }. Both inherit Source's panel size.
   function Crop(Source, Options) {
+    Require(Options.szKind === undefined || ['local', 'panel'].includes(Options.szKind), 'Unknown crop kind');
+    if (Options.szKind === 'panel') {
+      Require(Options.szSystem === undefined || Options.szSystem === 'regional', 'Panel crops require regional hexes');
+      const Target = Model.CreatePanelMap({
+        szName: Options.szName === undefined ? Source.szName : Options.szName,
+        szPanel: Options.szPanel, szTileScale: Options.szScale, nPanelHexes: PanelHexes(Source),
+      });
+      return Transfer(Source, Target, { fKeepPoints: true });
+    }
     const Target = Model.CreateLocalMap({
       szName: Options.szName === undefined ? Source.szName : Options.szName,
       nWidth: Options.nWidth, nHeight: Options.nHeight, szSystem: Options.szSystem, szScale: Options.szScale,
       Anchor: Options.Anchor, nPanelHexes: PanelHexes(Source),
     });
     return Transfer(Source, Target);
+  }
+
+  function EmptyCopy(Doc) {
+    return { ...Doc, rgnTerrain: new Uint8Array(Doc.nTiles), Landmarks: new Map(), rgOverlays: [], rgLabels: [], nRevision: 0 };
+  }
+
+  function UniqueId(szBase, Used) {
+    let szId = szBase;
+    for (let nSuffix = 2; Used.has(szId); nSuffix++) {
+      szId = `${szBase}_${nSuffix}`;
+    }
+    Used.add(szId);
+    return szId;
+  }
+
+  // Replaces only imported coverage, preserving Target's geometry and outside content.
+  // Prepare all changes before touching Target; fnRecord groups them into undo history.
+  function Merge(Source, Target, fnRecord = () => {}) {
+    const System = (Doc) => Doc.Local ? Doc.Local.szSystem : 'regional';
+    Require(System(Source) === System(Target), 'Cannot merge local (yard-scale) and regional (mile-scale) hex systems');
+    Require(PanelHexes(Source) === PanelHexes(Target), 'Both maps must use the same panel size');
+    const rgfCovered = new Uint8Array(Target.nTiles);
+    const Imported = Transfer(Source, EmptyCopy(Target), { rgfCovered, fKeepPoints: true, fPartialCoverage: true });
+    const rgnTiles = [];
+    rgfCovered.forEach((fCovered, nTile) => {
+      if (fCovered) {
+        rgnTiles.push(nTile);
+      }
+    });
+    if (rgnTiles.length === 0) {
+      return { rgnTiles, nCovered: 0 };
+    }
+    const Merged = {
+      ...Target, rgnTerrain: Target.rgnTerrain.slice(), Landmarks: new Map(Target.Landmarks),
+      rgOverlays: Target.rgOverlays.slice(), rgLabels: Target.rgLabels.slice(),
+    };
+    const rgChanges = [];
+    const Record = (Change) => {
+      if (Change) {
+        rgChanges.push(Change);
+      }
+    };
+    for (const nTile of rgnTiles) {
+      Record(Model.SetTerrain(Merged, nTile, Imported.rgnTerrain[nTile]));
+      Record(Model.SetLandmark(Merged, nTile, Imported.Landmarks.get(nTile) || null));
+    }
+    const OverlayIds = new Set(Target.rgOverlays.map((Overlay) => Overlay.szId));
+    for (const Overlay of Target.rgOverlays) {
+      if (Overlay.rgnTiles.some((nTile) => rgfCovered[nTile])) {
+        const rgPieces = OverlayPieces(Target, Overlay.rgnTiles.map((nTile) => rgfCovered[nTile] ? -1 : nTile), 1);
+        Record(Model.RemoveOverlay(Merged, Overlay.szId));
+        rgPieces.forEach((rgnPiece, nPiece) => Record(Model.AddOverlay(Merged, {
+          ...Overlay, szId: nPiece === 0 ? Overlay.szId : UniqueId(Overlay.szId, OverlayIds), rgnTiles: rgnPiece,
+        })));
+      }
+    }
+    for (const Overlay of Imported.rgOverlays) {
+      const rgPieces = OverlayPieces(Target, Overlay.rgnTiles.map((nTile) => rgfCovered[nTile] ? nTile : -1), 1);
+      for (const rgnPiece of rgPieces) {
+        Record(Model.AddOverlay(Merged, { ...Overlay, szId: UniqueId(Overlay.szId, OverlayIds), rgnTiles: rgnPiece }));
+      }
+    }
+    for (const Label of Target.rgLabels) {
+      if (rgfCovered[Label.nTile]) {
+        Record(Model.RemoveLabel(Merged, Label.szId));
+      }
+    }
+    const LabelIds = new Set(Merged.rgLabels.map((Label) => Label.szId));
+    for (const Label of Imported.rgLabels) {
+      if (rgfCovered[Label.nTile]) {
+        Record(Model.AddLabel(Merged, { ...Label, szId: UniqueId(Label.szId, LabelIds) }));
+      }
+    }
+    for (const Change of rgChanges) {
+      fnRecord(Model.ApplyChange(Target, Change));
+    }
+    return { rgnTiles, nCovered: rgnTiles.length };
   }
 
   // Tile scales a map of this kind can be rescaled to, as [szSystem, szScale] pairs.
@@ -4330,6 +4433,7 @@
     TileAtPoint,
     Transfer,
     Crop,
+    Merge,
     RescaleOptions,
     LocalRescaleOptions,
     Rescale,
@@ -4344,7 +4448,7 @@
 
   // The human-readable ASCII map file (doc/file-format.md). Write is deterministic, so
   // saved files diff cleanly; Parse reports every problem with its 1-based line number.
-  const g_szMagic = '# RPGMAP 1';
+  const g_szMagic = `# RPGMAP ${Model.g_nFormatVersion}`;
   const g_szFileExtension = '.map.txt';
   const g_szReserved = Terrain.g_szReservedChar;
   // Characters that may never stand for a terrain.
@@ -4648,7 +4752,16 @@
     while (nFirst < rgszLines.length && rgszLines[nFirst].trim() === '') {
       nFirst++;
     }
-    Check(nFirst < rgszLines.length && rgszLines[nFirst].trim() === g_szMagic, nFirst + 1,
+    const szFirst = nFirst < rgszLines.length ? rgszLines[nFirst].trim() : '';
+    const Version = /^# RPGMAP (\d+)$/.exec(szFirst);
+    if (Version !== null) {
+      const nVersion = Number(Version[1]);
+      const szWarning = nVersion < Model.g_nFormatVersion
+        ? `Older map file version ${Version[1]} is no longer supported. Expected "${g_szMagic}". Older files are not automatically migrated.`
+        : `Newer map file version ${Version[1]} is not recognized by this editor. Expected "${g_szMagic}".`;
+      Check(nVersion === Model.g_nFormatVersion, nFirst + 1, szWarning);
+    }
+    Check(szFirst === g_szMagic, nFirst + 1,
       `Not a map file: the first line must be "${g_szMagic}"`);
     const rgSections = [];
     for (let nIndex = nFirst + 1; nIndex < rgszLines.length; nIndex++) {
@@ -5547,11 +5660,12 @@
 (function (Root) {
   'use strict';
   const RpgMap = Root.RpgMap = Root.RpgMap || {};
-  const { Util, Projection, Terrain, View, FileFormat, Regions, Embellish } = RpgMap;
+  const { Util, Projection, Terrain, Model, View, FileFormat, Regions, Embellish } = RpgMap;
   const { Require } = Util;
   const g_dHexUnits = View.g_dLabelUnitsPerHex;
   const g_szUncolouredBody = '#ffffff';
   const g_nDefaultWidth = 1600;
+  const g_dShoreDeviation = 0.30 * 2 / Math.sqrt(3); // Full flat-top hex width in hex-height units.
   const g_Layers = Object.freeze([
     ['terrain', 'Terrain colours', true], ['embellishment', 'Terrain embellishments', true], ['shoreline', 'Shorelines', true], ['grid', 'Hex overlay', false],
     ['road', 'Roads', true], ['trail', 'Trails', true], ['river', 'Rivers', true],
@@ -5615,8 +5729,120 @@
     return { nWidth, nHeight, dWidth, dHeight, rgdBounds };
   }
 
-  function PathData(Path, Transform) {
+  // Shared curves replace both sides of each coast; junctions with other terrain
+  // boundaries move together, so no fill strips, polygon cropping or gaps are needed.
+  function BuildShorelines(Data) {
+    const Vertices = new Map(), Edges = new Map(), Paths = new Map();
+    if (!Data.rgShorelines.length) {
+      return { Vertices, Edges, Paths };
+    }
+    for (const Path of Data.rgShorelines) {
+      const Points = Path.rgrgdPoints, nEdges = Points.length - 1;
+      const Tangents = [], Lengths = [];
+      let nSeed = 0x5a0e;
+      for (let nIndex = 0; nIndex < nEdges; nIndex++) {
+        const Delta = Util.Subtract(Points[nIndex + 1], Points[nIndex]);
+        const dLength = Util.Length(Delta);
+        Tangents.push(Util.Scale(Delta, 1 / dLength));
+        Lengths.push(dLength);
+        nSeed = Util.HashIntegers(nSeed, Math.round(Points[nIndex][0] * 1e6), Math.round(Points[nIndex][1] * 1e6));
+      }
+      const Samples = [];
+      let dDistance = 0;
+      if (!Path.fClosed) {
+        Samples.push({ rgdBase: Points[0], rgdTangent: Tangents[0], dDistance, dLimit: 0 });
+      }
+      for (let nIndex = 0; nIndex < nEdges; nIndex++) {
+        Samples.push({ rgdBase: Util.Scale(Util.Add(Points[nIndex], Points[nIndex + 1]), 0.5),
+          rgdTangent: Tangents[nIndex], dDistance: dDistance + Lengths[nIndex] / 2,
+          dLimit: g_dShoreDeviation * Math.min(1, Lengths[nIndex] * Math.sqrt(3)) });
+        dDistance += Lengths[nIndex];
+      }
+      Samples.push(Path.fClosed ? { ...Samples[0], dDistance: dDistance + Samples[0].dDistance }
+        : { rgdBase: Points.at(-1), rgdTangent: Tangents.at(-1), dDistance, dLimit: 0 });
+      // A backward reachability envelope lets the correlated walk return exactly
+      // to its starting offset without a jump at an open end or closed join.
+      Samples[0].dLimit = Samples.at(-1).dLimit = 0;
+      const Reach = Samples.map((Sample) => Sample.dLimit);
+      for (let nIndex = Reach.length - 2; nIndex >= 0; nIndex--) {
+        Reach[nIndex] = Math.min(Reach[nIndex], Reach[nIndex + 1]
+          + Samples[nIndex + 1].dDistance - Samples[nIndex].dDistance);
+      }
+      const Random = Util.CreateRng(nSeed);
+      let dOffset = 0;
+      Samples.forEach((Sample, nIndex) => {
+        const dStep = nIndex ? Sample.dDistance - Samples[nIndex - 1].dDistance : 0;
+        const dLow = Math.max(-Reach[nIndex], dOffset - dStep);
+        const dHigh = Math.min(Reach[nIndex], dOffset + dStep);
+        dOffset = dLow + (dHigh - dLow) * Random();
+        const Normal = [-Sample.rgdTangent[1], Sample.rgdTangent[0]];
+        Sample.rgdPoint = Util.Add(Sample.rgdBase, Util.Scale(Normal, dOffset));
+      });
+      const nSamples = Samples.length - (Path.fClosed ? 1 : 0);
+      Samples.forEach((Sample, nIndex) => {
+        const nPoint = nIndex % nSamples;
+        const Before = Samples[Path.fClosed ? (nPoint + nSamples - 1) % nSamples : Math.max(0, nPoint - 1)].rgdPoint;
+        const After = Samples[Path.fClosed ? (nPoint + 1) % nSamples : Math.min(nSamples - 1, nPoint + 1)].rgdPoint;
+        const dLength = !Path.fClosed && (nPoint === 0 || nPoint === nSamples - 1)
+          ? Util.Distance(Before, After) : Math.min(Util.Distance(Before, Sample.rgdPoint), Util.Distance(Sample.rgdPoint, After));
+        Sample.rgdHandle = Util.Scale(Util.Unit(Util.Subtract(After, Before)), dLength / 3);
+      });
+      const Curves = Samples.slice(0, -1).map((Sample, nIndex) => {
+        const Next = Samples[nIndex + 1];
+        return [Sample.rgdPoint, Util.Add(Sample.rgdPoint, Sample.rgdHandle),
+          Util.Subtract(Next.rgdPoint, Next.rgdHandle), Next.rgdPoint];
+      });
+      Paths.set(Path, Curves);
+      // These are exact subdivisions of the midpoint spline, not interpolation
+      // constraints at hex corners. They let neighbouring fill regions share it.
+      const Halves = Curves.map((Curve, nIndex) => {
+        const nBefore = Path.fClosed ? nIndex : nIndex - 1;
+        const dT = nBefore >= 0 && nBefore + 1 < Lengths.length
+          ? Lengths[nBefore] / (Lengths[nBefore] + Lengths[nBefore + 1])
+          : Path.fClosed ? Lengths.at(-1) / (Lengths.at(-1) + Lengths[0]) : 0.5;
+        return View.SplitCurve(Curve, dT);
+      });
+      for (let nIndex = 0; nIndex < nEdges; nIndex++) {
+        const Pieces = Path.fClosed
+          ? [Halves[(nIndex + nEdges - 1) % nEdges][1], Halves[nIndex][0]]
+          : [nIndex === 0 ? Curves[0] : Halves[nIndex][1],
+            nIndex === nEdges - 1 ? Curves.at(-1) : Halves[nIndex + 1][0]];
+        const A = Points[nIndex], B = Points[nIndex + 1];
+        Vertices.set(A, Pieces[0][0]);
+        Vertices.set(B, Pieces[1][3]);
+        if (!Edges.has(A)) Edges.set(A, new Map());
+        if (!Edges.has(B)) Edges.set(B, new Map());
+        Edges.get(A).set(B, Pieces);
+        Edges.get(B).set(A, Pieces.map((Curve) => [...Curve].reverse()).reverse());
+      }
+    }
+    return { Vertices, Edges, Paths };
+  }
+
+  function PathData(Path, Transform, Shorelines = null) {
     const Points = Path.fClosed ? Path.rgrgdPoints.slice(0, -1) : Path.rgrgdPoints;
+    if (Shorelines && Shorelines.Edges.size) {
+      const PointText = (Point) => Projection.ApplyTransform(Transform, Point).map(NumberText).join(' ');
+      const Curves = Shorelines.Paths.get(Path);
+      if (Curves) {
+        return `M${PointText(Curves[0][0])}`
+          + Curves.map((Curve) => `C${Curve.slice(1).map(PointText).join(' ')}`).join('') + (Path.fClosed ? 'Z' : '');
+      }
+      const Commands = [`M${PointText(Shorelines.Vertices.get(Points[0]) || Points[0])}`];
+      const nEdges = Path.fClosed ? Points.length : Points.length - 1;
+      for (let nIndex = 0; nIndex < nEdges; nIndex++) {
+        const A = Points[nIndex], B = Points[(nIndex + 1) % Points.length];
+        const Curves = Shorelines.Edges.get(A)?.get(B);
+        if (Curves) {
+          for (const Curve of Curves) {
+            Commands.push(`C${Curve.slice(1).map(PointText).join(' ')}`);
+          }
+        } else if (nIndex + 1 < Points.length) {
+          Commands.push(`L${PointText(Shorelines.Vertices.get(B) || B)}`);
+        }
+      }
+      return Commands.join('') + (Path.fClosed ? 'Z' : '');
+    }
     return Points.map((Point, nIndex) =>
       `${nIndex ? 'L' : 'M'}${Projection.ApplyTransform(Transform, Point).map(NumberText).join(' ')}`).join('')
       + (Path.fClosed ? 'Z' : '');
@@ -5653,6 +5879,7 @@
     const Size = Dimensions(Doc, szPanel, Options.nWidth === undefined ? g_nDefaultWidth : Options.nWidth, Layers.reference);
     const Geometry = View.MapGeometry(Doc);
     const RegionsData = Regions.Build(Doc, szPanel);
+    const Shorelines = Layers.shoreline ? BuildShorelines(RegionsData) : null;
     // Local maps that span seams draw every panel part at its unfolded place.
     const Layout = Geometry.Span ? View.MapLayout(Doc)
       : { rgPlacements: [View.FindPlacement(Doc.Local ? View.MapLayout(Doc) : View.BuildFocusLayout(szPanel), szPanel)] };
@@ -5671,7 +5898,7 @@
       .map((Item) => Item && (Item.rgInstances.length || Item.rgrgrgdTrunks.length) ? Item : null);
     if (Layers.terrain || Layers.embellishment) {
       RegionsData.rgRegions.forEach((Region, nIndex) => {
-        const szPath = Region.rgrgrgdLoops.map((Points) => PathData({ rgrgdPoints: Points, fClosed: true }, rgdHexToSvg)).join('');
+        const szPath = Region.rgrgrgdLoops.map((Points) => PathData({ rgrgdPoints: Points, fClosed: true }, rgdHexToSvg, Shorelines)).join('');
         Lines.push(`<path id="region-${nIndex}" fill-rule="evenodd" clip-rule="evenodd" d="${szPath}"/>`);
       });
     }
@@ -5732,7 +5959,7 @@
     if (Layers.shoreline) {
       Lines.push('<g id="layer-shoreline" fill="none" stroke="#253c46" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">');
       for (const Path of RegionsData.rgShorelines) {
-        Lines.push(`<path d="${PathData(Regions.SmoothPath(Path), rgdHexToSvg)}"/>`);
+        Lines.push(`<path d="${PathData(Path, rgdHexToSvg, Shorelines)}"/>`);
       }
       Lines.push('</g>');
     }
@@ -5764,7 +5991,7 @@
         // taper. Using the original point index keeps widths identical at panel seams.
         let Parts = [Curve.rgrgdControl];
         for (let nPass = 0; nPass < 3; nPass++) {
-          Parts = Parts.flatMap(View.SplitCurve);
+          Parts = Parts.flatMap((Part) => View.SplitCurve(Part));
         }
         Parts.forEach((Part, nPart) => {
           const dProgress = (Curve.nPoint + (nPart + 0.5) / Parts.length) / (Overlay.rgnTiles.length - 1);
@@ -5840,11 +6067,18 @@
     const nFirst = Doc.Local ? 0 : Doc.Topo.Panels[szPanel].nFirstTile;
     const nTiles = Doc.Local ? Doc.nTiles : Doc.Topo.Panels[szPanel].nTileCount;
     const rgfEmbellished = Terrain.g_rgTerrains.map((Type) => !!Type.Embellish);
-    let nEmbellished = 0;
+    let nEmbellished = 0, nCoastal = 0;
     for (let nTile = nFirst; nTile < nFirst + nTiles; nTile++) {
       nEmbellished += rgfEmbellished[Doc.rgnTerrain[nTile]] ? 1 : 0;
+      const fWater = Terrain.IsWater(Doc.rgnTerrain[nTile]);
+      for (const nOther of Model.Neighbors(Doc, nTile)) {
+        nCoastal += fWater !== Terrain.IsWater(Doc.rgnTerrain[nOther]) ? 1 : 0;
+      }
     }
-    return { nTiles, nEmbellished, nBytes: 4096 + 4 * nTiles + (fEmbellish ? nEmbellished * g_nEmbellishedTileBytes : 0) };
+    // Include both region copies and the stroke. Interior coasts are counted from
+    // both tiles; panel-edge neighbours provide a conservative seam allowance.
+    return { nTiles, nEmbellished, nBytes: 4096 + 4 * nTiles + 640 * nCoastal
+      + (fEmbellish ? nEmbellished * g_nEmbellishedTileBytes : 0) };
   }
 
   function FileName(Doc, szPanel = Doc.Local ? 'local' : Doc.Global.szPanel || null) {
@@ -5853,7 +6087,8 @@
     return `${szBase}${Doc.Local ? '' : '-' + Projection.Build().Panels[szPanel].szName}.svg`;
   }
 
-  RpgMap.SvgExport = Object.freeze({ g_dHexUnits, g_nDefaultWidth, g_Layers, g_nEmbellishedTileBytes, Escape, Dimensions, Estimate, Write, FileName });
+  RpgMap.SvgExport = Object.freeze({ g_dHexUnits, g_nDefaultWidth, g_Layers, g_nEmbellishedTileBytes,
+    g_dShoreDeviation, BuildShorelines, Escape, Dimensions, Estimate, Write, FileName });
 })(globalThis);
 </script>
 
@@ -6997,7 +7232,7 @@
     });
   }
 
-  // Copies part of the open map (any kind) into a new local map at any scale.
+  // Copies a rectangle or an entire panel, optionally at another tile scale.
   function CropMap() {
     const Dialog = Root.document.getElementById('crop-map-dialog');
     if (Dialog.open) {
@@ -7017,10 +7252,13 @@
     const Height = NumberInput(24);
     const Scale = SelectControl(Object.keys(Lattice.g_Scales).flatMap((szSystem) => Lattice.g_rgszSizes.map((szSize) =>
       [`${szSystem} ${szSize}`, ScaleText(szSystem, szSize)])), `${szSourceSystem} ${szSourceScale}`, () => Update());
+    const Kind = SelectControl([['local', 'Rectangle'], ['panel', 'Entire panel']], 'local', () => UpdateScales());
     // Centre the default crop on the selected tile, or else on the view centre.
     const Hit = View.HitTest(View.MapGeometry(Doc), State.Layout, [State.Camera.dCenterX, State.Camera.dCenterY]);
     const nCenterTile = State.nSelectedTile >= 0 ? State.nSelectedTile : Hit ? Hit.nTile : 0;
     const Center = Model.TileToUniversal(Doc, nCenterTile);
+    const Panel = SelectControl(Object.keys(Projection.g_SectorLabels).map((szPanel) =>
+      [szPanel, Projection.Build().Panels[szPanel].szName]), Doc.Global && Doc.Global.szPanel || State.Layout.szFocus || Center.szPanel, () => Update());
     const dHexMiles = Model.HexMiles(Doc);
     const Anchor = Element('input', { type: 'text', required: true });
     let fAnchorEdited = false;
@@ -7041,12 +7279,17 @@
     const Preview = Element('p', { id: 'crop-map-preview', className: 'tool-help' });
     const ErrorText = Element('p', { id: 'crop-map-error', className: 'dialog-error', role: 'alert' });
     const OpenButton = Element('button', { id: 'crop-open', type: 'submit', className: 'tool-button', textContent: 'Open crop' });
-    const Form = Element('form', { id: 'crop-map-form', noValidate: true }, [
-      Element('h2', { id: 'crop-map-title', textContent: 'Crop to local map' }),
-      Field('crop-name', 'Name', Name),
+    const PanelField = Field('crop-panel', 'Panel', Panel);
+    const LocalFields = Element('div', {}, [
       Field('crop-width', 'Width (hexes)', Width), Field('crop-height', 'Height (hexes)', Height),
-      Field('crop-scale', 'Hex size', Scale),
       Field('crop-anchor', 'Anchor of tile (0, 0), in miles', Anchor),
+    ]);
+    const Form = Element('form', { id: 'crop-map-form', noValidate: true }, [
+      Element('h2', { id: 'crop-map-title', textContent: 'Crop map' }),
+      Field('crop-name', 'Name', Name),
+      Field('crop-kind', 'Crop shape', Kind), PanelField,
+      Field('crop-scale', 'Hex size', Scale),
+      LocalFields,
       Element('p', { className: 'tool-help', textContent: 'Larger hexes take the most common terrain of the tiles they cover; smaller hexes repeat the tile they lie in. Landmarks, labels, roads, trails and rivers are copied where they fall inside the crop.' }),
       Preview, ErrorText,
       Element('div', { className: 'property-actions' }, [
@@ -7057,22 +7300,49 @@
     ]);
     const Options = () => {
       const [szSystem, szScale] = Scale.value.split(' ');
+      if (Kind.value === 'panel') {
+        return { szKind: 'panel', szName: Name.value, szPanel: Panel.value, szSystem, szScale };
+      }
       return {
         szName: Name.value, nWidth: Number(Width.value), nHeight: Number(Height.value), szSystem, szScale,
         Anchor: Coordinates.ParseUniversal(Anchor.value), nPanelHexes: Doc.Global ? Doc.Global.nPanelHexes : Doc.Local.nPanelHexes,
       };
     };
+    function UpdateScales() {
+      const szPrevious = Scale.value;
+      const rgOptions = Kind.value === 'panel' ? ['XL', 'L', 'M'].map((szSize) => ['regional', szSize])
+        : Object.keys(Lattice.g_Scales).flatMap((szSystem) => Lattice.g_rgszSizes.map((szSize) => [szSystem, szSize]));
+      Scale.replaceChildren(...rgOptions.map(([szSystem, szSize]) => Element('option', {
+        value: `${szSystem} ${szSize}`, textContent: ScaleText(szSystem, szSize),
+      })));
+      Scale.value = rgOptions.some(([szSystem, szSize]) => `${szSystem} ${szSize}` === szPrevious)
+        ? szPrevious : 'regional M';
+      Update();
+    }
     function Update() {
       ErrorText.textContent = '';
-      CenterAnchor();
+      const fPanel = Kind.value === 'panel';
+      PanelField.hidden = !fPanel;
+      Panel.disabled = !fPanel;
+      LocalFields.hidden = fPanel;
+      for (const Control of [Width, Height, Anchor]) {
+        Control.disabled = fPanel;
+      }
+      if (!fPanel) {
+        CenterAnchor();
+      }
       try {
         const Checked = Options();
-        Coordinates.CreateLocalMap(Checked);
+        if (!fPanel) {
+          Coordinates.CreateLocalMap(Checked);
+        }
         const dRatio = dHexMiles / Lattice.ScaleMiles(Checked.szSystem, Checked.szScale);
         const szRatio = Math.abs(dRatio - 1) < 1e-9 ? 'Same hex size as this map.'
           : dRatio > 1 ? `Each hex here becomes about ${Util.FormatNumber(dRatio, 1)} hexes across.`
             : `Each new hex covers about ${Util.FormatNumber(1 / dRatio, 1)} hexes across.`;
-        Preview.textContent = `${szRatio} ${LocalSpanText(Checked)} Tiles outside this map start as water.`;
+        const szExtent = fPanel ? `The entire ${Projection.Build().Panels[Checked.szPanel].szName} panel, clipped to its outline.`
+          : LocalSpanText(Checked);
+        Preview.textContent = `${szRatio} ${szExtent} Tiles outside this map start as water.`;
       } catch (Caught) {
         Preview.textContent = `Check crop settings: ${Caught.message}`;
       }
@@ -7195,6 +7465,50 @@
         }
       }), (Caught) => SetMessage(`Can't read ${File.name}: ${Caught.message}`));
     }
+  }
+
+  function ImportMap() {
+    if (State.Stroke || State.LabelDrag) {
+      SetMessage('Finish the current edit before importing');
+      return;
+    }
+    Root.document.getElementById('import-file').click();
+  }
+
+  function ImportFileChosen(Input) {
+    const File = Input.files && Input.files[0];
+    Input.value = '';
+    if (!File) {
+      return;
+    }
+    const Target = State.Doc;
+    const nRevision = Target.nRevision;
+    SetMessage(`Importing ${File.name}\u2026`);
+    File.text().then((szText) => RunAfterPaint(() => {
+      try {
+        if (State.Doc !== Target || Target.nRevision !== nRevision || State.Stroke || State.LabelDrag
+          || Root.document.querySelector('dialog[open]')) {
+          throw new Error('The map changed while reading the file; select the import file again');
+        }
+        const Source = FileFormat.Parse(szText);
+        let Result;
+        const Command = History.Perform(State.History, `Import ${File.name}`, (Doc, Record) => {
+          Result = Resample.Merge(Source, Doc, Record);
+        });
+        if (Command) {
+          TilesChanged(Result.rgnTiles);
+          State.szPathAction = 'select';
+          SyncSelection();
+          BuildProperties();
+          SetHover(State.nHoverTile);
+        }
+        SetMessage(Result.nCovered === 0 ? `No overlap with ${File.name}; nothing imported`
+          : Command ? `Imported ${File.name}: replaced contents of ${CountText(Result.nCovered)} (Undo available)`
+            : `${File.name}: overlapping contents are already identical`);
+      } catch (Caught) {
+        SetMessage(`Can't import ${File.name}: ${Caught.message}`);
+      }
+    }), (Caught) => SetMessage(`Can't read ${File.name}: ${Caught.message}`));
   }
 
   // Runs fnWork after the browser has painted pending changes (e.g. a busy message),
@@ -7480,14 +7794,17 @@
     Select.addEventListener('change', () => (Select.value ? ShowFocus(Select.value) : ShowNet()));
     const OpenInput = Element('input', { id: 'open-file', type: 'file', accept: `.txt,${FileFormat.g_szFileExtension},text/plain`, hidden: true });
     OpenInput.addEventListener('change', () => OpenFileChosen(OpenInput));
+    const ImportInput = Element('input', { id: 'import-file', type: 'file', accept: `.txt,${FileFormat.g_szFileExtension},text/plain`, hidden: true });
+    ImportInput.addEventListener('change', () => ImportFileChosen(ImportInput));
     const rgButtons = [
       Element('button', { id: 'file-new', type: 'button', textContent: 'New', title: 'Create a global world, single panel or local map', onclick: NewMap }),
       Element('button', { id: 'file-open', type: 'button', textContent: 'Open\u2026', title: 'Open a .map.txt file (Ctrl+O)', onclick: OpenMap }),
+      Element('button', { id: 'file-import', type: 'button', textContent: 'Import / merge\u2026', title: 'Replace overlapping terrain and features from another map at this map\'s hex size; Undo available', onclick: ImportMap }),
       Element('button', { id: 'file-save', type: 'button', textContent: 'Save', title: 'Download the map as a .map.txt file (Ctrl+S)', onclick: SaveMap }),
       Element('button', { id: 'file-export', type: 'button', textContent: 'Export SVG', title: 'Export one panel or a local map as SVG', onclick: ExportMap }),
-      Element('button', { id: 'file-crop', type: 'button', textContent: 'Crop\u2026', title: 'Copy part of this map into a new local map, at any scale', onclick: CropMap }),
+      Element('button', { id: 'file-crop', type: 'button', textContent: 'Crop\u2026', title: 'Copy a rectangle or entire panel into a new map, optionally at another hex size', onclick: CropMap }),
       Element('button', { id: 'file-rescale', type: 'button', textContent: 'Rescale\u2026', title: 'Change the tile scale of this map', onclick: RescaleMap }),
-      OpenInput,
+      OpenInput, ImportInput,
       Element('span', { className: 'toolbar-gap' }),
       Element('button', { id: 'view-net', type: 'button', textContent: 'Net view', title: 'Show the whole net (N)', onclick: ShowNet }),
       Select,
