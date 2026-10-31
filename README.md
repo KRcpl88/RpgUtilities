@@ -2,12 +2,51 @@
 
 Utilities for fantasy role-playing games.
 
-## Tree rendering experiment
+## Tree and mountain rendering experiment
 
 Run `python3 tools/render_trees.py` to create `trees.svg` with three random trees
-in a row. Each run varies the crown size and scalloped outline. Uses only Python's
-standard library; optionally pass an output path, such as
+and a second row of three random M-shaped mountains. Each run varies the tree
+crowns and mountain slopes. Each mountain has two peaks, a valley, and two or
+three intermediate points on each slope, with a light-gray fill and a black
+outline that leaves the bottom edge unstroked. Uses only Python's standard
+library; optionally pass an output path, such as
 `python3 tools/render_trees.py /tmp/trees.svg`. Open the SVG in a browser to view it.
+
+Below the trees and mountains is a V-shaped forest of 45 flat-top hexagons:
+four columns descend on the left, followed by five columns ascending on the
+right, with five hexagons per column and one random tree centered in each hex.
+
+`VHexCluster()` returns the forest's hex polygons. Use
+`HorizontalSegments(rgHexes, dY)` with any contiguous cluster represented as a
+list of hex polygons (each a list of six `(x, y)` vertices, as returned by
+`HexVertices(x, y, radius)`). It returns sorted `((left_x, y), (right_x, y))`
+segments, merging shared edges while preserving gaps, including the gap between
+the V's upper arms. Lines outside the cluster return `[]`. Horizontal boundary
+edges are included; isolated vertex touches are omitted.
+
+Create other shapes with `BuildHexCluster(data)`, accepting a Python dictionary
+or JSON text. `hexes` lists integer axial `[q, r]` coordinates; optional `radius`
+defaults to 24 and `origin` defaults to `[0, 0]`. Centers are
+`x = origin_x + 1.5 * radius * q` and
+`y = origin_y + sqrt(3) * radius * (r + q / 2)` (SVG y increases downward).
+The helper returns polygons usable by `HexForest` and `HorizontalSegments`.
+Empty, duplicate, malformed, or disconnected clusters raise `ValueError`;
+contiguity means shared edges, and holes are allowed.
+
+The rendered cluster is defined by the `g_szClusterJson` string near the top of
+`tools/render_trees.py`; no separate JSON file is needed. It initially contains
+the original V. To try a compact flower, replace the string with:
+
+```python
+g_szClusterJson = """
+{"hexes": [[0, 0], [1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]], "radius": 24}
+"""
+```
+
+Run `python3 tools/render_trees.py /tmp/forest.svg`. The embedded cluster is
+centered below the existing drawings and expands the SVG canvas as needed.
+Trees scale with the hex radius. Invalid embedded JSON reports an error rather
+than falling back to another shape.
 
 ## World map editor
 
