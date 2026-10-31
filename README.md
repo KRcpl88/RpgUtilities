@@ -2,6 +2,13 @@
 
 Utilities for fantasy role-playing games.
 
+## Tree rendering experiment
+
+Run `python3 tools/render_trees.py` to create `trees.svg` with three random trees
+in a row. Each run varies the crown size and scalloped outline. Uses only Python's
+standard library; optionally pass an output path, such as
+`python3 tools/render_trees.py /tmp/trees.svg`. Open the SVG in a browser to view it.
+
 ## World map editor
 
 `map-editor/index.html` is a single-file hex map editor. It uses only native
