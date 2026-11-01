@@ -1,211 +1,211 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { LoadModules } = require('./_load.cjs');
+const { loadModules } = require('./_load.cjs');
 
-const { Util, Projection, Lattice, Terrain, Model, View } = LoadModules();
+const { Util: util, Projection: projection, Lattice: lattice, Terrain: terrain, Model: model, View: view } = loadModules();
 
-const g_dEpsilon = 1e-9;
-const g_Doc = Model.CreateGlobalMap({ nPanelHexes: 4, szTileScale: 'XL', szName: 'Test' });
-const g_Topo = g_Doc.Topo;
+const EPSILON = 1e-9;
+const mapFixture = model.createGlobalMap({ panelHexes: 4, tileScale: 'XL', name: 'Test' });
+const topologyFixture = mapFixture.topo;
 
-function AssertClose(dActual, dExpected, szMessage, dTolerance = g_dEpsilon) {
-  assert.ok(Math.abs(dActual - dExpected) <= dTolerance, `${szMessage}: ${dActual} vs ${dExpected}`);
+function assertClose(actual, expected, message, tolerance = EPSILON) {
+  assert.ok(Math.abs(actual - expected) <= tolerance, `${message}: ${actual} vs ${expected}`);
 }
 
-function Centroid(rgrgdPolygon) {
-  let dArea = 0;
-  let dX = 0;
-  let dY = 0;
-  for (let nIndex = 0; nIndex < rgrgdPolygon.length; nIndex++) {
-    const [dX0, dY0] = rgrgdPolygon[nIndex];
-    const [dX1, dY1] = rgrgdPolygon[(nIndex + 1) % rgrgdPolygon.length];
-    const dCross = dX0 * dY1 - dX1 * dY0;
-    dArea += dCross;
-    dX += (dX0 + dX1) * dCross;
-    dY += (dY0 + dY1) * dCross;
+function centroid(polygon) {
+  let area = 0;
+  let x = 0;
+  let y = 0;
+  for (let index = 0; index < polygon.length; index++) {
+    const [x0, y0] = polygon[index];
+    const [x1, y1] = polygon[(index + 1) % polygon.length];
+    const cross = x0 * y1 - x1 * y0;
+    area += cross;
+    x += (x0 + x1) * cross;
+    y += (y0 + y1) * cross;
   }
-  return [dX / (3 * dArea), dY / (3 * dArea)];
+  return [x / (3 * area), y / (3 * area)];
 }
 
-function HexVertices(rgdCenter) {
-  const dRadius = Lattice.HexRadius(g_Topo.dD);
-  return [0, 1, 2, 3, 4, 5].map((nIndex) => [
-    rgdCenter[0] + dRadius * Math.cos(nIndex * Math.PI / 3),
-    rgdCenter[1] + dRadius * Math.sin(nIndex * Math.PI / 3),
+function hexVertices(center) {
+  const radius = lattice.hexRadius(topologyFixture.d);
+  return [0, 1, 2, 3, 4, 5].map((index) => [
+    center[0] + radius * Math.cos(index * Math.PI / 3),
+    center[1] + radius * Math.sin(index * Math.PI / 3),
   ]);
 }
 
 // Points (in the tile's own panel frame) that must hit the tile: the centre of a whole
 // hex, or the centroid of each piece lying in the owning panel.
-function ProbePoints(Tile) {
-  if (!Tile.rgPieces) {
-    return [Tile.rgdCenter];
+function probePoints(tile) {
+  if (!tile.pieces) {
+    return [tile.center];
   }
-  return Tile.rgPieces.filter((Piece) => Piece.szPanel === Tile.szPanel).map((Piece) => Centroid(Piece.rgrgdPolygon));
+  return tile.pieces.filter((piece) => piece.panelId === tile.panelId).map((piece) => centroid(piece.polygon));
 }
 
 test('camera world ↔ screen round trips and matches its transform', () => {
-  const Camera = View.CreateCamera(640, 480);
-  View.CenterOn(Camera, [1.25, -0.75]);
-  Camera.dScale = 137;
-  const rgdT = View.WorldToScreenTransform(Camera);
-  for (const rgdWorld of [[0, 0], [1.25, -0.75], [3, 2], [-4.5, 0.1]]) {
-    const rgdScreen = View.WorldToScreen(Camera, rgdWorld);
-    const rgdBack = View.ScreenToWorld(Camera, rgdScreen);
-    AssertClose(rgdBack[0], rgdWorld[0], 'x');
-    AssertClose(rgdBack[1], rgdWorld[1], 'y');
-    const rgdViaT = Projection.ApplyTransform(rgdT, rgdWorld);
-    AssertClose(rgdViaT[0], rgdScreen[0], 'tx');
-    AssertClose(rgdViaT[1], rgdScreen[1], 'ty');
+  const camera = view.createCamera(640, 480);
+  view.centerOn(camera, [1.25, -0.75]);
+  camera.scale = 137;
+  const t = view.worldToScreenTransform(camera);
+  for (const world of [[0, 0], [1.25, -0.75], [3, 2], [-4.5, 0.1]]) {
+    const screen = view.worldToScreen(camera, world);
+    const back = view.screenToWorld(camera, screen);
+    assertClose(back[0], world[0], 'x');
+    assertClose(back[1], world[1], 'y');
+    const viaT = projection.applyTransform(t, world);
+    assertClose(viaT[0], screen[0], 'tx');
+    assertClose(viaT[1], screen[1], 'ty');
   }
-  assert.deepEqual(View.WorldToScreen(Camera, [1.25, -0.75]), [320, 240]);
+  assert.deepEqual(view.worldToScreen(camera, [1.25, -0.75]), [320, 240]);
   // y is up in world, down on screen.
-  assert.ok(View.WorldToScreen(Camera, [1.25, 0])[1] < 240);
+  assert.ok(view.worldToScreen(camera, [1.25, 0])[1] < 240);
 });
 
 test('ZoomAt keeps the cursor point fixed and clamps the scale', () => {
-  const Camera = View.CreateCamera(800, 600);
-  const rgdCursor = [123, 456];
-  const rgdBefore = View.ScreenToWorld(Camera, rgdCursor);
-  View.ZoomAt(Camera, rgdCursor, 3.5);
-  AssertClose(Camera.dScale, 350, 'scale');
-  const rgdAfter = View.ScreenToWorld(Camera, rgdCursor);
-  AssertClose(rgdAfter[0], rgdBefore[0], 'x');
-  AssertClose(rgdAfter[1], rgdBefore[1], 'y');
-  View.ZoomAt(Camera, rgdCursor, 1e12);
-  assert.equal(Camera.dScale, View.g_dMaxScale);
-  View.ZoomAt(Camera, rgdCursor, 1e-12);
-  assert.equal(Camera.dScale, View.g_dMinScale);
-  assert.equal(View.ClampScale(50), 50);
+  const camera = view.createCamera(800, 600);
+  const cursor = [123, 456];
+  const before = view.screenToWorld(camera, cursor);
+  view.zoomAt(camera, cursor, 3.5);
+  assertClose(camera.scale, 350, 'scale');
+  const after = view.screenToWorld(camera, cursor);
+  assertClose(after[0], before[0], 'x');
+  assertClose(after[1], before[1], 'y');
+  view.zoomAt(camera, cursor, 1e12);
+  assert.equal(camera.scale, view.MAX_SCALE);
+  view.zoomAt(camera, cursor, 1e-12);
+  assert.equal(camera.scale, view.MIN_SCALE);
+  assert.equal(view.clampScale(50), 50);
 });
 
 test('Pan moves content by screen pixels; FitBounds shows the whole box', () => {
-  const Camera = View.CreateCamera(800, 600);
-  const rgdWorld = [0.3, 0.4];
-  const rgdBefore = View.WorldToScreen(Camera, rgdWorld);
-  View.Pan(Camera, 15, -20);
-  const rgdAfter = View.WorldToScreen(Camera, rgdWorld);
-  AssertClose(rgdAfter[0] - rgdBefore[0], 15, 'dx');
-  AssertClose(rgdAfter[1] - rgdBefore[1], -20, 'dy');
+  const camera = view.createCamera(800, 600);
+  const world = [0.3, 0.4];
+  const before = view.worldToScreen(camera, world);
+  view.pan(camera, 15, -20);
+  const after = view.worldToScreen(camera, world);
+  assertClose(after[0] - before[0], 15, 'dx');
+  assertClose(after[1] - before[1], -20, 'dy');
 
-  const rgdBounds = View.BuildNetLayout().rgdBounds;
-  View.FitBounds(Camera, rgdBounds, 24);
-  const rgdVisible = View.VisibleBounds(Camera);
-  assert.ok(rgdVisible[0] <= rgdBounds[0] && rgdVisible[1] <= rgdBounds[1]);
-  assert.ok(rgdVisible[2] >= rgdBounds[2] && rgdVisible[3] >= rgdBounds[3]);
-  const [dLeft, dTop] = View.WorldToScreen(Camera, [rgdBounds[0], rgdBounds[3]]);
-  const [dRight, dBottom] = View.WorldToScreen(Camera, [rgdBounds[2], rgdBounds[1]]);
+  const bounds = view.buildNetLayout().bounds;
+  view.fitBounds(camera, bounds, 24);
+  const visible = view.visibleBounds(camera);
+  assert.ok(visible[0] <= bounds[0] && visible[1] <= bounds[1]);
+  assert.ok(visible[2] >= bounds[2] && visible[3] >= bounds[3]);
+  const [left, top] = view.worldToScreen(camera, [bounds[0], bounds[3]]);
+  const [right, bottom] = view.worldToScreen(camera, [bounds[2], bounds[1]]);
   // One axis touches the margin exactly.
-  assert.ok(Math.abs(dLeft - 24) < 1e-6 || Math.abs(dTop - 24) < 1e-6);
-  assert.ok(dRight <= 776 + 1e-6 && dBottom <= 576 + 1e-6);
+  assert.ok(Math.abs(left - 24) < 1e-6 || Math.abs(top - 24) < 1e-6);
+  assert.ok(right <= 776 + 1e-6 && bottom <= 576 + 1e-6);
 });
 
 test('bounds helpers', () => {
-  assert.deepEqual(View.BoundsOf([[1, 2], [-1, 5], [0, 0]]), [-1, 0, 1, 5]);
-  assert.ok(View.BoundsIntersect([0, 0, 1, 1], [1, 1, 2, 2]));
-  assert.ok(!View.BoundsIntersect([0, 0, 1, 1], [1.01, 0, 2, 1]));
-  assert.deepEqual(View.UnionBounds([[0, 0, 1, 1], [2, -1, 3, 0.5]]), [0, -1, 3, 1]);
-  const rgdRotated = View.TransformBounds([0, 1, -1, 0, 10, 0], [0, 0, 2, 1]);
-  [9, 0, 10, 2].forEach((dValue, nIndex) => AssertClose(rgdRotated[nIndex], dValue, `rotated ${nIndex}`));
+  assert.deepEqual(view.boundsOf([[1, 2], [-1, 5], [0, 0]]), [-1, 0, 1, 5]);
+  assert.ok(view.boundsIntersect([0, 0, 1, 1], [1, 1, 2, 2]));
+  assert.ok(!view.boundsIntersect([0, 0, 1, 1], [1.01, 0, 2, 1]));
+  assert.deepEqual(view.unionBounds([[0, 0, 1, 1], [2, -1, 3, 0.5]]), [0, -1, 3, 1]);
+  const rotated = view.transformBounds([0, 1, -1, 0, 10, 0], [0, 0, 2, 1]);
+  [9, 0, 10, 2].forEach((value, index) => assertClose(rotated[index], value, `rotated ${index}`));
 });
 
 test('net layout places every panel at its net frame', () => {
-  const Built = Projection.Build();
-  const Layout = View.BuildNetLayout();
-  assert.equal(Layout, View.BuildNetLayout(), 'cached');
-  assert.equal(Layout.szMode, 'net');
-  assert.equal(Layout.rgPlacements.length, Object.keys(Built.Panels).length);
-  assert.equal(Layout.rgPlacements.length, 18);
-  for (const Placement of Layout.rgPlacements) {
-    assert.deepEqual([...Placement.rgdFrameToWorld], [...Built.Frames[Placement.szPanel].rgdFrameToNet]);
-    assert.equal(View.FindPlacement(Layout, Placement.szPanel), Placement);
-    const Hit = View.PlacementAt(Layout, Placement.rgdCenter);
-    assert.equal(Hit.Placement, Placement);
-    AssertClose(Hit.rgdFrame[0], 0, 'frame x');
-    AssertClose(Hit.rgdFrame[1], 0, 'frame y');
+  const built = projection.build();
+  const layout = view.buildNetLayout();
+  assert.equal(layout, view.buildNetLayout(), 'cached');
+  assert.equal(layout.mode, 'net');
+  assert.equal(layout.placements.length, Object.keys(built.panels).length);
+  assert.equal(layout.placements.length, 18);
+  for (const placement of layout.placements) {
+    assert.deepEqual([...placement.frameToWorld], [...built.frames[placement.panelId].frameToNet]);
+    assert.equal(view.findPlacement(layout, placement.panelId), placement);
+    const hit = view.placementAt(layout, placement.center);
+    assert.equal(hit.placement, placement);
+    assertClose(hit.framePoint[0], 0, 'frame x');
+    assertClose(hit.framePoint[1], 0, 'frame y');
   }
-  assert.equal(View.PlacementAt(Layout, [Layout.rgdBounds[2] + 1, 0]), null);
+  assert.equal(view.placementAt(layout, [layout.bounds[2] + 1, 0]), null);
 });
 
 test('focus layouts unfold every neighbour across its shared seam', () => {
-  const Built = Projection.Build();
-  for (const szFocus of Object.keys(Built.Panels)) {
-    const Layout = View.BuildFocusLayout(szFocus);
-    assert.equal(Layout, View.BuildFocusLayout(szFocus), 'cached');
-    assert.equal(Layout.szMode, 'focus');
-    assert.equal(Layout.szFocus, szFocus);
-    const Focus = Layout.rgPlacements[Layout.rgPlacements.length - 1];
-    assert.equal(Focus.szPanel, szFocus, 'focus drawn last');
-    assert.deepEqual([...Focus.rgdFrameToWorld], [...View.g_rgdIdentity]);
-    const nSeams = Built.Seams.filter((Seam) => Seam.szPanelA === szFocus || Seam.szPanelB === szFocus).length;
-    assert.equal(Layout.rgPlacements.length, nSeams + 1);
-    assert.equal(nSeams, Built.Frames[szFocus].rgrgdPolygon.length, `${szFocus}: one neighbour per edge`);
-    for (const Placement of Layout.rgPlacements.slice(0, -1)) {
-      const nShared = Placement.rgrgdOutline.filter((rgdPoint) => Focus.rgrgdOutline.some(
-        (rgdOther) => Math.hypot(rgdPoint[0] - rgdOther[0], rgdPoint[1] - rgdOther[1]) < 1e-9)).length;
-      assert.equal(nShared, 2, `${szFocus}/${Placement.szPanel} shares one edge`);
+  const built = projection.build();
+  for (const focusPanel of Object.keys(built.panels)) {
+    const layout = view.buildFocusLayout(focusPanel);
+    assert.equal(layout, view.buildFocusLayout(focusPanel), 'cached');
+    assert.equal(layout.mode, 'focus');
+    assert.equal(layout.focusPanel, focusPanel);
+    const focus = layout.placements[layout.placements.length - 1];
+    assert.equal(focus.panelId, focusPanel, 'focus drawn last');
+    assert.deepEqual([...focus.frameToWorld], [...view.IDENTITY]);
+    const seams = built.seams.filter((seam) => seam.panelA === focusPanel || seam.panelB === focusPanel).length;
+    assert.equal(layout.placements.length, seams + 1);
+    assert.equal(seams, built.frames[focusPanel].polygon.length, `${focusPanel}: one neighbour per edge`);
+    for (const placement of layout.placements.slice(0, -1)) {
+      const shared = placement.outline.filter((point) => focus.outline.some(
+        (other) => Math.hypot(point[0] - other[0], point[1] - other[1]) < 1e-9)).length;
+      assert.equal(shared, 2, `${focusPanel}/${placement.panelId} shares one edge`);
       // Neighbours sit outside the focus panel.
-      const rgdFrame = Projection.ApplyTransform(Focus.rgdWorldToFrame, Placement.rgdCenter);
-      assert.ok(!Util.PointInConvex(rgdFrame, Built.Frames[szFocus].rgrgdPolygon));
+      const framePoint = projection.applyTransform(focus.worldToFrame, placement.center);
+      assert.ok(!util.pointInConvex(framePoint, built.frames[focusPanel].polygon));
     }
   }
-  assert.throws(() => View.BuildFocusLayout('nope'));
+  assert.throws(() => view.buildFocusLayout('nope'));
 });
 
-function CheckHits(Layout) {
-  let nChecked = 0;
-  for (const Tile of g_Topo.rgTiles) {
-    const Placement = View.FindPlacement(Layout, Tile.szPanel);
-    if (!Placement) {
+function checkHits(layout) {
+  let checked = 0;
+  for (const tile of topologyFixture.tiles) {
+    const placement = view.findPlacement(layout, tile.panelId);
+    if (!placement) {
       continue;
     }
-    for (const rgdFrame of ProbePoints(Tile)) {
-      const rgdWorld = Projection.ApplyTransform(Placement.rgdFrameToWorld, rgdFrame);
-      const Hit = View.HitTest(g_Topo, Layout, rgdWorld);
-      assert.ok(Hit, `tile ${Tile.nIndex} missed`);
-      assert.equal(Hit.nTile, Tile.nIndex, `tile ${Tile.nIndex} hit ${Hit.nTile}`);
-      assert.equal(Hit.szPanel, Tile.szPanel);
-      nChecked++;
+    for (const framePoint of probePoints(tile)) {
+      const world = projection.applyTransform(placement.frameToWorld, framePoint);
+      const hit = view.hitTest(topologyFixture, layout, world);
+      assert.ok(hit, `tile ${tile.index} missed`);
+      assert.equal(hit.tileIndex, tile.index, `tile ${tile.index} hit ${hit.tileIndex}`);
+      assert.equal(hit.panelId, tile.panelId);
+      checked++;
     }
   }
-  return nChecked;
+  return checked;
 }
 
 test('HitTest finds every tile in the net layout', () => {
-  const nChecked = CheckHits(View.BuildNetLayout());
-  assert.ok(nChecked >= g_Topo.nTiles);
-  const rgdOutside = View.BuildNetLayout().rgdBounds;
-  assert.equal(View.HitTest(g_Topo, View.BuildNetLayout(), [rgdOutside[2] + 5, rgdOutside[3] + 5]), null);
+  const checked = checkHits(view.buildNetLayout());
+  assert.ok(checked >= topologyFixture.tileCount);
+  const outside = view.buildNetLayout().bounds;
+  assert.equal(view.hitTest(topologyFixture, view.buildNetLayout(), [outside[2] + 5, outside[3] + 5]), null);
 });
 
 test('HitTest finds every tile in focus layouts', () => {
-  for (const szFocus of Object.keys(Projection.Build().Panels)) {
-    assert.ok(CheckHits(View.BuildFocusLayout(szFocus)) > 0);
+  for (const focusPanel of Object.keys(projection.build().panels)) {
+    assert.ok(checkHits(view.buildFocusLayout(focusPanel)) > 0);
   }
 });
 
 test('HitTest of random points lands in a tile containing the point', () => {
-  const Layout = View.BuildNetLayout();
-  const Random = Util.CreateRng(7);
-  const [dMinX, dMinY, dMaxX, dMaxY] = Layout.rgdBounds;
-  let nHits = 0;
-  for (let nIndex = 0; nIndex < 2000; nIndex++) {
-    const rgdWorld = [dMinX + (dMaxX - dMinX) * Random(), dMinY + (dMaxY - dMinY) * Random()];
-    const Hit = View.HitTest(g_Topo, Layout, rgdWorld);
-    if (!Hit || Hit.nTile < 0) {
+  const layout = view.buildNetLayout();
+  const random = util.createRng(7);
+  const [minX, minY, maxX, maxY] = layout.bounds;
+  let hits = 0;
+  for (let index = 0; index < 2000; index++) {
+    const world = [minX + (maxX - minX) * random(), minY + (maxY - minY) * random()];
+    const hit = view.hitTest(topologyFixture, layout, world);
+    if (!hit || hit.tileIndex < 0) {
       continue;
     }
-    const Tile = g_Topo.rgTiles[Hit.nTile];
-    assert.equal(Hit.szPanel, Tile.szPanel, 'hit is reported in the owning panel');
-    const rgdTileFrame = Hit.rgdFrame;
-    const fInside = Tile.rgPieces
-      ? Tile.rgPieces.some((Piece) => Util.PointInConvex(rgdTileFrame, Piece.rgrgdPolygon))
-      : Math.hypot(rgdTileFrame[0] - Tile.rgdCenter[0], rgdTileFrame[1] - Tile.rgdCenter[1]) <= Lattice.HexRadius(g_Topo.dD) + 1e-9;
-    assert.ok(fInside, `point ${rgdWorld} outside hit tile ${Hit.nTile}`);
-    nHits++;
+    const tile = topologyFixture.tiles[hit.tileIndex];
+    assert.equal(hit.panelId, tile.panelId, 'hit is reported in the owning panel');
+    const tileFrame = hit.framePoint;
+    const inside = tile.pieces
+      ? tile.pieces.some((piece) => util.pointInConvex(tileFrame, piece.polygon))
+      : Math.hypot(tileFrame[0] - tile.center[0], tileFrame[1] - tile.center[1]) <= lattice.hexRadius(topologyFixture.d) + 1e-9;
+    assert.ok(inside, `point ${world} outside hit tile ${hit.tileIndex}`);
+    hits++;
   }
-  assert.ok(nHits > 500, `${nHits} hits`);
+  assert.ok(hits > 500, `${hits} hits`);
 });
 
 // prompt.md "Map projection": on the east/west seams of the equatorial panels, edge hexes
@@ -213,120 +213,120 @@ test('HitTest of random points lands in a tile containing the point', () => {
 // belongs to that hex. Elsewhere, partial tiles are clipped to their panel, so the panel
 // containing the point owns it.
 test('points across an equatorial seam belong to the neighbouring panel\'s edge hex', () => {
-  const Built = Projection.Build();
-  const Layout = View.BuildNetLayout();
-  const dHalfWidth = Built.dEquatorialWidth / 2;
-  const dRadius = Lattice.HexRadius(g_Topo.dD);
-  let nAcross = 0;
-  let nOwn = 0;
-  for (const [szPanel, Info] of Object.entries(g_Topo.Panels)) {
-    if (!Info.Lattice.fEquatorial) {
+  const built = projection.build();
+  const layout = view.buildNetLayout();
+  const halfWidth = built.equatorialWidth / 2;
+  const radius = lattice.hexRadius(topologyFixture.d);
+  let across = 0;
+  let own = 0;
+  for (const [panelId, info] of Object.entries(topologyFixture.panels)) {
+    if (!info.lattice.isEquatorial) {
       continue;
     }
-    const Placement = View.FindPlacement(Layout, szPanel);
-    for (const [szOther, dSide] of [[Info.szWest, -1], [Info.szEast, 1]]) {
+    const placement = view.findPlacement(layout, panelId);
+    for (const [otherId, side] of [[info.westPanel, -1], [info.eastPanel, 1]]) {
       // Probe a vertical line just inside this panel's west/east edge.
-      for (let dNorth = -0.4; dNorth <= 0.4; dNorth += 0.003) {
-        const rgdFrame = [dSide * (dHalfWidth - 0.02 * g_Topo.dW), dNorth];
-        if (!Util.PointInConvex(rgdFrame, Built.Frames[szPanel].rgrgdPolygon)) {
+      for (let north = -0.4; north <= 0.4; north += 0.003) {
+        const framePoint = [side * (halfWidth - 0.02 * topologyFixture.w), north];
+        if (!util.pointInConvex(framePoint, built.frames[panelId].polygon)) {
           continue;
         }
-        const Hit = View.HitTest(g_Topo, Layout, Projection.ApplyTransform(Placement.rgdFrameToWorld, rgdFrame));
-        assert.ok(Hit, `${szPanel} ${rgdFrame} missed`);
-        assert.equal(Hit.szDrawPanel, szPanel);
-        const Tile = g_Topo.rgTiles[Hit.nTile];
-        assert.equal(Hit.szPanel, Tile.szPanel);
-        assert.ok(Hit.szPanel === szPanel || Hit.szPanel === szOther, `${szPanel}: owner ${Hit.szPanel}`);
+        const hit = view.hitTest(topologyFixture, layout, projection.applyTransform(placement.frameToWorld, framePoint));
+        assert.ok(hit, `${panelId} ${framePoint} missed`);
+        assert.equal(hit.drawPanel, panelId);
+        const tile = topologyFixture.tiles[hit.tileIndex];
+        assert.equal(hit.panelId, tile.panelId);
+        assert.ok(hit.panelId === panelId || hit.panelId === otherId, `${panelId}: owner ${hit.panelId}`);
         // The owner is the hex of the continuous strip lattice containing the point,
         // and the point is reported in the owner's frame.
-        if (!Tile.rgPieces) {
-          assert.ok(Math.hypot(Hit.rgdFrame[0] - Tile.rgdCenter[0], Hit.rgdFrame[1] - Tile.rgdCenter[1]) <= dRadius + 1e-9);
+        if (!tile.pieces) {
+          assert.ok(Math.hypot(hit.framePoint[0] - tile.center[0], hit.framePoint[1] - tile.center[1]) <= radius + 1e-9);
         }
-        if (Hit.szPanel === szOther) {
-          nAcross++;
-          assert.ok(Math.abs(Hit.rgdFrame[0]) > dHalfWidth - 1e-9, `${Hit.rgdFrame}`);
+        if (hit.panelId === otherId) {
+          across++;
+          assert.ok(Math.abs(hit.framePoint[0]) > halfWidth - 1e-9, `${hit.framePoint}`);
         } else {
-          nOwn++;
+          own++;
         }
       }
     }
   }
-  assert.ok(nAcross > 0 && nOwn > 0, `${nAcross} across, ${nOwn} own`);
+  assert.ok(across > 0 && own > 0, `${across} across, ${own} own`);
 });
 
 test('points just inside any other panel edge belong to that panel', () => {
-  const Built = Projection.Build();
-  const Layout = View.BuildNetLayout();
-  const dHalfWidth = Built.dEquatorialWidth / 2;
-  let nChecked = 0;
-  for (const [szPanel, Info] of Object.entries(g_Topo.Panels)) {
-    const Placement = View.FindPlacement(Layout, szPanel);
-    const rgrgdPolygon = Built.Frames[szPanel].rgrgdPolygon;
-    rgrgdPolygon.forEach((rgdStart, nIndex) => {
-      const rgdEnd = rgrgdPolygon[(nIndex + 1) % rgrgdPolygon.length];
-      const fStripSeam = Info.Lattice.fEquatorial
-        && Math.abs(Math.abs(rgdStart[0]) - dHalfWidth) < 1e-9 && Math.abs(Math.abs(rgdEnd[0]) - dHalfWidth) < 1e-9;
-      if (fStripSeam) {
+  const built = projection.build();
+  const layout = view.buildNetLayout();
+  const halfWidth = built.equatorialWidth / 2;
+  let checked = 0;
+  for (const [panelId, info] of Object.entries(topologyFixture.panels)) {
+    const placement = view.findPlacement(layout, panelId);
+    const polygon = built.frames[panelId].polygon;
+    polygon.forEach((startPoint, index) => {
+      const end = polygon[(index + 1) % polygon.length];
+      const stripSeam = info.lattice.isEquatorial
+        && Math.abs(Math.abs(startPoint[0]) - halfWidth) < 1e-9 && Math.abs(Math.abs(end[0]) - halfWidth) < 1e-9;
+      if (stripSeam) {
         return;
       }
-      for (let dT = 0.03; dT < 1; dT += 0.02) {
-        const rgdOnEdge = [rgdStart[0] + dT * (rgdEnd[0] - rgdStart[0]), rgdStart[1] + dT * (rgdEnd[1] - rgdStart[1])];
-        const rgdFrame = [rgdOnEdge[0] * (1 - 1e-4), rgdOnEdge[1] * (1 - 1e-4)];
+      for (let t = 0.03; t < 1; t += 0.02) {
+        const onEdge = [startPoint[0] + t * (end[0] - startPoint[0]), startPoint[1] + t * (end[1] - startPoint[1])];
+        const framePoint = [onEdge[0] * (1 - 1e-4), onEdge[1] * (1 - 1e-4)];
         // Equatorial corners: the strip neighbour's edge hex may reach this far.
-        if (Info.Lattice.fEquatorial && Math.abs(rgdFrame[0]) > dHalfWidth - g_Topo.dW) {
+        if (info.lattice.isEquatorial && Math.abs(framePoint[0]) > halfWidth - topologyFixture.w) {
           continue;
         }
-        const Hit = View.HitTest(g_Topo, Layout, Projection.ApplyTransform(Placement.rgdFrameToWorld, rgdFrame));
-        assert.ok(Hit, `${szPanel} edge ${nIndex} missed`);
-        assert.equal(Hit.szPanel, szPanel, `${szPanel} edge ${nIndex} at ${dT}`);
-        assert.equal(Hit.szDrawPanel, szPanel);
-        nChecked++;
+        const hit = view.hitTest(topologyFixture, layout, projection.applyTransform(placement.frameToWorld, framePoint));
+        assert.ok(hit, `${panelId} edge ${index} missed`);
+        assert.equal(hit.panelId, panelId, `${panelId} edge ${index} at ${t}`);
+        assert.equal(hit.drawPanel, panelId);
+        checked++;
       }
     });
   }
-  assert.ok(nChecked > 1000, `${nChecked}`);
+  assert.ok(checked > 1000, `${checked}`);
 });
 
 test('PanelTileGroups adds strip-neighbour edge columns only for equatorial panels', () => {
-  let nEquatorial = 0;
-  for (const [szPanel, Info] of Object.entries(g_Topo.Panels)) {
-    const rgGroups = View.PanelTileGroups(g_Topo, szPanel);
-    assert.equal(rgGroups, View.PanelTileGroups(g_Topo, szPanel), 'cached');
-    assert.equal(rgGroups[0].szOwner, szPanel);
-    assert.equal(rgGroups[0].rgnTiles.length, Info.nTileCount);
-    if (Info.Lattice.fEquatorial) {
-      nEquatorial++;
-      assert.equal(rgGroups.length, 3);
-      assert.deepEqual(rgGroups.slice(1).map((Group) => Group.szOwner), [Info.szWest, Info.szEast]);
-      for (const Group of rgGroups.slice(1)) {
-        assert.ok(Group.rgnTiles.length > 0 && Group.rgnTiles.length < g_Topo.Panels[Group.szOwner].nTileCount);
-        for (const nTile of Group.rgnTiles) {
-          assert.equal(g_Topo.rgTiles[nTile].szPanel, Group.szOwner);
+  let equatorial = 0;
+  for (const [panelId, info] of Object.entries(topologyFixture.panels)) {
+    const groups = view.panelTileGroups(topologyFixture, panelId);
+    assert.equal(groups, view.panelTileGroups(topologyFixture, panelId), 'cached');
+    assert.equal(groups[0].owner, panelId);
+    assert.equal(groups[0].tileIndices.length, info.tileCount);
+    if (info.lattice.isEquatorial) {
+      equatorial++;
+      assert.equal(groups.length, 3);
+      assert.deepEqual(groups.slice(1).map((group) => group.owner), [info.westPanel, info.eastPanel]);
+      for (const group of groups.slice(1)) {
+        assert.ok(group.tileIndices.length > 0 && group.tileIndices.length < topologyFixture.panels[group.owner].tileCount);
+        for (const tileIndex of group.tileIndices) {
+          assert.equal(topologyFixture.tiles[tileIndex].panelId, group.owner);
         }
       }
     } else {
-      assert.equal(rgGroups.length, 1);
+      assert.equal(groups.length, 1);
     }
   }
-  assert.ok(nEquatorial > 0);
+  assert.ok(equatorial > 0);
 });
 
 test('VisibleTiles keeps every tile with a vertex in view', () => {
-  const Random = Util.CreateRng(11);
-  for (const [szPanel] of Object.entries(g_Topo.Panels)) {
-    for (const Group of View.PanelTileGroups(g_Topo, szPanel)) {
-      for (let nTrial = 0; nTrial < 5; nTrial++) {
-        const dX = 1.2 * (Random() - 0.5);
-        const dY = 1.2 * (Random() - 0.5);
-        const dSize = 0.05 + 0.3 * Random();
-        const rgdBox = [dX, dY, dX + dSize, dY + dSize];
-        const Visible = new Set(View.VisibleTiles(g_Topo, Group, rgdBox));
-        for (const nTile of Group.rgnTiles) {
-          const rgdCenter = Projection.ApplyTransform(Group.rgdToPanel, g_Topo.rgTiles[nTile].rgdCenter);
-          const fTouches = HexVertices(rgdCenter).concat([rgdCenter]).some(([dPx, dPy]) =>
-            dPx >= rgdBox[0] && dPx <= rgdBox[2] && dPy >= rgdBox[1] && dPy <= rgdBox[3]);
-          if (fTouches) {
-            assert.ok(Visible.has(nTile), `${szPanel}: tile ${nTile} culled`);
+  const random = util.createRng(11);
+  for (const [panelId] of Object.entries(topologyFixture.panels)) {
+    for (const group of view.panelTileGroups(topologyFixture, panelId)) {
+      for (let trial = 0; trial < 5; trial++) {
+        const x = 1.2 * (random() - 0.5);
+        const y = 1.2 * (random() - 0.5);
+        const size = 0.05 + 0.3 * random();
+        const box = [x, y, x + size, y + size];
+        const visible = new Set(view.visibleTiles(topologyFixture, group, box));
+        for (const tileIndex of group.tileIndices) {
+          const center = projection.applyTransform(group.toPanel, topologyFixture.tiles[tileIndex].center);
+          const touches = hexVertices(center).concat([center]).some(([px, py]) =>
+            px >= box[0] && px <= box[2] && py >= box[1] && py <= box[3]);
+          if (touches) {
+            assert.ok(visible.has(tileIndex), `${panelId}: tile ${tileIndex} culled`);
           }
         }
       }
@@ -335,16 +335,16 @@ test('VisibleTiles keeps every tile with a vertex in view', () => {
 });
 
 test('DemoTerrain is deterministic and valid', () => {
-  const rgnFirst = View.DemoTerrain(g_Topo, 1);
-  const rgnSecond = View.DemoTerrain(g_Topo, 1);
-  const rgnOther = View.DemoTerrain(g_Topo, 2);
-  assert.ok(rgnFirst instanceof Uint8Array);
-  assert.equal(rgnFirst.length, g_Topo.nTiles);
-  assert.deepEqual(rgnFirst, rgnSecond);
-  assert.notDeepEqual(rgnFirst, rgnOther);
-  const rgnIds = new Set(Terrain.g_rgTerrains.map((Entry) => Entry.nId));
-  for (const nId of rgnFirst) {
-    assert.ok(rgnIds.has(nId), `bad id ${nId}`);
+  const firstTiles = view.demoTerrain(topologyFixture, 1);
+  const secondTiles = view.demoTerrain(topologyFixture, 1);
+  const other = view.demoTerrain(topologyFixture, 2);
+  assert.ok(firstTiles instanceof Uint8Array);
+  assert.equal(firstTiles.length, topologyFixture.tileCount);
+  assert.deepEqual(firstTiles, secondTiles);
+  assert.notDeepEqual(firstTiles, other);
+  const ids = new Set(terrain.TERRAINS.map((entry) => entry.id));
+  for (const id of firstTiles) {
+    assert.ok(ids.has(id), `bad id ${id}`);
   }
-  assert.ok(new Set(rgnFirst).size >= 6, 'a varied world');
+  assert.ok(new Set(firstTiles).size >= 6, 'a varied world');
 });

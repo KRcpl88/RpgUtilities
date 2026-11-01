@@ -1,108 +1,108 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { LoadModules } = require('./_load.cjs');
-const { Util, Projection, Coordinates, Model, Topology, View, Edit, History, FileFormat, Regions, SvgExport } = LoadModules();
+const { loadModules } = require('./_load.cjs');
+const { Util: util, Projection: projection, Coordinates: coordinates, Model: model, Topology: topology, View: view, Edit: edit, History: history, FileFormat: fileFormat, Regions: regions, SvgExport: svgExport } = loadModules();
 
-for (const szName of Object.keys(Projection.g_SectorLabels).map((sz) => Projection.Build().Panels[sz].szName)) {
-  for (const szTileScale of ['XL', 'L', 'M']) {
-    test(`${szName} ${szTileScale}: isolated topology covers the complete panel and never wraps`, () => {
-      const szPanel = Coordinates.PanelIdByName(szName);
-      const Doc = Model.CreatePanelMap({ szPanel, nPanelHexes: 2, szTileScale });
-      const Topo = Doc.Topo;
-      const Layout = View.MapLayout(Doc);
-      assert.equal(Doc.szKind, 'panel');
-      assert.equal(Doc.Local, null);
-      assert.ok(Math.abs(Model.HexMiles(Doc) - { XL: 216, L: 36, M: 6 }[szTileScale]) < 1e-10);
-      assert.deepEqual(Object.keys(Topo.Panels), [szPanel]);
-      assert.equal(Layout.szMode, 'panel');
-      assert.equal(View.MapLayout(Doc), Layout);
-      assert.equal(Layout.rgPlacements.length, 1);
-      assert.equal(Layout.rgPlacements[0].szPanel, szPanel);
-      assert.equal(View.PanelTileGroups(Topo, szPanel).length, 1);
-      const Polygon = Projection.Build().Frames[szPanel].rgrgdPolygon;
-      if (Projection.Build().Panels[szPanel].fEquatorial) {
-        const dHalfWidth = Projection.Build().dEquatorialWidth / 2;
-        for (const Tile of Topo.rgTiles) {
-          assert.ok(Math.abs(Math.abs(Tile.rgdCenter[0]) - dHalfWidth) >= Topo.dW / 2 - 1e-12,
-            `${szTileScale}: neither east/west edge passes through a column`);
-          assert.ok(Math.abs(Tile.rgdCenter[0]) >= Topo.dW / 2 - 1e-12,
-            `${szTileScale}: the centreline is between columns`);
+for (const name of Object.keys(projection.SECTOR_LABELS).map((panelId) => projection.build().panels[panelId].name)) {
+  for (const tileScale of ['XL', 'L', 'M']) {
+    test(`${name} ${tileScale}: isolated topology covers the complete panel and never wraps`, () => {
+      const panelId = coordinates.panelIdByName(name);
+      const doc = model.createPanelMap({ panelId, panelHexes: 2, tileScale });
+      const topo = doc.topo;
+      const layout = view.mapLayout(doc);
+      assert.equal(doc.kind, 'panel');
+      assert.equal(doc.local, null);
+      assert.ok(Math.abs(model.hexMiles(doc) - { XL: 216, L: 36, M: 6 }[tileScale]) < 1e-10);
+      assert.deepEqual(Object.keys(topo.panels), [panelId]);
+      assert.equal(layout.mode, 'panel');
+      assert.equal(view.mapLayout(doc), layout);
+      assert.equal(layout.placements.length, 1);
+      assert.equal(layout.placements[0].panelId, panelId);
+      assert.equal(view.panelTileGroups(topo, panelId).length, 1);
+      const polygon = projection.build().frames[panelId].polygon;
+      if (projection.build().panels[panelId].isEquatorial) {
+        const halfWidth = projection.build().equatorialWidth / 2;
+        for (const tile of topo.tiles) {
+          assert.ok(Math.abs(Math.abs(tile.center[0]) - halfWidth) >= topo.w / 2 - 1e-12,
+            `${tileScale}: neither east/west edge passes through a column`);
+          assert.ok(Math.abs(tile.center[0]) >= topo.w / 2 - 1e-12,
+            `${tileScale}: the centreline is between columns`);
         }
       }
-      const dArea = Topo.rgTiles.reduce((dSum, Tile) => dSum + Tile.dArea, 0);
-      assert.ok(Math.abs(dArea - Util.PolygonArea(Polygon)) < 1e-8, 'no holes or duplicated edge-hex area');
-      for (const Tile of Topo.rgTiles) {
-        assert.equal(Tile.szPanel, szPanel);
-        const Point = View.FeatureAnchor(Topo, Tile.nIndex);
-        assert.ok(Util.PointInConvex(Point, Polygon));
-        assert.equal(View.HitTest(Topo, Layout, Point).nTile, Tile.nIndex);
-        assert.equal(Coordinates.UniversalToTile(Topo, Model.TileToUniversal(Doc, Tile.nIndex)), Tile.nIndex);
-        for (const nOther of Model.Neighbors(Doc, Tile.nIndex)) {
-          assert.ok(Model.AreAdjacent(Doc, nOther, Tile.nIndex));
-          assert.ok(Util.Distance(Tile.rgdCenter, Topo.rgTiles[nOther].rgdCenter) <= Topo.dD * 1.000001);
+      const area = topo.tiles.reduce((sum, tile) => sum + tile.area, 0);
+      assert.ok(Math.abs(area - util.polygonArea(polygon)) < 1e-8, 'no holes or duplicated edge-hex area');
+      for (const tile of topo.tiles) {
+        assert.equal(tile.panelId, panelId);
+        const point = view.featureAnchor(topo, tile.index);
+        assert.ok(util.pointInConvex(point, polygon));
+        assert.equal(view.hitTest(topo, layout, point).tileIndex, tile.index);
+        assert.equal(coordinates.universalToTile(topo, model.tileToUniversal(doc, tile.index)), tile.index);
+        for (const otherIndex of model.neighbors(doc, tile.index)) {
+          assert.ok(model.areAdjacent(doc, otherIndex, tile.index));
+          assert.ok(util.pointDistance(tile.center, topo.tiles[otherIndex].center) <= topo.d * 1.000001);
         }
       }
-      for (const [A, B] of Util.Boundary(Polygon)) {
-        for (const dT of [0.01, 0.25, 0.5, 0.75, 0.99]) {
-          const Point = Util.Scale(Util.Add(A, Util.Scale(Util.Subtract(B, A), dT)), 0.99999);
-          assert.ok(View.HitTest(Topo, Layout, Point), 'every panel edge has editable tiles');
+      for (const [a, b] of util.boundary(polygon)) {
+        for (const t of [0.01, 0.25, 0.5, 0.75, 0.99]) {
+          const point = util.scale(util.add(a, util.scale(util.subtract(b, a), t)), 0.99999);
+          assert.ok(view.hitTest(topo, layout, point), 'every panel edge has editable tiles');
         }
       }
-      assert.equal(View.HitTest(Topo, Layout, [100, 100]), null);
-      const Text = FileFormat.Write(Doc);
-      assert.equal((Text.match(/^\[panel /gm) || []).length, 1);
-      assert.equal(FileFormat.Write(FileFormat.Parse(Text)), Text);
-      const Region = Regions.Build(Doc);
-      const dExportArea = Region.rgRegions.reduce((dSum, Item) =>
-        dSum + Item.rgrgrgdLoops.reduce((dPart, Loop) => dPart + Util.PolygonArea(Loop.slice(0, -1)), 0), 0);
-      assert.ok(Math.abs(dExportArea * Topo.dD ** 2 - dArea) < 1e-8);
+      assert.equal(view.hitTest(topo, layout, [100, 100]), null);
+      const text = fileFormat.write(doc);
+      assert.equal((text.match(/^\[panel /gm) || []).length, 1);
+      assert.equal(fileFormat.write(fileFormat.parse(text)), text);
+      const region = regions.build(doc);
+      const exportArea = region.regions.reduce((sum, item) =>
+        sum + item.loops.reduce((part, loop) => part + util.polygonArea(loop.slice(0, -1)), 0), 0);
+      assert.ok(Math.abs(exportArea * topo.d ** 2 - area) < 1e-8);
     });
   }
 }
 
 test('panel maps preserve terrain, features and scale through editing, undo, saving and SVG export', () => {
-  for (const szTileScale of ['XL', 'L', 'M']) {
-    const Doc = Model.CreatePanelMap({ szPanel: Coordinates.PanelIdByName('Beta'), nPanelHexes: 2, szTileScale, szName: 'Only Beta' });
-    const nTile = Math.floor(Doc.nTiles / 2);
-    const Hist = History.Create(Doc);
-    Edit.Fill(Hist, nTile, 4);
-    assert.ok(Doc.rgnTerrain.every((nId) => nId === 4));
-    History.Undo(Hist);
-    assert.ok(Doc.rgnTerrain.every((nId) => nId === 0));
-    History.Redo(Hist);
-    const Path = Edit.FindPath(Doc, 0, Doc.nTiles - 1);
-    Model.AddOverlay(Doc, { szType: 'road', rgnTiles: Path });
-    Model.SetLandmark(Doc, nTile, { szType: 'castle', szName: 'Keep' });
-    Model.AddLabel(Doc, { nTile, szCategory: 'region', szText: 'Beta only' });
-    const Text = FileFormat.Write(Doc);
-    const Parsed = FileFormat.Parse(Text);
-    assert.equal(FileFormat.Write(Parsed), Text);
-    assert.equal(Parsed.Global.szTileScale, szTileScale);
-    const Svg = SvgExport.Write(Parsed, { Layers: { grid: true } });
-    assert.match(Svg, /Only Beta - Beta/);
-    assert.match(Svg, /id="overlay-road1"/);
-    assert.match(Svg, /Beta only/);
-    assert.match(Svg, /data-reference="equator"/);
-    assert.doesNotMatch(Svg, /NaN|Infinity|undefined/);
-    assert.equal(SvgExport.Estimate(Doc).nTiles, Doc.nTiles);
-    assert.equal(SvgExport.FileName(Doc), 'Only-Beta-Beta.svg');
+  for (const tileScale of ['XL', 'L', 'M']) {
+    const doc = model.createPanelMap({ panelId: coordinates.panelIdByName('Beta'), panelHexes: 2, tileScale, name: 'Only Beta' });
+    const tileIndex = Math.floor(doc.tileCount / 2);
+    const hist = history.create(doc);
+    edit.fill(hist, tileIndex, 4);
+    assert.ok(doc.terrainIds.every((id) => id === 4));
+    history.undo(hist);
+    assert.ok(doc.terrainIds.every((id) => id === 0));
+    history.redo(hist);
+    const path = edit.findPath(doc, 0, doc.tileCount - 1);
+    model.addOverlay(doc, { type: 'road', tileIndices: path });
+    model.setLandmark(doc, tileIndex, { type: 'castle', name: 'Keep' });
+    model.addLabel(doc, { tileIndex, category: 'region', text: 'Beta only' });
+    const text = fileFormat.write(doc);
+    const parsed = fileFormat.parse(text);
+    assert.equal(fileFormat.write(parsed), text);
+    assert.equal(parsed.global.tileScale, tileScale);
+    const svg = svgExport.write(parsed, { layers: { grid: true } });
+    assert.match(svg, /Only Beta - Beta/);
+    assert.match(svg, /id="overlay-road1"/);
+    assert.match(svg, /Beta only/);
+    assert.match(svg, /data-reference="equator"/);
+    assert.doesNotMatch(svg, /NaN|Infinity|undefined/);
+    assert.equal(svgExport.estimate(doc).tileCount, doc.tileCount);
+    assert.equal(svgExport.fileName(doc), 'Only-Beta-Beta.svg');
   }
 });
 
 test('invalid panel map settings and out-of-scope panel sections are rejected', () => {
-  const szPanel = Coordinates.PanelIdByName('Beta');
-  assert.throws(() => Model.CreatePanelMap(), /Choose a panel/);
-  assert.throws(() => Model.CreatePanelMap({ szPanel: 'unknown' }), /Unknown panel/);
-  assert.throws(() => Model.CreatePanelMap({ szPanel, szTileScale: 'S' }), /tile scale/);
-  assert.throws(() => Model.CreatePanelMap({ szPanel, nPanelHexes: 3 }), /even/);
-  assert.throws(() => Model.CreateGlobalMap({ szTileScale: 'M' }), /tile scale/);
-  const Text = FileFormat.Write(Model.CreatePanelMap({ szPanel, nPanelHexes: 2 }));
-  assert.throws(() => FileFormat.Parse(Text.replace('panel = Beta\n', '')), /panel/);
-  assert.throws(() => FileFormat.Parse(Text.replace('[panel Beta]', '[panel Alpha]')), /outside this map/);
-  assert.throws(() => FileFormat.Parse(Text.replace('kind = panel', 'kind = global')), /only for single-panel/);
-  assert.throws(() => SvgExport.Write(Model.CreatePanelMap({ szPanel, nPanelHexes: 2 }), {
-    szPanel: Coordinates.PanelIdByName('Alpha'),
+  const panelId = coordinates.panelIdByName('Beta');
+  assert.throws(() => model.createPanelMap(), /Choose a panel/);
+  assert.throws(() => model.createPanelMap({ panelId: 'unknown' }), /Unknown panel/);
+  assert.throws(() => model.createPanelMap({ panelId, tileScale: 'S' }), /tile scale/);
+  assert.throws(() => model.createPanelMap({ panelId, panelHexes: 3 }), /even/);
+  assert.throws(() => model.createGlobalMap({ tileScale: 'M' }), /tile scale/);
+  const text = fileFormat.write(model.createPanelMap({ panelId, panelHexes: 2 }));
+  assert.throws(() => fileFormat.parse(text.replace('panel = Beta\n', '')), /panel/);
+  assert.throws(() => fileFormat.parse(text.replace('[panel Beta]', '[panel Alpha]')), /outside this map/);
+  assert.throws(() => fileFormat.parse(text.replace('kind = panel', 'kind = global')), /only for single-panel/);
+  assert.throws(() => svgExport.write(model.createPanelMap({ panelId, panelHexes: 2 }), {
+    panelId: coordinates.panelIdByName('Alpha'),
   }), /valid export panel/);
-  assert.equal(Topology.Build(2, 'XL', szPanel), Topology.Build(2, 'XL', szPanel));
+  assert.equal(topology.build(2, 'XL', panelId), topology.build(2, 'XL', panelId));
 });

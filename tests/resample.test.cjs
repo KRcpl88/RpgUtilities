@@ -1,493 +1,493 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { LoadModules } = require('./_load.cjs');
-const { Util, Projection, Lattice, Topology, Coordinates, Terrain, Model, History, Resample, FileFormat } = LoadModules();
+const { loadModules } = require('./_load.cjs');
+const { Util: util, Projection: projection, Lattice: lattice, Topology: topology, Coordinates: coordinates, Terrain: terrain, Model: model, History: history, Resample: resample, FileFormat: fileFormat } = loadModules();
 
-const g_dMilesPerEdge = Projection.MilesPerEdge(Topology.g_nDefaultPanelHexes);
-const g_nTerrains = Terrain.g_rgTerrains.length;
+const MILES_PER_EDGE = projection.getMilesPerEdge(topology.DEFAULT_PANEL_HEXES);
+const TERRAIN_COUNT = terrain.TERRAINS.length;
 
-function LocalMap(szSystem, szScale, nWidth, nHeight, szPanel = 'Hxz+-', dEast = 0, dNorth = 0) {
-  return Model.CreateLocalMap({
-    nWidth, nHeight, szSystem, szScale, Anchor: Coordinates.MakeLocation(szPanel, dEast, dNorth),
+function localMap(systemName, scaleName, width, height, panelId = 'Hxz+-', east = 0, north = 0) {
+  return model.createLocalMap({
+    width, height, systemName, scaleName, anchor: coordinates.makeLocation(panelId, east, north),
   });
 }
 
-function Distance(A, B) {
-  return Math.hypot(A.dEast - B.dEast, A.dNorth - B.dNorth);
+function pointDistance(a, b) {
+  return Math.hypot(a.east - b.east, a.north - b.north);
 }
 
 // Index of the source tile whose centre is nearest (hex lattices are Voronoi cells).
-function Nearest(Source, Location) {
-  let nBest = -1;
-  let dBest = Infinity;
-  for (let nTile = 0; nTile < Source.nTiles; nTile++) {
-    const dDistance = Distance(Model.TileToUniversal(Source, nTile), Location);
-    if (dDistance < dBest) {
-      dBest = dDistance;
-      nBest = nTile;
+function nearest(source, location) {
+  let bestIndex = -1;
+  let bestDistance = Infinity;
+  for (let tileIndex = 0; tileIndex < source.tileCount; tileIndex++) {
+    const distance = pointDistance(model.tileToUniversal(source, tileIndex), location);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = tileIndex;
     }
   }
-  return { nTile: nBest, dDistance: dBest };
+  return { tileIndex: bestIndex, distance: bestDistance };
 }
 
 test('upscaling repeats each original tile across the smaller hexes inside it', () => {
-  const Source = LocalMap('regional', 'M', 4, 4);
-  for (let nTile = 0; nTile < Source.nTiles; nTile++) {
-    Source.rgnTerrain[nTile] = nTile % g_nTerrains;
+  const source = localMap('regional', 'M', 4, 4);
+  for (let tileIndex = 0; tileIndex < source.tileCount; tileIndex++) {
+    source.terrainIds[tileIndex] = tileIndex % TERRAIN_COUNT;
   }
-  const Target = Resample.Rescale(Source, 'regional', 'S');
-  assert.deepEqual([Target.Local.nWidth, Target.Local.nHeight], [24, 24]);
-  let nChecked = 0;
-  for (let nTile = 0; nTile < Target.nTiles; nTile++) {
-    const Hit = Nearest(Source, Model.TileToUniversal(Target, nTile));
-    if (Hit.dDistance < 2.9) {
-      assert.equal(Target.rgnTerrain[nTile], Source.rgnTerrain[Hit.nTile], `tile ${nTile}`);
-      nChecked++;
+  const target = resample.rescale(source, 'regional', 'S');
+  assert.deepEqual([target.local.width, target.local.height], [24, 24]);
+  let checked = 0;
+  for (let tileIndex = 0; tileIndex < target.tileCount; tileIndex++) {
+    const hit = nearest(source, model.tileToUniversal(target, tileIndex));
+    if (hit.distance < 2.9) {
+      assert.equal(target.terrainIds[tileIndex], source.terrainIds[hit.tileIndex], `tile ${tileIndex}`);
+      checked++;
     }
   }
-  assert.ok(nChecked > 400, `${nChecked} tiles checked`);
+  assert.ok(checked > 400, `${checked} tiles checked`);
 });
 
 test('downscaling takes the most common terrain of the tiles each larger hex covers', () => {
-  const Source = LocalMap('regional', 'S', 24, 18);
-  for (let nTile = 0; nTile < Source.nTiles; nTile++) {
-    const [nX, nY] = Model.LocalTileXY(Source, nTile);
-    Source.rgnTerrain[nTile] = (nX + 2 * nY) % 7 === 0 ? 6 : nX < 10 ? 2 : 4;
+  const source = localMap('regional', 'S', 24, 18);
+  for (let tileIndex = 0; tileIndex < source.tileCount; tileIndex++) {
+    const [columnIndex, rowIndex] = model.localTileXY(source, tileIndex);
+    source.terrainIds[tileIndex] = (columnIndex + 2 * rowIndex) % 7 === 0 ? 6 : columnIndex < 10 ? 2 : 4;
   }
-  const Target = Resample.Rescale(Source, 'regional', 'M');
-  assert.deepEqual([Target.Local.nWidth, Target.Local.nHeight], [4, 3]);
+  const target = resample.rescale(source, 'regional', 'M');
+  assert.deepEqual([target.local.width, target.local.height], [4, 3]);
   // Source centres strictly inside a target hex vote for it; centres on a hex edge may
   // go either way, so only tiles whose winner beats the runner-up by more than their edge
   // count are checked.
-  const dInradius = Target.Local.dHexMiles / 2;
-  const rgrgdNormals = [[0, 1], [Math.sqrt(3) / 2, 0.5], [Math.sqrt(3) / 2, -0.5]];
-  const Reach = (Center, Location) => Math.max(...rgrgdNormals.map(([dX, dY]) =>
-    Math.abs((Location.dEast - Center.dEast) * dX + (Location.dNorth - Center.dNorth) * dY)));
-  const rgrgnVotes = Array.from({ length: Target.nTiles }, () => new Array(g_nTerrains).fill(0));
-  const rgnEdge = new Array(Target.nTiles).fill(0);
-  for (let nTile = 0; nTile < Source.nTiles; nTile++) {
-    const Location = Model.TileToUniversal(Source, nTile);
-    for (let nTarget = 0; nTarget < Target.nTiles; nTarget++) {
-      const dReach = Reach(Model.TileToUniversal(Target, nTarget), Location);
-      if (dReach < dInradius - 1e-6) {
-        rgrgnVotes[nTarget][Source.rgnTerrain[nTile]]++;
-      } else if (dReach < dInradius + 1e-6) {
-        rgnEdge[nTarget]++;
+  const inradius = target.local.hexMiles / 2;
+  const normals = [[0, 1], [Math.sqrt(3) / 2, 0.5], [Math.sqrt(3) / 2, -0.5]];
+  const getReach = (center, location) => Math.max(...normals.map(([x, y]) =>
+    Math.abs((location.east - center.east) * x + (location.north - center.north) * y)));
+  const votes = Array.from({ length: target.tileCount }, () => new Array(TERRAIN_COUNT).fill(0));
+  const edge = new Array(target.tileCount).fill(0);
+  for (let tileIndex = 0; tileIndex < source.tileCount; tileIndex++) {
+    const location = model.tileToUniversal(source, tileIndex);
+    for (let targetIndex = 0; targetIndex < target.tileCount; targetIndex++) {
+      const reach = getReach(model.tileToUniversal(target, targetIndex), location);
+      if (reach < inradius - 1e-6) {
+        votes[targetIndex][source.terrainIds[tileIndex]]++;
+      } else if (reach < inradius + 1e-6) {
+        edge[targetIndex]++;
       }
     }
   }
-  let nChecked = 0;
-  rgrgnVotes.forEach((rgnVotes, nTile) => {
-    const rgnSorted = [...rgnVotes].sort((nA, nB) => nB - nA);
-    if (rgnSorted[0] - rgnSorted[1] > rgnEdge[nTile]) {
-      assert.equal(Target.rgnTerrain[nTile], rgnVotes.indexOf(rgnSorted[0]), `tile ${nTile}`);
-      nChecked++;
+  let checked = 0;
+  votes.forEach((voteCounts, tileIndex) => {
+    const sorted = [...voteCounts].sort((indexA, indexB) => indexB - indexA);
+    if (sorted[0] - sorted[1] > edge[tileIndex]) {
+      assert.equal(target.terrainIds[tileIndex], voteCounts.indexOf(sorted[0]), `tile ${tileIndex}`);
+      checked++;
     }
   });
-  assert.ok(nChecked >= 6, `${nChecked} tiles checked`);
+  assert.ok(checked >= 6, `${checked} tiles checked`);
 });
 
 test('global maps rescale between XL and L and back without losing terrain', () => {
-  const Global = Model.CreateGlobalMap({ szName: 'World' });
-  for (let nTile = 0; nTile < Global.nTiles; nTile++) {
-    Global.rgnTerrain[nTile] = (nTile * 7) % g_nTerrains;
+  const global = model.createGlobalMap({ name: 'World' });
+  for (let tileIndex = 0; tileIndex < global.tileCount; tileIndex++) {
+    global.terrainIds[tileIndex] = (tileIndex * 7) % TERRAIN_COUNT;
   }
-  const Fine = Resample.Rescale(Global, 'regional', 'L');
-  assert.equal(Fine.szKind, 'global');
-  assert.equal(Fine.Global.szTileScale, 'L');
-  assert.equal(Fine.szName, 'World');
-  const Back = Resample.Rescale(Fine, 'regional', 'XL');
+  const fine = resample.rescale(global, 'regional', 'L');
+  assert.equal(fine.kind, 'global');
+  assert.equal(fine.global.tileScale, 'L');
+  assert.equal(fine.name, 'World');
+  const back = resample.rescale(fine, 'regional', 'XL');
   // Only a few tiny clipped seam pieces hold no finer tile's anchor; they take the
   // terrain under their own anchor instead.
-  const rgnChanged = [];
-  for (let nTile = 0; nTile < Global.nTiles; nTile++) {
-    if (Back.rgnTerrain[nTile] !== Global.rgnTerrain[nTile]) {
-      rgnChanged.push(nTile);
+  const changed = [];
+  for (let tileIndex = 0; tileIndex < global.tileCount; tileIndex++) {
+    if (back.terrainIds[tileIndex] !== global.terrainIds[tileIndex]) {
+      changed.push(tileIndex);
     }
   }
-  assert.ok(rgnChanged.every((nTile) => Global.Topo.rgTiles[nTile].rgPieces), 'only partial tiles may change');
-  assert.ok(rgnChanged.length < Global.nTiles / 200, `${rgnChanged.length} tiles changed`);
-  assert.throws(() => Resample.Rescale(Global, 'regional', 'M'), /cannot use/);
-  assert.deepEqual(Resample.RescaleOptions(Global), [['regional', 'XL'], ['regional', 'L']]);
+  assert.ok(changed.every((tileIndex) => global.topo.tiles[tileIndex].pieces), 'only partial tiles may change');
+  assert.ok(changed.length < global.tileCount / 200, `${changed.length} tiles changed`);
+  assert.throws(() => resample.rescale(global, 'regional', 'M'), /cannot use/);
+  assert.deepEqual(resample.rescaleOptions(global), [['regional', 'XL'], ['regional', 'L']]);
 });
 
 test('panel maps rescale to M and local maps to any scale', () => {
-  const Panel = Model.CreatePanelMap({ szPanel: 'Sx+', szTileScale: 'L' });
-  Panel.rgnTerrain.fill(3);
-  const Medium = Resample.Rescale(Panel, 'regional', 'M');
-  assert.equal(Medium.Global.szPanel, 'Sx+');
-  assert.ok(Medium.rgnTerrain.every((nTerrain) => nTerrain === 3));
-  const Local = LocalMap('regional', 'S', 3, 2);
-  Local.rgnTerrain.fill(5);
-  assert.equal(Resample.RescaleOptions(Local).length, 8);
-  const Yard = Resample.Rescale(Local, 'local', 'L');
-  assert.equal(Yard.Local.szSystem, 'local');
-  assert.equal(Yard.Topo, null);
+  const panel = model.createPanelMap({ panelId: 'Sx+', tileScale: 'L' });
+  panel.terrainIds.fill(3);
+  const medium = resample.rescale(panel, 'regional', 'M');
+  assert.equal(medium.global.panelId, 'Sx+');
+  assert.ok(medium.terrainIds.every((terrainId) => terrainId === 3));
+  const local = localMap('regional', 'S', 3, 2);
+  local.terrainIds.fill(5);
+  assert.equal(resample.rescaleOptions(local).length, 8);
+  const yard = resample.rescale(local, 'local', 'L');
+  assert.equal(yard.local.systemName, 'local');
+  assert.equal(yard.topo, null);
   // Fine hexes along the old hexes' zig-zag edge may fall outside and stay water.
-  assert.ok(Yard.rgnTerrain.every((nTerrain) => nTerrain === 5 || nTerrain === Terrain.g_nWaterId));
-  assert.ok(Yard.rgnTerrain.filter((nTerrain) => nTerrain === 5).length > 0.8 * Yard.nTiles);
+  assert.ok(yard.terrainIds.every((terrainId) => terrainId === 5 || terrainId === terrain.WATER_ID));
+  assert.ok(yard.terrainIds.filter((terrainId) => terrainId === 5).length > 0.8 * yard.tileCount);
 });
 
 test('local rescaling keeps the north-west corner of the map', () => {
-  const Source = LocalMap('regional', 'M', 10, 8, 'Hxz+-', 300, 200);
-  for (const [szSystem, szScale] of [['regional', 'S'], ['regional', 'L'], ['local', 'XL']]) {
-    const Target = Resample.Rescale(Source, szSystem, szScale);
-    const dOld = Source.Local.dHexMiles;
-    const dNew = Target.Local.dHexMiles;
-    const OldCorner = [Source.Local.Anchor.dEast - dOld / Math.sqrt(3), Source.Local.Anchor.dNorth + dOld / 2];
-    const NewCorner = [Target.Local.Anchor.dEast - dNew / Math.sqrt(3), Target.Local.Anchor.dNorth + dNew / 2];
+  const source = localMap('regional', 'M', 10, 8, 'Hxz+-', 300, 200);
+  for (const [systemName, scaleName] of [['regional', 'S'], ['regional', 'L'], ['local', 'XL']]) {
+    const target = resample.rescale(source, systemName, scaleName);
+    const old = source.local.hexMiles;
+    const newHexMiles = target.local.hexMiles;
+    const oldCorner = [source.local.anchor.east - old / Math.sqrt(3), source.local.anchor.north + old / 2];
+    const newCorner = [target.local.anchor.east - newHexMiles / Math.sqrt(3), target.local.anchor.north + newHexMiles / 2];
     // Regional anchors snap to the lattice of the new scale.
-    assert.ok(Math.hypot(OldCorner[0] - NewCorner[0], OldCorner[1] - NewCorner[1]) <= dNew, `${szSystem} ${szScale}`);
+    assert.ok(Math.hypot(oldCorner[0] - newCorner[0], oldCorner[1] - newCorner[1]) <= newHexMiles, `${systemName} ${scaleName}`);
   }
 });
 
 test('features follow their tiles; overlays are bridged, split at the map edge, and labels keep their ground size', () => {
-  const Source = LocalMap('regional', 'M', 6, 4);
-  const Index = (nX, nY) => Model.LocalTileIndex(Source, nX, nY);
-  Model.SetLandmark(Source, Index(1, 1), { szType: 'town', szName: 'Ford' });
-  Model.AddLabel(Source, { nTile: Index(2, 2), szText: 'Vale', szCategory: 'region', dSize: 24, dDx: 6, dDy: -3 });
-  Model.AddOverlay(Source, { szType: 'road', szId: 'road1', rgnTiles: [Index(0, 1), Index(1, 1), Index(2, 1), Index(3, 1), Index(4, 1), Index(5, 1)] });
+  const source = localMap('regional', 'M', 6, 4);
+  const index = (columnIndex, rowIndex) => model.localTileIndex(source, columnIndex, rowIndex);
+  model.setLandmark(source, index(1, 1), { type: 'town', name: 'Ford' });
+  model.addLabel(source, { tileIndex: index(2, 2), text: 'Vale', category: 'region', size: 24, dx: 6, dy: -3 });
+  model.addOverlay(source, { type: 'road', id: 'road1', tileIndices: [index(0, 1), index(1, 1), index(2, 1), index(3, 1), index(4, 1), index(5, 1)] });
 
-  const Fine = Resample.Rescale(Source, 'regional', 'S');
-  assert.equal(Fine.Landmarks.size, 1);
-  const [[nLandmarkTile, Landmark]] = [...Fine.Landmarks];
-  assert.equal(Landmark.szName, 'Ford');
-  assert.ok(Distance(Model.TileToUniversal(Fine, nLandmarkTile), Model.TileToUniversal(Source, Index(1, 1))) < 1e-6);
-  const [Label] = Fine.rgLabels;
-  assert.deepEqual([Label.szText, Label.dSize, Label.dDx, Label.dDy], ['Vale', 144, 36, -18]);
-  assert.equal(Fine.rgOverlays.length, 1);
-  const Road = Fine.rgOverlays[0];
-  for (let nIndex = 1; nIndex < Road.rgnTiles.length; nIndex++) {
-    assert.ok(Model.AreAdjacent(Fine, Road.rgnTiles[nIndex - 1], Road.rgnTiles[nIndex]));
+  const fine = resample.rescale(source, 'regional', 'S');
+  assert.equal(fine.landmarks.size, 1);
+  const [[landmarkTile, landmark]] = [...fine.landmarks];
+  assert.equal(landmark.name, 'Ford');
+  assert.ok(pointDistance(model.tileToUniversal(fine, landmarkTile), model.tileToUniversal(source, index(1, 1))) < 1e-6);
+  const [label] = fine.labels;
+  assert.deepEqual([label.text, label.size, label.dx, label.dy], ['Vale', 144, 36, -18]);
+  assert.equal(fine.overlays.length, 1);
+  const road = fine.overlays[0];
+  for (let index = 1; index < road.tileIndices.length; index++) {
+    assert.ok(model.areAdjacent(fine, road.tileIndices[index - 1], road.tileIndices[index]));
   }
-  assert.ok(Road.rgnTiles.length > 25, 'the upscaled road is bridged tile by tile');
-  assert.equal(Fine.nRevision, 0);
-  assert.equal(FileFormat.Write(FileFormat.Parse(FileFormat.Write(Fine))), FileFormat.Write(Fine));
+  assert.ok(road.tileIndices.length > 25, 'the upscaled road is bridged tile by tile');
+  assert.equal(fine.revision, 0);
+  assert.equal(fileFormat.write(fileFormat.parse(fileFormat.write(fine))), fileFormat.write(fine));
 
   // A crop through the middle of the road keeps the part inside; a road leaving and
   // re-entering the crop becomes two overlays with unique ids.
-  Model.AddOverlay(Source, { szType: 'river', szId: 'river1', rgnTiles: [Index(0, 2), Index(0, 1), Index(0, 0), Index(1, 0), Index(2, 0), Index(2, 1), Index(2, 2)] });
-  const Corner = Model.TileToUniversal(Source, Index(0, 1));
-  const Crop = Resample.Crop(Source, { nWidth: 3, nHeight: 2, szSystem: 'regional', szScale: 'M', Anchor: Corner });
-  assert.deepEqual(Crop.rgOverlays.map((Overlay) => Overlay.szId), ['road1', 'river1', 'river1_2']);
-  assert.equal(Crop.rgOverlays[0].rgnTiles.length, 3);
+  model.addOverlay(source, { type: 'river', id: 'river1', tileIndices: [index(0, 2), index(0, 1), index(0, 0), index(1, 0), index(2, 0), index(2, 1), index(2, 2)] });
+  const corner = model.tileToUniversal(source, index(0, 1));
+  const crop = resample.crop(source, { width: 3, height: 2, systemName: 'regional', scaleName: 'M', anchor: corner });
+  assert.deepEqual(crop.overlays.map((overlay) => overlay.id), ['road1', 'river1', 'river1_2']);
+  assert.equal(crop.overlays[0].tileIndices.length, 3);
 });
 
 test('cropping a global map into a seam-crossing local map copies each panel\'s tiles', () => {
-  const Global = Model.CreateGlobalMap({ szTileScale: 'L' });
-  for (let nTile = 0; nTile < Global.nTiles; nTile++) {
-    Global.rgnTerrain[nTile] = Global.Topo.rgTiles[nTile].szPanel === 'Hxy++' ? 7 : 2;
+  const global = model.createGlobalMap({ tileScale: 'L' });
+  for (let tileIndex = 0; tileIndex < global.tileCount; tileIndex++) {
+    global.terrainIds[tileIndex] = global.topo.tiles[tileIndex].panelId === 'Hxy++' ? 7 : 2;
   }
-  const Crop = Resample.Crop(Global, {
-    szName: 'Strait', nWidth: 30, nHeight: 10, szSystem: 'regional', szScale: 'L',
-    Anchor: Coordinates.MakeLocation('Hyz+-', 0.6 * g_dMilesPerEdge, 0.2 * g_dMilesPerEdge),
+  const crop = resample.crop(global, {
+    name: 'Strait', width: 30, height: 10, systemName: 'regional', scaleName: 'L',
+    anchor: coordinates.makeLocation('Hyz+-', 0.6 * MILES_PER_EDGE, 0.2 * MILES_PER_EDGE),
   });
-  assert.equal(Crop.szName, 'Strait');
-  assert.ok(Crop.Topo && Crop.Topo.Span);
-  for (const Tile of Crop.Topo.rgTiles) {
-    assert.equal(Crop.rgnTerrain[Tile.nIndex], Tile.szPanel === 'Hxy++' ? 7 : 2);
-    const nGlobal = Coordinates.UniversalToTile(Global.Topo, Model.TileToUniversal(Crop, Tile.nIndex));
-    assert.ok(nGlobal >= 0, 'crop tiles coincide with global tiles of the same scale');
+  assert.equal(crop.name, 'Strait');
+  assert.ok(crop.topo && crop.topo.span);
+  for (const tile of crop.topo.tiles) {
+    assert.equal(crop.terrainIds[tile.index], tile.panelId === 'Hxy++' ? 7 : 2);
+    const globalIndex = coordinates.universalToTile(global.topo, model.tileToUniversal(crop, tile.index));
+    assert.ok(globalIndex >= 0, 'crop tiles coincide with global tiles of the same scale');
   }
-  assert.equal(Crop.Local.nPanelHexes, Global.Global.nPanelHexes);
+  assert.equal(crop.local.panelHexes, global.global.panelHexes);
 });
 
 test('whole-panel crops export the entire panel at the original, finer or coarser scale', () => {
-  const Source = Model.CreateGlobalMap({ nPanelHexes: 2, szTileScale: 'L', szName: 'World' });
-  Source.rgnTerrain.fill(3);
-  const nFeature = Resample.TileAtPoint(Source, 'Hxz+-', [0, 0]);
-  Model.SetLandmark(Source, nFeature, { szType: 'town', szName: 'Centre' });
-  Model.AddLabel(Source, { nTile: nFeature, szCategory: 'region', szText: 'Coast' });
-  Model.AddOverlay(Source, { szType: 'trail', rgnTiles: [nFeature] });
-  const szBefore = FileFormat.Write(Source);
-  for (const szScale of ['XL', 'L', 'M']) {
-    const Crop = Resample.Crop(Source, { szKind: 'panel', szPanel: 'Hxz+-', szScale, szName: 'Panel crop' });
-    assert.equal(Crop.szKind, 'panel');
-    assert.equal(Crop.szName, 'Panel crop');
-    assert.deepEqual(Crop.Global, { nPanelHexes: 2, szTileScale: szScale, szPanel: 'Hxz+-' });
-    assert.ok(Crop.rgnTerrain.every((nTerrain) => nTerrain === 3));
-    assert.equal(Crop.Landmarks.size, 1);
-    assert.equal(Crop.rgLabels.length, 1);
-    assert.equal(Crop.rgOverlays.length, 1, 'single-tile paths survive the panel crop');
-    assert.equal(Crop.nRevision, 0);
-    assert.equal(FileFormat.Write(FileFormat.Parse(FileFormat.Write(Crop))), FileFormat.Write(Crop));
+  const source = model.createGlobalMap({ panelHexes: 2, tileScale: 'L', name: 'World' });
+  source.terrainIds.fill(3);
+  const feature = resample.tileAtPoint(source, 'Hxz+-', [0, 0]);
+  model.setLandmark(source, feature, { type: 'town', name: 'Centre' });
+  model.addLabel(source, { tileIndex: feature, category: 'region', text: 'Coast' });
+  model.addOverlay(source, { type: 'trail', tileIndices: [feature] });
+  const before = fileFormat.write(source);
+  for (const scaleName of ['XL', 'L', 'M']) {
+    const crop = resample.crop(source, { kind: 'panel', panelId: 'Hxz+-', scaleName, name: 'Panel crop' });
+    assert.equal(crop.kind, 'panel');
+    assert.equal(crop.name, 'Panel crop');
+    assert.deepEqual(crop.global, { panelHexes: 2, tileScale: scaleName, panelId: 'Hxz+-' });
+    assert.ok(crop.terrainIds.every((terrainId) => terrainId === 3));
+    assert.equal(crop.landmarks.size, 1);
+    assert.equal(crop.labels.length, 1);
+    assert.equal(crop.overlays.length, 1, 'single-tile paths survive the panel crop');
+    assert.equal(crop.revision, 0);
+    assert.equal(fileFormat.write(fileFormat.parse(fileFormat.write(crop))), fileFormat.write(crop));
   }
-  assert.equal(FileFormat.Write(Source), szBefore);
-  assert.throws(() => Resample.Crop(Source, { szKind: 'panel', szPanel: 'Hxz+-', szScale: 'S' }), /scale/i);
+  assert.equal(fileFormat.write(source), before);
+  assert.throws(() => resample.crop(source, { kind: 'panel', panelId: 'Hxz+-', scaleName: 'S' }), /scale/i);
 });
 
 test('same-scale merges replace land and water only inside the imported rectangle', () => {
-  const Target = LocalMap('regional', 'S', 6, 5);
-  Target.rgnTerrain.fill(6);
-  const Anchor = Model.TileToUniversal(Target, Model.LocalTileIndex(Target, 2, 1));
-  const Source = Model.CreateLocalMap({ nWidth: 2, nHeight: 2, szSystem: 'regional', szScale: 'S', Anchor });
-  Source.rgnTerrain.set([0, 2, 4, 0]);
-  const szSource = FileFormat.Write(Source);
-  const Geometry = Target.Local;
-  const Result = Resample.Merge(Source, Target);
-  assert.equal(Result.nCovered, 4);
-  assert.equal(Target.Local, Geometry);
-  for (let nTile = 0; nTile < Target.nTiles; nTile++) {
-    const [nX, nY] = Model.LocalTileXY(Target, nTile);
-    const nExpected = nX >= 2 && nX < 4 && nY >= 1 && nY < 3 ? Source.rgnTerrain[(nY - 1) * 2 + nX - 2] : 6;
-    assert.equal(Target.rgnTerrain[nTile], nExpected, `tile ${nTile}`);
+  const target = localMap('regional', 'S', 6, 5);
+  target.terrainIds.fill(6);
+  const anchor = model.tileToUniversal(target, model.localTileIndex(target, 2, 1));
+  const source = model.createLocalMap({ width: 2, height: 2, systemName: 'regional', scaleName: 'S', anchor });
+  source.terrainIds.set([0, 2, 4, 0]);
+  const sourceText = fileFormat.write(source);
+  const geometry = target.local;
+  const result = resample.merge(source, target);
+  assert.equal(result.coveredCount, 4);
+  assert.equal(target.local, geometry);
+  for (let tileIndex = 0; tileIndex < target.tileCount; tileIndex++) {
+    const [columnIndex, rowIndex] = model.localTileXY(target, tileIndex);
+    const expectedCount = columnIndex >= 2 && columnIndex < 4 && rowIndex >= 1 && rowIndex < 3 ? source.terrainIds[(rowIndex - 1) * 2 + columnIndex - 2] : 6;
+    assert.equal(target.terrainIds[tileIndex], expectedCount, `tile ${tileIndex}`);
   }
-  assert.equal(FileFormat.Write(Source), szSource);
+  assert.equal(fileFormat.write(source), sourceText);
 });
 
 test('outside imports leave local and isolated panel maps completely unchanged', () => {
-  const Local = LocalMap('regional', 'S', 3, 3);
-  const FarAway = LocalMap('regional', 'S', 3, 3, 'Hxz+-', 1000, 1000);
-  const Panel = Model.CreatePanelMap({ nPanelHexes: 2, szPanel: 'Sx+', szTileScale: 'L' });
-  const OtherPanel = Model.CreatePanelMap({ nPanelHexes: 2, szPanel: 'Sx-', szTileScale: 'L' });
-  for (const [Target, Source] of [[Local, FarAway], [Panel, OtherPanel]]) {
-    Target.rgnTerrain.fill(5);
-    Source.rgnTerrain.fill(7);
-    Model.SetLandmark(Target, 0, { szType: 'village', szName: 'Keep' });
-    Model.AddLabel(Target, { nTile: 0, szCategory: 'region', szText: 'Keep' });
-    const szBefore = FileFormat.Write(Target);
-    const nRevision = Target.nRevision;
-    const H = History.Create(Target);
-    const Command = History.Perform(H, 'Import', (Doc, Record) => {
-      assert.equal(Resample.Merge(Source, Doc, Record).nCovered, 0);
+  const local = localMap('regional', 'S', 3, 3);
+  const farAway = localMap('regional', 'S', 3, 3, 'Hxz+-', 1000, 1000);
+  const panel = model.createPanelMap({ panelHexes: 2, panelId: 'Sx+', tileScale: 'L' });
+  const otherPanel = model.createPanelMap({ panelHexes: 2, panelId: 'Sx-', tileScale: 'L' });
+  for (const [target, source] of [[local, farAway], [panel, otherPanel]]) {
+    target.terrainIds.fill(5);
+    source.terrainIds.fill(7);
+    model.setLandmark(target, 0, { type: 'village', name: 'Keep' });
+    model.addLabel(target, { tileIndex: 0, category: 'region', text: 'Keep' });
+    const before = fileFormat.write(target);
+    const revision = target.revision;
+    const h = history.create(target);
+    const command = history.perform(h, 'Import', (doc, record) => {
+      assert.equal(resample.merge(source, doc, record).coveredCount, 0);
     });
-    assert.equal(Command, null);
-    assert.equal(Target.nRevision, nRevision);
-    assert.equal(FileFormat.Write(Target), szBefore);
+    assert.equal(command, null);
+    assert.equal(target.revision, revision);
+    assert.equal(fileFormat.write(target), before);
   }
 });
 
 test('merge rejects incompatible hex systems or world sizes without changing the map', () => {
-  const Regional = LocalMap('regional', 'S', 2, 2);
-  const Yard = LocalMap('local', 'M', 2, 2);
-  for (const [Source, Target] of [[Regional, Yard], [Yard, Regional],
-    [Yard, Model.CreateGlobalMap({ nPanelHexes: 2 })]]) {
-    const szBefore = FileFormat.Write(Target);
-    const nRevision = Target.nRevision;
-    assert.throws(() => Resample.Merge(Source, Target), /Cannot merge local.*regional/);
-    assert.equal(FileFormat.Write(Target), szBefore);
-    assert.equal(Target.nRevision, nRevision);
+  const regional = localMap('regional', 'S', 2, 2);
+  const yard = localMap('local', 'M', 2, 2);
+  for (const [source, target] of [[regional, yard], [yard, regional],
+    [yard, model.createGlobalMap({ panelHexes: 2 })]]) {
+    const before = fileFormat.write(target);
+    const revision = target.revision;
+    assert.throws(() => resample.merge(source, target), /Cannot merge local.*regional/);
+    assert.equal(fileFormat.write(target), before);
+    assert.equal(target.revision, revision);
   }
-  assert.throws(() => Resample.Merge(Model.CreateGlobalMap({ nPanelHexes: 2 }), Regional), /same panel size/);
+  assert.throws(() => resample.merge(model.createGlobalMap({ panelHexes: 2 }), regional), /same panel size/);
 });
 
 test('coarser imports repeat terrain into finer yard-scale hexes without clearing outside tiles', () => {
-  const Target = LocalMap('local', 'S', 24, 24, 'Hxz+-', -0.003, 0.003);
-  Target.rgnTerrain.fill(6);
-  const Source = LocalMap('local', 'M', 1, 1);
-  Source.rgnTerrain.fill(2);
-  const Result = Resample.Merge(Source, Target);
-  assert.ok(Result.nCovered > 50 && Result.nCovered < Target.nTiles);
-  const Covered = new Set(Result.rgnTiles);
-  for (let nTile = 0; nTile < Target.nTiles; nTile++) {
-    assert.equal(Target.rgnTerrain[nTile], Covered.has(nTile) ? 2 : 6);
+  const target = localMap('local', 'S', 24, 24, 'Hxz+-', -0.003, 0.003);
+  target.terrainIds.fill(6);
+  const source = localMap('local', 'M', 1, 1);
+  source.terrainIds.fill(2);
+  const result = resample.merge(source, target);
+  assert.ok(result.coveredCount > 50 && result.coveredCount < target.tileCount);
+  const covered = new Set(result.tileIndices);
+  for (let tileIndex = 0; tileIndex < target.tileCount; tileIndex++) {
+    assert.equal(target.terrainIds[tileIndex], covered.has(tileIndex) ? 2 : 6);
   }
 });
 
 test('finer imports use majority votes, including coarse tiles whose centres are outside the source', () => {
-  const Target = LocalMap('regional', 'M', 6, 6);
-  Target.rgnTerrain.fill(6);
-  const Anchor = Model.TileToUniversal(Target, Model.LocalTileIndex(Target, 2, 2));
-  const Source = Model.CreateLocalMap({ nWidth: 9, nHeight: 9, szSystem: 'regional', szScale: 'S', Anchor });
-  Source.rgnTerrain.fill(4);
-  Source.rgnTerrain[0] = 2;
-  const Votes = new Map();
-  for (let nTile = 0; nTile < Source.nTiles; nTile++) {
-    const Point = Resample.TilePoint(Source, nTile);
-    const nTarget = Resample.TileAtPoint(Target, Point.szPanel, Point.rgdPoint);
-    assert.ok(nTarget >= 0);
-    if (!Votes.has(nTarget)) {
-      Votes.set(nTarget, new Array(g_nTerrains).fill(0));
+  const target = localMap('regional', 'M', 6, 6);
+  target.terrainIds.fill(6);
+  const anchor = model.tileToUniversal(target, model.localTileIndex(target, 2, 2));
+  const source = model.createLocalMap({ width: 9, height: 9, systemName: 'regional', scaleName: 'S', anchor });
+  source.terrainIds.fill(4);
+  source.terrainIds[0] = 2;
+  const votes = new Map();
+  for (let tileIndex = 0; tileIndex < source.tileCount; tileIndex++) {
+    const point = resample.tilePoint(source, tileIndex);
+    const targetIndex = resample.tileAtPoint(target, point.panelId, point.point);
+    assert.ok(targetIndex >= 0);
+    if (!votes.has(targetIndex)) {
+      votes.set(targetIndex, new Array(TERRAIN_COUNT).fill(0));
     }
-    Votes.get(nTarget)[Source.rgnTerrain[nTile]]++;
+    votes.get(targetIndex)[source.terrainIds[tileIndex]]++;
   }
-  const Result = Resample.Merge(Source, Target);
-  assert.equal(Result.nCovered, Votes.size);
-  let nOffCentre = 0;
-  for (const nTile of Result.rgnTiles) {
-    const rgnVotes = Votes.get(nTile);
-    assert.equal(Target.rgnTerrain[nTile], rgnVotes.indexOf(Math.max(...rgnVotes)));
-    const Point = Resample.TilePoint(Target, nTile);
-    if (Resample.TileAtPoint(Source, Point.szPanel, Point.rgdPoint) < 0) {
-      nOffCentre++;
+  const result = resample.merge(source, target);
+  assert.equal(result.coveredCount, votes.size);
+  let offCentre = 0;
+  for (const tileIndex of result.tileIndices) {
+    const voteCounts = votes.get(tileIndex);
+    assert.equal(target.terrainIds[tileIndex], voteCounts.indexOf(Math.max(...voteCounts)));
+    const point = resample.tilePoint(target, tileIndex);
+    if (resample.tileAtPoint(source, point.panelId, point.point) < 0) {
+      offCentre++;
     }
   }
-  assert.ok(nOffCentre > 0, 'partial coverage still replaces a coarse tile');
-  for (let nTile = 0; nTile < Target.nTiles; nTile++) {
-    if (!Votes.has(nTile)) {
-      assert.equal(Target.rgnTerrain[nTile], 6);
+  assert.ok(offCentre > 0, 'partial coverage still replaces a coarse tile');
+  for (let tileIndex = 0; tileIndex < target.tileCount; tileIndex++) {
+    if (!votes.has(tileIndex)) {
+      assert.equal(target.terrainIds[tileIndex], 6);
     }
   }
 });
 
 test('regional rectangles merge into globes, and globe imports clip to a panel or rectangle', () => {
-  const Global = Model.CreateGlobalMap();
-  Global.rgnTerrain.fill(6);
-  const Source = LocalMap('regional', 'XL', 1, 1);
-  Source.rgnTerrain.fill(3);
-  const Result = Resample.Merge(Source, Global);
-  assert.equal(Result.nCovered, 1);
-  assert.equal(Global.rgnTerrain[Result.rgnTiles[0]], 3);
-  assert.equal(Global.rgnTerrain.filter((nTerrain) => nTerrain === 6).length, Global.nTiles - 1);
-  Global.rgnTerrain.fill(5);
-  const Panel = Model.CreatePanelMap({ szPanel: 'Hxz+-', szTileScale: 'L' });
-  const Rectangle = LocalMap('regional', 'S', 5, 5);
-  for (const Target of [Panel, Rectangle]) {
-    const nTiles = Target.nTiles;
-    const Topo = Target.Topo;
-    const Local = Target.Local;
-    const Merged = Resample.Merge(Global, Target);
-    assert.equal(Merged.nCovered, nTiles);
-    assert.ok(Target.rgnTerrain.every((nTerrain) => nTerrain === 5));
-    assert.equal(Target.nTiles, nTiles);
-    assert.equal(Target.Topo, Topo);
-    assert.equal(Target.Local, Local);
+  const global = model.createGlobalMap();
+  global.terrainIds.fill(6);
+  const source = localMap('regional', 'XL', 1, 1);
+  source.terrainIds.fill(3);
+  const result = resample.merge(source, global);
+  assert.equal(result.coveredCount, 1);
+  assert.equal(global.terrainIds[result.tileIndices[0]], 3);
+  assert.equal(global.terrainIds.filter((terrainId) => terrainId === 6).length, global.tileCount - 1);
+  global.terrainIds.fill(5);
+  const panel = model.createPanelMap({ panelId: 'Hxz+-', tileScale: 'L' });
+  const rectangle = localMap('regional', 'S', 5, 5);
+  for (const target of [panel, rectangle]) {
+    const tileCount = target.tileCount;
+    const topo = target.topo;
+    const local = target.local;
+    const merged = resample.merge(global, target);
+    assert.equal(merged.coveredCount, tileCount);
+    assert.ok(target.terrainIds.every((terrainId) => terrainId === 5));
+    assert.equal(target.tileCount, tileCount);
+    assert.equal(target.topo, topo);
+    assert.equal(target.local, local);
   }
 });
 
 test('panel imports replace their clipped boundary hexes on the globe, including features in a clipped tip', () => {
-  const Source = Model.CreatePanelMap({ nPanelHexes: 2, szPanel: 'Hyz+-', szTileScale: 'L' });
-  const Target = Model.CreateGlobalMap({ nPanelHexes: 2, szTileScale: 'L' });
-  Source.rgnTerrain.fill(3);
-  Target.rgnTerrain.fill(6);
-  const Covered = new Set();
-  let nBoundarySource = -1;
-  let nBoundaryTarget = -1;
-  for (let nTile = 0; nTile < Source.nTiles; nTile++) {
-    const Point = Resample.TilePoint(Source, nTile);
-    const nTarget = Resample.TileAtPoint(Target, Point.szPanel, Point.rgdPoint);
-    assert.ok(nTarget >= 0);
-    Covered.add(nTarget);
-    const Center = Resample.TilePoint(Target, nTarget);
-    if (Resample.TileAtPoint(Source, Center.szPanel, Center.rgdPoint) < 0) {
-      nBoundarySource = nTile;
-      nBoundaryTarget = nTarget;
+  const source = model.createPanelMap({ panelHexes: 2, panelId: 'Hyz+-', tileScale: 'L' });
+  const target = model.createGlobalMap({ panelHexes: 2, tileScale: 'L' });
+  source.terrainIds.fill(3);
+  target.terrainIds.fill(6);
+  const covered = new Set();
+  let boundarySource = -1;
+  let boundaryTarget = -1;
+  for (let tileIndex = 0; tileIndex < source.tileCount; tileIndex++) {
+    const point = resample.tilePoint(source, tileIndex);
+    const targetIndex = resample.tileAtPoint(target, point.panelId, point.point);
+    assert.ok(targetIndex >= 0);
+    covered.add(targetIndex);
+    const center = resample.tilePoint(target, targetIndex);
+    if (resample.tileAtPoint(source, center.panelId, center.point) < 0) {
+      boundarySource = tileIndex;
+      boundaryTarget = targetIndex;
     }
   }
-  assert.ok(nBoundarySource >= 0, 'isolated panels include tips owned by neighbouring globe tiles');
-  Model.SetLandmark(Source, nBoundarySource, { szType: 'village', szName: 'Edge' });
-  Model.AddLabel(Source, { nTile: nBoundarySource, szCategory: 'region', szText: 'Edge' });
-  Model.AddOverlay(Source, { szType: 'trail', rgnTiles: [nBoundarySource] });
-  assert.equal(Resample.Merge(Source, Target).nCovered, Covered.size);
-  for (let nTile = 0; nTile < Target.nTiles; nTile++) {
-    assert.equal(Target.rgnTerrain[nTile], Covered.has(nTile) ? 3 : 6);
+  assert.ok(boundarySource >= 0, 'isolated panels include tips owned by neighbouring globe tiles');
+  model.setLandmark(source, boundarySource, { type: 'village', name: 'Edge' });
+  model.addLabel(source, { tileIndex: boundarySource, category: 'region', text: 'Edge' });
+  model.addOverlay(source, { type: 'trail', tileIndices: [boundarySource] });
+  assert.equal(resample.merge(source, target).coveredCount, covered.size);
+  for (let tileIndex = 0; tileIndex < target.tileCount; tileIndex++) {
+    assert.equal(target.terrainIds[tileIndex], covered.has(tileIndex) ? 3 : 6);
   }
-  assert.equal(Model.GetLandmark(Target, nBoundaryTarget).szName, 'Edge');
-  assert.equal(Target.rgLabels[0].nTile, nBoundaryTarget);
-  assert.deepEqual(Target.rgOverlays[0].rgnTiles, [nBoundaryTarget]);
+  assert.equal(model.getLandmark(target, boundaryTarget).name, 'Edge');
+  assert.equal(target.labels[0].tileIndex, boundaryTarget);
+  assert.deepEqual(target.overlays[0].tileIndices, [boundaryTarget]);
 });
 
 test('resampling never treats the clipped-away part of a boundary hex as map coverage', () => {
-  const Panel = Model.CreatePanelMap({ nPanelHexes: 2, szPanel: 'Sx+', szTileScale: 'L' });
-  let nChecked = 0;
-  for (const Tile of Panel.Topo.rgTiles.filter((Tile) => Tile.fPartial)) {
-    const Polygons = Topology.TilePolygons(Panel.Topo, Tile.nIndex);
-    for (const Vertex of Lattice.HexPolygon(Tile.rgdCenter, Panel.Topo.dD)) {
-      const Point = Vertex.map((dValue, nAxis) => 0.9 * dValue + 0.1 * Tile.rgdCenter[nAxis]);
-      if (!Polygons.some((Polygon) => Util.PointInConvex(Point, Polygon))) {
-        assert.equal(Resample.TileAtPoint(Panel, Tile.szPanel, Point), -1);
-        nChecked++;
+  const panel = model.createPanelMap({ panelHexes: 2, panelId: 'Sx+', tileScale: 'L' });
+  let checked = 0;
+  for (const tile of panel.topo.tiles.filter((tile) => tile.isPartial)) {
+    const polygons = topology.tilePolygons(panel.topo, tile.index);
+    for (const vertex of lattice.hexPolygon(tile.center, panel.topo.d)) {
+      const point = vertex.map((value, axis) => 0.9 * value + 0.1 * tile.center[axis]);
+      if (!polygons.some((polygon) => util.pointInConvex(point, polygon))) {
+        assert.equal(resample.tileAtPoint(panel, tile.panelId, point), -1);
+        checked++;
       }
     }
   }
-  assert.ok(nChecked > 0);
+  assert.ok(checked > 0);
 });
 
 test('merges follow panel grids on seam-crossing rectangular maps', () => {
-  const Global = Model.CreateGlobalMap({ szTileScale: 'L' });
-  Global.rgnTerrain.fill(7);
-  const Span = Model.CreateLocalMap({
-    nWidth: 30, nHeight: 10, szSystem: 'regional', szScale: 'L',
-    Anchor: Coordinates.MakeLocation('Hyz+-', 0.6 * g_dMilesPerEdge, 0.2 * g_dMilesPerEdge),
+  const global = model.createGlobalMap({ tileScale: 'L' });
+  global.terrainIds.fill(7);
+  const span = model.createLocalMap({
+    width: 30, height: 10, systemName: 'regional', scaleName: 'L',
+    anchor: coordinates.makeLocation('Hyz+-', 0.6 * MILES_PER_EDGE, 0.2 * MILES_PER_EDGE),
   });
-  assert.ok(Span.Topo && Span.Topo.Span);
-  assert.equal(Resample.Merge(Global, Span).nCovered, Span.nTiles);
-  assert.ok(Span.rgnTerrain.every((nTerrain) => nTerrain === 7));
-  const nCovered = Resample.Merge(Span, Global).nCovered;
-  assert.ok(nCovered > 0 && nCovered < Global.nTiles);
+  assert.ok(span.topo && span.topo.span);
+  assert.equal(resample.merge(global, span).coveredCount, span.tileCount);
+  assert.ok(span.terrainIds.every((terrainId) => terrainId === 7));
+  const coveredCount = resample.merge(span, global).coveredCount;
+  assert.ok(coveredCount > 0 && coveredCount < global.tileCount);
 });
 
 test('merge replaces covered features, splits crossing paths, resolves ids and is one undo step', () => {
-  const Target = LocalMap('regional', 'S', 7, 3);
-  Target.rgnTerrain.fill(6);
-  const Index = (nX, nY) => Model.LocalTileIndex(Target, nX, nY);
-  const Source = Model.CreateLocalMap({
-    nWidth: 3, nHeight: 1, szSystem: 'regional', szScale: 'S', Anchor: Model.TileToUniversal(Target, Index(2, 1)),
+  const target = localMap('regional', 'S', 7, 3);
+  target.terrainIds.fill(6);
+  const index = (columnIndex, rowIndex) => model.localTileIndex(target, columnIndex, rowIndex);
+  const source = model.createLocalMap({
+    width: 3, height: 1, systemName: 'regional', scaleName: 'S', anchor: model.tileToUniversal(target, index(2, 1)),
   });
-  Source.rgnTerrain.set([0, 3, 4]);
-  Model.SetLandmark(Target, Index(0, 0), { szType: 'town', szName: 'Outside' });
-  Model.SetLandmark(Target, Index(2, 1), { szType: 'town', szName: 'Erase' });
-  Model.SetLandmark(Target, Index(3, 1), { szType: 'town', szName: 'Replace' });
-  Model.SetLandmark(Source, 1, { szType: 'village', szName: 'Imported' });
-  Model.AddLabel(Target, { szId: 'label1', nTile: Index(0, 0), szCategory: 'region', szText: 'Outside' });
-  Model.AddLabel(Target, { szId: 'erase', nTile: Index(2, 1), szCategory: 'region', szText: 'Erase' });
-  Model.AddLabel(Source, { szId: 'label1', nTile: 0, szCategory: 'region', szText: 'Imported' });
-  Model.AddOverlay(Target, { szType: 'road', szId: 'road1', szName: 'Crossing', rgnTiles: [0, 1, 2, 3, 4, 5, 6].map((nX) => Index(nX, 1)) });
-  Model.AddOverlay(Target, { szType: 'trail', szId: 'road1_2', szName: 'Outside', rgnTiles: [Index(0, 0), Index(1, 0)] });
-  Model.AddOverlay(Target, { szType: 'river', szId: 'river1', szName: 'Ends', rgnTiles: [1, 2, 3, 4, 5].map((nX) => Index(nX, 1)) });
-  Model.AddOverlay(Source, { szType: 'road', szId: 'road1', szName: 'Imported', rgnTiles: [0, 1, 2] });
-  const szBefore = FileFormat.Write(Target);
-  const szSource = FileFormat.Write(Source);
-  const H = History.Create(Target);
-  History.Perform(H, 'Import', (Doc, Record) => assert.equal(Resample.Merge(Source, Doc, Record).nCovered, 3));
-  assert.equal(H.rgUndo.length, 1);
-  assert.equal(Target.Landmarks.size, 2);
-  assert.equal(Model.GetLandmark(Target, Index(0, 0)).szName, 'Outside');
-  assert.equal(Model.GetLandmark(Target, Index(2, 1)), null);
-  assert.equal(Model.GetLandmark(Target, Index(3, 1)).szName, 'Imported');
-  assert.deepEqual(Target.rgLabels.map((Label) => [Label.szId, Label.szText]), [['label1', 'Outside'], ['label1_2', 'Imported']]);
-  assert.deepEqual(Target.rgOverlays.filter((Overlay) => Overlay.szName === 'Crossing').map((Overlay) => Overlay.rgnTiles),
-    [[Index(0, 1), Index(1, 1)], [Index(5, 1), Index(6, 1)]]);
-  assert.deepEqual(Target.rgOverlays.filter((Overlay) => Overlay.szName === 'Ends').map((Overlay) => Overlay.rgnTiles),
-    [[Index(1, 1)], [Index(5, 1)]]);
-  assert.equal(new Set(Target.rgOverlays.map((Overlay) => Overlay.szId)).size, Target.rgOverlays.length);
-  assert.deepEqual(Target.rgOverlays.find((Overlay) => Overlay.szName === 'Imported').rgnTiles, [Index(2, 1), Index(3, 1), Index(4, 1)]);
-  const szAfter = FileFormat.Write(Target);
-  assert.equal(FileFormat.Write(FileFormat.Parse(szAfter)), szAfter);
-  History.Undo(H);
-  assert.equal(FileFormat.Write(Target), szBefore);
-  History.Redo(H);
-  assert.equal(FileFormat.Write(Target), szAfter);
-  assert.equal(FileFormat.Write(Source), szSource);
+  source.terrainIds.set([0, 3, 4]);
+  model.setLandmark(target, index(0, 0), { type: 'town', name: 'Outside' });
+  model.setLandmark(target, index(2, 1), { type: 'town', name: 'Erase' });
+  model.setLandmark(target, index(3, 1), { type: 'town', name: 'Replace' });
+  model.setLandmark(source, 1, { type: 'village', name: 'Imported' });
+  model.addLabel(target, { id: 'label1', tileIndex: index(0, 0), category: 'region', text: 'Outside' });
+  model.addLabel(target, { id: 'erase', tileIndex: index(2, 1), category: 'region', text: 'Erase' });
+  model.addLabel(source, { id: 'label1', tileIndex: 0, category: 'region', text: 'Imported' });
+  model.addOverlay(target, { type: 'road', id: 'road1', name: 'Crossing', tileIndices: [0, 1, 2, 3, 4, 5, 6].map((columnIndex) => index(columnIndex, 1)) });
+  model.addOverlay(target, { type: 'trail', id: 'road1_2', name: 'Outside', tileIndices: [index(0, 0), index(1, 0)] });
+  model.addOverlay(target, { type: 'river', id: 'river1', name: 'Ends', tileIndices: [1, 2, 3, 4, 5].map((columnIndex) => index(columnIndex, 1)) });
+  model.addOverlay(source, { type: 'road', id: 'road1', name: 'Imported', tileIndices: [0, 1, 2] });
+  const before = fileFormat.write(target);
+  const sourceText = fileFormat.write(source);
+  const h = history.create(target);
+  history.perform(h, 'Import', (doc, record) => assert.equal(resample.merge(source, doc, record).coveredCount, 3));
+  assert.equal(h.undoStack.length, 1);
+  assert.equal(target.landmarks.size, 2);
+  assert.equal(model.getLandmark(target, index(0, 0)).name, 'Outside');
+  assert.equal(model.getLandmark(target, index(2, 1)), null);
+  assert.equal(model.getLandmark(target, index(3, 1)).name, 'Imported');
+  assert.deepEqual(target.labels.map((label) => [label.id, label.text]), [['label1', 'Outside'], ['label1_2', 'Imported']]);
+  assert.deepEqual(target.overlays.filter((overlay) => overlay.name === 'Crossing').map((overlay) => overlay.tileIndices),
+    [[index(0, 1), index(1, 1)], [index(5, 1), index(6, 1)]]);
+  assert.deepEqual(target.overlays.filter((overlay) => overlay.name === 'Ends').map((overlay) => overlay.tileIndices),
+    [[index(1, 1)], [index(5, 1)]]);
+  assert.equal(new Set(target.overlays.map((overlay) => overlay.id)).size, target.overlays.length);
+  assert.deepEqual(target.overlays.find((overlay) => overlay.name === 'Imported').tileIndices, [index(2, 1), index(3, 1), index(4, 1)]);
+  const after = fileFormat.write(target);
+  assert.equal(fileFormat.write(fileFormat.parse(after)), after);
+  history.undo(h);
+  assert.equal(fileFormat.write(target), before);
+  history.redo(h);
+  assert.equal(fileFormat.write(target), after);
+  assert.equal(fileFormat.write(source), sourceText);
 });
 
 test('incoming paths and features clip to the target, including isolated path points', () => {
-  const Source = LocalMap('regional', 'S', 7, 3);
-  Source.rgnTerrain.fill(5);
-  const Index = (nX, nY) => Model.LocalTileIndex(Source, nX, nY);
-  Model.AddOverlay(Source, { szType: 'road', rgnTiles: [0, 1, 2, 3, 4, 5, 6].map((nX) => Index(nX, 1)) });
-  Model.AddOverlay(Source, { szType: 'trail', rgnTiles: [Index(2, 1)] });
-  Model.SetLandmark(Source, Index(0, 0), { szType: 'town', szName: 'Outside' });
-  Model.AddLabel(Source, { nTile: Index(6, 2), szCategory: 'region', szText: 'Outside' });
-  const Target = Model.CreateLocalMap({
-    nWidth: 3, nHeight: 1, szSystem: 'regional', szScale: 'S', Anchor: Model.TileToUniversal(Source, Index(2, 1)),
+  const source = localMap('regional', 'S', 7, 3);
+  source.terrainIds.fill(5);
+  const index = (columnIndex, rowIndex) => model.localTileIndex(source, columnIndex, rowIndex);
+  model.addOverlay(source, { type: 'road', tileIndices: [0, 1, 2, 3, 4, 5, 6].map((columnIndex) => index(columnIndex, 1)) });
+  model.addOverlay(source, { type: 'trail', tileIndices: [index(2, 1)] });
+  model.setLandmark(source, index(0, 0), { type: 'town', name: 'Outside' });
+  model.addLabel(source, { tileIndex: index(6, 2), category: 'region', text: 'Outside' });
+  const target = model.createLocalMap({
+    width: 3, height: 1, systemName: 'regional', scaleName: 'S', anchor: model.tileToUniversal(source, index(2, 1)),
   });
-  assert.equal(Resample.Merge(Source, Target).nCovered, 3);
-  assert.equal(Target.nTiles, 3);
-  assert.ok(Target.rgnTerrain.every((nTerrain) => nTerrain === 5));
-  assert.equal(Target.Landmarks.size, 0);
-  assert.equal(Target.rgLabels.length, 0);
-  assert.deepEqual(Target.rgOverlays.map((Overlay) => Overlay.rgnTiles), [[0, 1, 2], [0]]);
+  assert.equal(resample.merge(source, target).coveredCount, 3);
+  assert.equal(target.tileCount, 3);
+  assert.ok(target.terrainIds.every((terrainId) => terrainId === 5));
+  assert.equal(target.landmarks.size, 0);
+  assert.equal(target.labels.length, 0);
+  assert.deepEqual(target.overlays.map((overlay) => overlay.tileIndices), [[0, 1, 2], [0]]);
 });
 
 test('merge resamples features while preserving label ground sizes and map metadata', () => {
-  const Source = LocalMap('regional', 'M', 2, 2);
-  Source.rgnTerrain.fill(4);
-  Model.AddLabel(Source, { nTile: 0, szText: 'Vale', szCategory: 'region', dSize: 24, dDx: 6, dDy: -3 });
-  Model.AddOverlay(Source, { szType: 'road', rgnTiles: [0, 1] });
-  const Target = LocalMap('regional', 'S', 30, 30, 'Hxz+-', -12, 12);
-  Target.szName = 'Keep name';
-  const Local = Target.Local;
-  const Result = Resample.Merge(Source, Target);
-  assert.ok(Result.nCovered > 20 && Result.nCovered < Target.nTiles);
-  assert.equal(Target.Local, Local);
-  assert.equal(Target.szName, 'Keep name');
-  assert.deepEqual(Target.rgLabels.map((Label) => [Label.dSize, Label.dDx, Label.dDy]), [[144, 36, -18]]);
-  assert.ok(Target.rgOverlays[0].rgnTiles.length > 5);
-  for (const Overlay of Target.rgOverlays) {
-    for (let nIndex = 1; nIndex < Overlay.rgnTiles.length; nIndex++) {
-      assert.ok(Model.AreAdjacent(Target, Overlay.rgnTiles[nIndex - 1], Overlay.rgnTiles[nIndex]));
+  const source = localMap('regional', 'M', 2, 2);
+  source.terrainIds.fill(4);
+  model.addLabel(source, { tileIndex: 0, text: 'Vale', category: 'region', size: 24, dx: 6, dy: -3 });
+  model.addOverlay(source, { type: 'road', tileIndices: [0, 1] });
+  const target = localMap('regional', 'S', 30, 30, 'Hxz+-', -12, 12);
+  target.name = 'Keep name';
+  const local = target.local;
+  const result = resample.merge(source, target);
+  assert.ok(result.coveredCount > 20 && result.coveredCount < target.tileCount);
+  assert.equal(target.local, local);
+  assert.equal(target.name, 'Keep name');
+  assert.deepEqual(target.labels.map((label) => [label.size, label.dx, label.dy]), [[144, 36, -18]]);
+  assert.ok(target.overlays[0].tileIndices.length > 5);
+  for (const overlay of target.overlays) {
+    for (let index = 1; index < overlay.tileIndices.length; index++) {
+      assert.ok(model.areAdjacent(target, overlay.tileIndices[index - 1], overlay.tileIndices[index]));
     }
   }
 });

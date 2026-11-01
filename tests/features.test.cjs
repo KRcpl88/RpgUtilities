@@ -1,310 +1,310 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { LoadModules } = require('./_load.cjs');
+const { loadModules } = require('./_load.cjs');
 
-const { Util, Projection, Terrain, Model, History, View, Edit, FileFormat } = LoadModules();
-const g_Doc = Model.CreateGlobalMap({ nPanelHexes: 4 });
+const { Util: util, Projection: projection, Terrain: terrain, Model: model, History: history, View: view, Edit: edit, FileFormat: fileFormat } = loadModules();
+const mapFixture = model.createGlobalMap({ panelHexes: 4 });
 
-function LocalMap(nWidth = 9, nHeight = 7) {
-  return Model.CreateLocalMap({
-    nWidth, nHeight, szSystem: 'regional', szScale: 'M',
-    Anchor: { szPanel: Object.keys(Projection.Build().Panels)[0], dEast: 0, dNorth: 0 },
+function localMap(width = 9, height = 7) {
+  return model.createLocalMap({
+    width, height, systemName: 'regional', scaleName: 'M',
+    anchor: { panelId: Object.keys(projection.build().panels)[0], east: 0, north: 0 },
   });
 }
 
-function Distances(Doc, nStart, Excluded = new Set()) {
-  const Steps = new Map([[nStart, 0]]);
-  const rgnQueue = [nStart];
-  for (let nHead = 0; nHead < rgnQueue.length; nHead++) {
-    const nTile = rgnQueue[nHead];
-    for (const nOther of Model.Neighbors(Doc, nTile)) {
-      if (!Steps.has(nOther) && !Excluded.has(nOther)) {
-        Steps.set(nOther, Steps.get(nTile) + 1);
-        rgnQueue.push(nOther);
+function distances(doc, start, excluded = new Set()) {
+  const steps = new Map([[start, 0]]);
+  const queue = [start];
+  for (let head = 0; head < queue.length; head++) {
+    const tileIndex = queue[head];
+    for (const otherIndex of model.neighbors(doc, tileIndex)) {
+      if (!steps.has(otherIndex) && !excluded.has(otherIndex)) {
+        steps.set(otherIndex, steps.get(tileIndex) + 1);
+        queue.push(otherIndex);
       }
     }
   }
-  return Steps;
+  return steps;
 }
 
-function AssertPath(Doc, rgnPath, nFrom, nTo) {
-  assert.equal(rgnPath[0], nFrom);
-  assert.equal(rgnPath.at(-1), nTo);
-  rgnPath.forEach((nTile) => assert.ok(Model.IsTile(Doc, nTile)));
-  for (let nIndex = 1; nIndex < rgnPath.length; nIndex++) {
-    assert.ok(Model.AreAdjacent(Doc, rgnPath[nIndex - 1], rgnPath[nIndex]), `connected at ${nIndex}`);
+function assertPath(doc, path, fromIndex, toIndex) {
+  assert.equal(path[0], fromIndex);
+  assert.equal(path.at(-1), toIndex);
+  path.forEach((tileIndex) => assert.ok(model.isTile(doc, tileIndex)));
+  for (let index = 1; index < path.length; index++) {
+    assert.ok(model.areAdjacent(doc, path[index - 1], path[index]), `connected at ${index}`);
   }
 }
 
-function AssertUndoable(Hist, Action) {
-  const szBefore = FileFormat.Write(Hist.Doc);
-  const nUndo = Hist.rgUndo.length;
-  const Command = Action();
-  assert.ok(Command);
-  assert.equal(Hist.rgUndo.length, nUndo + 1, 'one command');
-  const szAfter = FileFormat.Write(Hist.Doc);
-  assert.notEqual(szAfter, szBefore);
-  assert.equal(History.Undo(Hist), Command);
-  assert.equal(FileFormat.Write(Hist.Doc), szBefore, 'undo restores exact document');
-  assert.equal(History.Redo(Hist), Command);
-  assert.equal(FileFormat.Write(Hist.Doc), szAfter, 'redo restores exact document');
-  assert.equal(FileFormat.Write(FileFormat.Parse(szAfter)), szAfter, 'edited document remains canonical');
-  return Command;
+function assertUndoable(hist, action) {
+  const before = fileFormat.write(hist.doc);
+  const undo = hist.undoStack.length;
+  const command = action();
+  assert.ok(command);
+  assert.equal(hist.undoStack.length, undo + 1, 'one command');
+  const after = fileFormat.write(hist.doc);
+  assert.notEqual(after, before);
+  assert.equal(history.undo(hist), command);
+  assert.equal(fileFormat.write(hist.doc), before, 'undo restores exact document');
+  assert.equal(history.redo(hist), command);
+  assert.equal(fileFormat.write(hist.doc), after, 'redo restores exact document');
+  assert.equal(fileFormat.write(fileFormat.parse(after)), after, 'edited document remains canonical');
+  return command;
 }
 
 test('A* is deterministic and shortest against BFS for global and local tiles', () => {
-  for (const Doc of [g_Doc, LocalMap()]) {
-    for (let nStart = 0; nStart < Doc.nTiles; nStart += 17) {
-      const Steps = Distances(Doc, nStart);
-      for (let nEnd = 0; nEnd < Doc.nTiles; nEnd += 13) {
-        const rgnPath = Edit.FindPath(Doc, nStart, nEnd);
-        AssertPath(Doc, rgnPath, nStart, nEnd);
-        assert.equal(rgnPath.length - 1, Steps.get(nEnd));
-        assert.deepEqual(Edit.FindPath(Doc, nStart, nEnd), rgnPath);
+  for (const doc of [mapFixture, localMap()]) {
+    for (let start = 0; start < doc.tileCount; start += 17) {
+      const steps = distances(doc, start);
+      for (let end = 0; end < doc.tileCount; end += 13) {
+        const path = edit.findPath(doc, start, end);
+        assertPath(doc, path, start, end);
+        assert.equal(path.length - 1, steps.get(end));
+        assert.deepEqual(edit.findPath(doc, start, end), path);
       }
     }
   }
 });
 
 test('A* crosses every seam, including wraparound and tiny partial tiles, in one step', () => {
-  const Seen = new Set();
-  for (const Tile of g_Doc.Topo.rgTiles) {
-    for (const nOther of Model.Neighbors(g_Doc, Tile.nIndex)) {
-      const Other = g_Doc.Topo.rgTiles[nOther];
-      if (Tile.szPanel !== Other.szPanel) {
-        assert.deepEqual(Edit.FindPath(g_Doc, Tile.nIndex, nOther), [Tile.nIndex, nOther]);
-        Seen.add([Tile.szPanel, Other.szPanel].sort().join('|'));
+  const seen = new Set();
+  for (const tile of mapFixture.topo.tiles) {
+    for (const otherIndex of model.neighbors(mapFixture, tile.index)) {
+      const other = mapFixture.topo.tiles[otherIndex];
+      if (tile.panelId !== other.panelId) {
+        assert.deepEqual(edit.findPath(mapFixture, tile.index, otherIndex), [tile.index, otherIndex]);
+        seen.add([tile.panelId, other.panelId].sort().join('|'));
       }
     }
   }
-  assert.equal(Seen.size, Projection.Build().Seams.length);
+  assert.equal(seen.size, projection.build().seams.length);
 });
 
 test('A* handles exclusions, equal endpoints, invalid inputs and unreachable targets', () => {
-  const Doc = LocalMap(5, 5);
-  const Excluded = new Set([11, 12, 13]);
-  const rgnPath = Edit.FindPath(Doc, 0, 24, Excluded);
-  AssertPath(Doc, rgnPath, 0, 24);
-  assert.equal(rgnPath.length - 1, Distances(Doc, 0, Excluded).get(24));
-  assert.ok(rgnPath.every((nTile) => !Excluded.has(nTile)));
-  assert.deepEqual(Edit.FindPath(Doc, 4, 4), [4]);
-  assert.throws(() => Edit.FindPath(Doc, -1, 0), /endpoints/);
-  assert.throws(() => Edit.FindPath(Doc, 0, Doc.nTiles), /endpoints/);
-  assert.throws(() => Edit.FindPath(Doc, 12, 24, Excluded), /excluded/);
-  assert.throws(() => Edit.FindPath(Doc, 0, 24, new Set(Model.Neighbors(Doc, 0))), /No path/);
+  const doc = localMap(5, 5);
+  const excluded = new Set([11, 12, 13]);
+  const path = edit.findPath(doc, 0, 24, excluded);
+  assertPath(doc, path, 0, 24);
+  assert.equal(path.length - 1, distances(doc, 0, excluded).get(24));
+  assert.ok(path.every((tileIndex) => !excluded.has(tileIndex)));
+  assert.deepEqual(edit.findPath(doc, 4, 4), [4]);
+  assert.throws(() => edit.findPath(doc, -1, 0), /endpoints/);
+  assert.throws(() => edit.findPath(doc, 0, doc.tileCount), /endpoints/);
+  assert.throws(() => edit.findPath(doc, 12, 24, excluded), /excluded/);
+  assert.throws(() => edit.findPath(doc, 0, 24, new Set(model.neighbors(doc, 0))), /No path/);
 });
 
 test('overlay create, extend and insert are connected single undo steps', () => {
-  const Doc = Model.CreateGlobalMap({ nPanelHexes: 4 });
-  const Hist = History.Create(Doc);
-  AssertUndoable(Hist, () => Edit.SetFeature(Hist, 'overlay', null, { szType: 'river', szName: 'Silverrun', rgnTiles: [0] }));
-  AssertUndoable(Hist, () => Edit.ExtendOverlay(Hist, 'river1', Doc.nTiles - 1));
-  const Before = Model.GetOverlay(Doc, 'river1');
-  AssertPath(Doc, Before.rgnTiles, 0, Doc.nTiles - 1);
-  const nInsert = 2;
-  const nTile = 50;
-  AssertUndoable(Hist, () => Edit.InsertOverlayPoint(Hist, 'river1', nInsert, nTile));
-  const After = Model.GetOverlay(Doc, 'river1');
-  assert.deepEqual(After.rgnTiles.slice(0, nInsert + 1), Before.rgnTiles.slice(0, nInsert + 1));
-  assert.ok(After.rgnTiles.includes(nTile));
-  AssertPath(Doc, After.rgnTiles, 0, Doc.nTiles - 1);
-  assert.equal(Edit.ExtendOverlay(Hist, 'river1', After.rgnTiles.at(-1)), null);
+  const doc = model.createGlobalMap({ panelHexes: 4 });
+  const hist = history.create(doc);
+  assertUndoable(hist, () => edit.setFeature(hist, 'overlay', null, { type: 'river', name: 'Silverrun', tileIndices: [0] }));
+  assertUndoable(hist, () => edit.extendOverlay(hist, 'river1', doc.tileCount - 1));
+  const before = model.getOverlay(doc, 'river1');
+  assertPath(doc, before.tileIndices, 0, doc.tileCount - 1);
+  const insert = 2;
+  const tileIndex = 50;
+  assertUndoable(hist, () => edit.insertOverlayPoint(hist, 'river1', insert, tileIndex));
+  const after = model.getOverlay(doc, 'river1');
+  assert.deepEqual(after.tileIndices.slice(0, insert + 1), before.tileIndices.slice(0, insert + 1));
+  assert.ok(after.tileIndices.includes(tileIndex));
+  assertPath(doc, after.tileIndices, 0, doc.tileCount - 1);
+  assert.equal(edit.extendOverlay(hist, 'river1', after.tileIndices.at(-1)), null);
 });
 
 test('removing overlay points reconnects around the removed tile, including loops', () => {
-  const Doc = LocalMap();
-  const Hist = History.Create(Doc);
-  Edit.SetFeature(Hist, 'overlay', null, { szType: 'road', rgnTiles: Edit.FindPath(Doc, 0, Doc.nTiles - 1) });
-  const Before = Model.GetOverlay(Doc, 'road1');
-  const nRemoved = Before.rgnTiles[2];
-  AssertUndoable(Hist, () => Edit.RemoveOverlayPoint(Hist, 'road1', 2));
-  const After = Model.GetOverlay(Doc, 'road1');
-  assert.ok(!After.rgnTiles.includes(nRemoved));
-  AssertPath(Doc, After.rgnTiles, Before.rgnTiles[0], Before.rgnTiles.at(-1));
-  AssertUndoable(Hist, () => Edit.RemoveOverlayPoint(Hist, 'road1', 0));
-  AssertUndoable(Hist, () => Edit.RemoveOverlayPoint(Hist, 'road1', Model.GetOverlay(Doc, 'road1').rgnTiles.length - 1));
-  const nNext = Model.Neighbors(Doc, 0)[0];
-  Edit.SetFeature(Hist, 'overlay', null, { szType: 'trail', rgnTiles: [0, nNext, 0] });
-  AssertUndoable(Hist, () => Edit.RemoveOverlayPoint(Hist, 'trail1', 1));
-  assert.deepEqual(Model.GetOverlay(Doc, 'trail1').rgnTiles, [0]);
-  AssertUndoable(Hist, () => Edit.RemoveOverlayPoint(Hist, 'trail1', 0));
-  assert.equal(Model.GetOverlay(Doc, 'trail1'), null);
+  const doc = localMap();
+  const hist = history.create(doc);
+  edit.setFeature(hist, 'overlay', null, { type: 'road', tileIndices: edit.findPath(doc, 0, doc.tileCount - 1) });
+  const before = model.getOverlay(doc, 'road1');
+  const removed = before.tileIndices[2];
+  assertUndoable(hist, () => edit.removeOverlayPoint(hist, 'road1', 2));
+  const after = model.getOverlay(doc, 'road1');
+  assert.ok(!after.tileIndices.includes(removed));
+  assertPath(doc, after.tileIndices, before.tileIndices[0], before.tileIndices.at(-1));
+  assertUndoable(hist, () => edit.removeOverlayPoint(hist, 'road1', 0));
+  assertUndoable(hist, () => edit.removeOverlayPoint(hist, 'road1', model.getOverlay(doc, 'road1').tileIndices.length - 1));
+  const next = model.neighbors(doc, 0)[0];
+  edit.setFeature(hist, 'overlay', null, { type: 'trail', tileIndices: [0, next, 0] });
+  assertUndoable(hist, () => edit.removeOverlayPoint(hist, 'trail1', 1));
+  assert.deepEqual(model.getOverlay(doc, 'trail1').tileIndices, [0]);
+  assertUndoable(hist, () => edit.removeOverlayPoint(hist, 'trail1', 0));
+  assert.equal(model.getOverlay(doc, 'trail1'), null);
 });
 
 test('split shares its junction; join supports all endpoint orientations and preserves properties', () => {
-  const Doc = Model.CreateGlobalMap({ nPanelHexes: 4 });
-  const Hist = History.Create(Doc);
-  const rgnOriginal = Edit.FindPath(Doc, 0, Doc.nTiles - 1);
-  Edit.SetFeature(Hist, 'overlay', null, { szType: 'road', szName: 'Main Road', szStyle: 'highway', rgnTiles: rgnOriginal });
-  AssertUndoable(Hist, () => Edit.SplitOverlay(Hist, 'road1', 3));
-  assert.deepEqual(Doc.rgOverlays[0].rgnTiles, rgnOriginal.slice(0, 4));
-  assert.deepEqual(Doc.rgOverlays[1].rgnTiles, rgnOriginal.slice(3));
-  assert.equal(Doc.rgOverlays[1].szName, 'Main Road');
-  assert.equal(Doc.rgOverlays[1].szStyle, 'highway');
-  AssertUndoable(Hist, () => Edit.JoinOverlays(Hist, 'road1', 'road2'));
-  assert.deepEqual(Doc.rgOverlays[0].rgnTiles, rgnOriginal);
-  assert.equal(Doc.rgOverlays.length, 1);
-  for (const fReverseFirst of [false, true]) {
-    for (const fReverseSecond of [false, true]) {
-      Edit.SetFeature(Hist, 'overlay', null, { szType: 'road', szName: 'Side road', rgnTiles: Edit.FindPath(Doc, 20, 45) });
-      const First = Model.GetOverlay(Doc, 'road1'), Second = Model.GetOverlay(Doc, 'road2');
-      AssertUndoable(Hist, () => Edit.JoinOverlays(Hist, 'road1', 'road2', fReverseFirst, fReverseSecond));
-      const Joined = Model.GetOverlay(Doc, 'road1');
-      AssertPath(Doc, Joined.rgnTiles, fReverseFirst ? First.rgnTiles.at(-1) : First.rgnTiles[0], fReverseSecond ? Second.rgnTiles[0] : Second.rgnTiles.at(-1));
-      assert.equal(Joined.szName, First.szName);
-      assert.equal(Joined.szStyle, First.szStyle);
+  const doc = model.createGlobalMap({ panelHexes: 4 });
+  const hist = history.create(doc);
+  const original = edit.findPath(doc, 0, doc.tileCount - 1);
+  edit.setFeature(hist, 'overlay', null, { type: 'road', name: 'Main Road', style: 'highway', tileIndices: original });
+  assertUndoable(hist, () => edit.splitOverlay(hist, 'road1', 3));
+  assert.deepEqual(doc.overlays[0].tileIndices, original.slice(0, 4));
+  assert.deepEqual(doc.overlays[1].tileIndices, original.slice(3));
+  assert.equal(doc.overlays[1].name, 'Main Road');
+  assert.equal(doc.overlays[1].style, 'highway');
+  assertUndoable(hist, () => edit.joinOverlays(hist, 'road1', 'road2'));
+  assert.deepEqual(doc.overlays[0].tileIndices, original);
+  assert.equal(doc.overlays.length, 1);
+  for (const reverseFirst of [false, true]) {
+    for (const reverseSecond of [false, true]) {
+      edit.setFeature(hist, 'overlay', null, { type: 'road', name: 'Side road', tileIndices: edit.findPath(doc, 20, 45) });
+      const first = model.getOverlay(doc, 'road1'), second = model.getOverlay(doc, 'road2');
+      assertUndoable(hist, () => edit.joinOverlays(hist, 'road1', 'road2', reverseFirst, reverseSecond));
+      const joined = model.getOverlay(doc, 'road1');
+      assertPath(doc, joined.tileIndices, reverseFirst ? first.tileIndices.at(-1) : first.tileIndices[0], reverseSecond ? second.tileIndices[0] : second.tileIndices.at(-1));
+      assert.equal(joined.name, first.name);
+      assert.equal(joined.style, first.style);
     }
   }
 });
 
 test('failed edits leave the document and history intact', () => {
-  const Doc = LocalMap(1, 3);
-  const Hist = History.Create(Doc);
-  Edit.SetFeature(Hist, 'overlay', null, { szType: 'road', rgnTiles: [0, 1, 2] });
-  Edit.SetFeature(Hist, 'overlay', null, { szType: 'river', rgnTiles: [0] });
-  const szBefore = FileFormat.Write(Doc);
-  const nUndo = Hist.rgUndo.length;
-  const nRevision = Doc.nRevision;
-  for (const Action of [
-    () => Edit.RemoveOverlayPoint(Hist, 'road1', 1),
-    () => Edit.SplitOverlay(Hist, 'road1', 0),
-    () => Edit.SplitOverlay(Hist, 'road1', 2),
-    () => Edit.InsertOverlayPoint(Hist, 'road1', -1, 1),
-    () => Edit.JoinOverlays(Hist, 'road1', 'road1'),
-    () => Edit.JoinOverlays(Hist, 'road1', 'river1'),
-    () => Edit.ExtendOverlay(Hist, 'missing', 0),
-    () => Edit.SetFeature(Hist, 'overlay', 'road1', { szStyle: 'bad style' }),
-    () => Edit.SetFeature(Hist, 'label', null, { nTile: 0, szCategory: 'city', szText: '' }),
+  const doc = localMap(1, 3);
+  const hist = history.create(doc);
+  edit.setFeature(hist, 'overlay', null, { type: 'road', tileIndices: [0, 1, 2] });
+  edit.setFeature(hist, 'overlay', null, { type: 'river', tileIndices: [0] });
+  const before = fileFormat.write(doc);
+  const undo = hist.undoStack.length;
+  const revision = doc.revision;
+  for (const action of [
+    () => edit.removeOverlayPoint(hist, 'road1', 1),
+    () => edit.splitOverlay(hist, 'road1', 0),
+    () => edit.splitOverlay(hist, 'road1', 2),
+    () => edit.insertOverlayPoint(hist, 'road1', -1, 1),
+    () => edit.joinOverlays(hist, 'road1', 'road1'),
+    () => edit.joinOverlays(hist, 'road1', 'river1'),
+    () => edit.extendOverlay(hist, 'missing', 0),
+    () => edit.setFeature(hist, 'overlay', 'road1', { style: 'bad style' }),
+    () => edit.setFeature(hist, 'label', null, { tileIndex: 0, category: 'city', text: '' }),
   ]) {
-    assert.throws(Action);
-    assert.equal(FileFormat.Write(Doc), szBefore);
-    assert.equal(Hist.rgUndo.length, nUndo);
-    assert.equal(Doc.nRevision, nRevision);
-    assert.equal(Hist.Pending, null);
+    assert.throws(action);
+    assert.equal(fileFormat.write(doc), before);
+    assert.equal(hist.undoStack.length, undo);
+    assert.equal(doc.revision, revision);
+    assert.equal(hist.pending, null);
   }
 });
 
 test('landmark place, replace, edit and erase affect only their layer', () => {
-  const Doc = Model.CreateGlobalMap({ nPanelHexes: 4 });
-  const Hist = History.Create(Doc);
-  Edit.SetFeature(Hist, 'overlay', null, { szType: 'road', rgnTiles: [10] });
-  const rgnTerrain = Doc.rgnTerrain.slice();
-  for (const Type of Terrain.g_rgLandmarkTypes) {
-    assert.match(Type.szPath, /^M/);
-    AssertUndoable(Hist, () => Edit.SetFeature(Hist, 'landmark', 10, { szType: Type.szKey, szName: Type.szName }));
-    assert.equal(Doc.Landmarks.size, 1);
+  const doc = model.createGlobalMap({ panelHexes: 4 });
+  const hist = history.create(doc);
+  edit.setFeature(hist, 'overlay', null, { type: 'road', tileIndices: [10] });
+  const terrainIds = doc.terrainIds.slice();
+  for (const type of terrain.LANDMARK_TYPES) {
+    assert.match(type.path, /^M/);
+    assertUndoable(hist, () => edit.setFeature(hist, 'landmark', 10, { type: type.key, name: type.name }));
+    assert.equal(doc.landmarks.size, 1);
   }
-  AssertUndoable(Hist, () => Edit.SetFeature(Hist, 'landmark', 10, { szNotes: 'Old gate' }));
-  assert.equal(Edit.SetFeature(Hist, 'landmark', 10, { szNotes: 'Old gate' }), null);
-  AssertUndoable(Hist, () => Edit.SetFeature(Hist, 'landmark', 10, null));
-  assert.equal(Doc.rgOverlays.length, 1);
-  assert.deepEqual(Doc.rgnTerrain, rgnTerrain);
+  assertUndoable(hist, () => edit.setFeature(hist, 'landmark', 10, { notes: 'Old gate' }));
+  assert.equal(edit.setFeature(hist, 'landmark', 10, { notes: 'Old gate' }), null);
+  assertUndoable(hist, () => edit.setFeature(hist, 'landmark', 10, null));
+  assert.equal(doc.overlays.length, 1);
+  assert.deepEqual(doc.terrainIds, terrainIds);
 });
 
 test('multiple labels on one tile support every property and undoable erase', () => {
-  const Doc = Model.CreateGlobalMap({ nPanelHexes: 4 });
-  const Hist = History.Create(Doc);
-  for (const szCategory of Model.g_rgszLabelCategories) {
-    AssertUndoable(Hist, () => Edit.SetFeature(Hist, 'label', null, { nTile: 5, szCategory, szText: szCategory }));
+  const doc = model.createGlobalMap({ panelHexes: 4 });
+  const hist = history.create(doc);
+  for (const category of model.LABEL_CATEGORIES) {
+    assertUndoable(hist, () => edit.setFeature(hist, 'label', null, { tileIndex: 5, category, text: category }));
   }
-  assert.equal(Model.LabelsAt(Doc, 5).length, 3);
-  AssertUndoable(Hist, () => Edit.SetFeature(Hist, 'label', 'label1', { szText: 'Grey Hills', szCategory: 'city', dSize: 12.5, dRotation: -43.2, dDx: 3.4, dDy: -12 }));
-  const Label = Model.GetLabel(Doc, 'label1');
-  assert.equal(Edit.SetFeature(Hist, 'label', 'label1', { dDx: 3.4, dDy: -12 }), null);
-  assert.equal(Edit.GetFeature(Doc, { szLayer: 'label', Key: 'label1' }), Label);
-  AssertUndoable(Hist, () => Edit.SetFeature(Hist, 'label', 'label1', null));
-  assert.equal(Model.LabelsAt(Doc, 5).length, 2);
-  assert.equal(Edit.GetFeature(Doc, { szLayer: 'label', Key: 'label1' }), null);
+  assert.equal(model.labelsAt(doc, 5).length, 3);
+  assertUndoable(hist, () => edit.setFeature(hist, 'label', 'label1', { text: 'Grey Hills', category: 'city', size: 12.5, rotation: -43.2, dx: 3.4, dy: -12 }));
+  const label = model.getLabel(doc, 'label1');
+  assert.equal(edit.setFeature(hist, 'label', 'label1', { dx: 3.4, dy: -12 }), null);
+  assert.equal(edit.getFeature(doc, { layer: 'label', key: 'label1' }), label);
+  assertUndoable(hist, () => edit.setFeature(hist, 'label', 'label1', null));
+  assert.equal(model.labelsAt(doc, 5).length, 2);
+  assert.equal(edit.getFeature(doc, { layer: 'label', key: 'label1' }), null);
 });
 
-function AssertPointClose(A, B) {
-  assert.ok(Util.Distance(A, B) < 1e-8, `${A} != ${B}`);
+function assertPointClose(a, b) {
+  assert.ok(util.pointDistance(a, b) < 1e-8, `${a} != ${b}`);
 }
 
 test('feature anchors lie in their tile, including clipped partial tiles', () => {
-  const Layout = View.BuildNetLayout();
-  for (const Tile of g_Doc.Topo.rgTiles) {
-    const rgdAnchor = View.FeatureAnchor(g_Doc.Topo, Tile.nIndex);
-    const Copy = View.FeatureCopies(g_Doc.Topo, Layout, Tile.nIndex).find((Item) => Item.Placement.szPanel === Tile.szPanel);
-    const rgdWorld = Projection.ApplyTransform(Copy.rgdFrameToWorld, rgdAnchor);
-    assert.equal(View.HitTest(g_Doc.Topo, Layout, rgdWorld).nTile, Tile.nIndex);
+  const layout = view.buildNetLayout();
+  for (const tile of mapFixture.topo.tiles) {
+    const anchorPoint = view.featureAnchor(mapFixture.topo, tile.index);
+    const copy = view.featureCopies(mapFixture.topo, layout, tile.index).find((item) => item.placement.panelId === tile.panelId);
+    const world = projection.applyTransform(copy.frameToWorld, anchorPoint);
+    assert.equal(view.hitTest(mapFixture.topo, layout, world).tileIndex, tile.index);
   }
 });
 
 test('every cross-seam curve is identical on both panels after unfolding, not a net-spanning line', () => {
-  const Topo = g_Doc.Topo;
-  let nCrossings = 0;
-  for (const Tile of Topo.rgTiles) {
-    for (const nOther of Model.Neighbors(g_Doc, Tile.nIndex)) {
-      const Other = Topo.rgTiles[nOther];
-      if (Tile.szPanel === Other.szPanel) {
+  const topo = mapFixture.topo;
+  let crossings = 0;
+  for (const tile of topo.tiles) {
+    for (const otherIndex of model.neighbors(mapFixture, tile.index)) {
+      const other = topo.tiles[otherIndex];
+      if (tile.panelId === other.panelId) {
         continue;
       }
-      const Overlay = { rgnTiles: [Tile.nIndex, nOther] };
-      const rgCurves = View.OverlayCurves(Topo, Overlay);
-      assert.equal(View.OverlayCurves(Topo, Overlay), rgCurves, 'immutable overlay geometry is cached');
-      const A = rgCurves.find((Curve) => Curve.szPanel === Tile.szPanel);
-      const B = rgCurves.find((Curve) => Curve.szPanel === Other.szPanel);
-      assert.ok(A && B);
-      const rgdBToA = View.PanelTransform(Other.szPanel, Tile.szPanel);
-      for (let nPoint = 0; nPoint < 4; nPoint++) {
-        AssertPointClose(A.rgrgdControl[nPoint], Projection.ApplyTransform(rgdBToA, B.rgrgdControl[nPoint]));
+      const overlay = { tileIndices: [tile.index, otherIndex] };
+      const curves = view.overlayCurves(topo, overlay);
+      assert.equal(view.overlayCurves(topo, overlay), curves, 'immutable overlay geometry is cached');
+      const a = curves.find((curve) => curve.panelId === tile.panelId);
+      const b = curves.find((curve) => curve.panelId === other.panelId);
+      assert.ok(a && b);
+      const bToA = view.panelTransform(other.panelId, tile.panelId);
+      for (let pointIndex = 0; pointIndex < 4; pointIndex++) {
+        assertPointClose(a.control[pointIndex], projection.applyTransform(bToA, b.control[pointIndex]));
       }
-      AssertPointClose(A.rgrgdControl[0], View.FeatureAnchor(Topo, Tile.nIndex));
-      AssertPointClose(B.rgrgdControl[3], View.FeatureAnchor(Topo, nOther));
-      assert.ok(Util.Distance(A.rgrgdControl[0], A.rgrgdControl[3]) < Topo.dD * 3);
-      const Focus = View.BuildFocusLayout(Tile.szPanel);
-      const rgdBToWorld = View.FindPlacement(Focus, Other.szPanel).rgdFrameToWorld;
-      AssertPointClose(Projection.ApplyTransform(rgdBToWorld, B.rgrgdControl[0]), A.rgrgdControl[0]);
-      nCrossings++;
+      assertPointClose(a.control[0], view.featureAnchor(topo, tile.index));
+      assertPointClose(b.control[3], view.featureAnchor(topo, otherIndex));
+      assert.ok(util.pointDistance(a.control[0], a.control[3]) < topo.d * 3);
+      const focus = view.buildFocusLayout(tile.panelId);
+      const bToWorld = view.findPlacement(focus, other.panelId).frameToWorld;
+      assertPointClose(projection.applyTransform(bToWorld, b.control[0]), a.control[0]);
+      crossings++;
     }
   }
-  assert.ok(nCrossings > 100);
+  assert.ok(crossings > 100);
 });
 
 test('successive smooth segments meet with equal tangents, also at panel seams', () => {
-  const Topo = g_Doc.Topo;
-  const Overlay = { rgnTiles: Edit.FindPath(g_Doc, 0, g_Doc.nTiles - 1) };
-  const Curves = View.OverlayCurves(Topo, Overlay);
-  for (let nPoint = 1; nPoint < Overlay.rgnTiles.length - 1; nPoint++) {
-    const szPanel = Topo.rgTiles[Overlay.rgnTiles[nPoint]].szPanel;
-    const Before = Curves.find((Curve) => Curve.nPoint === nPoint - 1 && Curve.szPanel === szPanel).rgrgdControl;
-    const After = Curves.find((Curve) => Curve.nPoint === nPoint && Curve.szPanel === szPanel).rgrgdControl;
-    AssertPointClose(Before[3], After[0]);
-    AssertPointClose(Util.Subtract(Before[3], Before[2]), Util.Subtract(After[1], After[0]));
+  const topo = mapFixture.topo;
+  const overlay = { tileIndices: edit.findPath(mapFixture, 0, mapFixture.tileCount - 1) };
+  const curves = view.overlayCurves(topo, overlay);
+  for (let pointIndex = 1; pointIndex < overlay.tileIndices.length - 1; pointIndex++) {
+    const panelId = topo.tiles[overlay.tileIndices[pointIndex]].panelId;
+    const before = curves.find((curve) => curve.pointIndex === pointIndex - 1 && curve.panelId === panelId).control;
+    const after = curves.find((curve) => curve.pointIndex === pointIndex && curve.panelId === panelId).control;
+    assertPointClose(before[3], after[0]);
+    assertPointClose(util.subtract(before[3], before[2]), util.subtract(after[1], after[0]));
   }
 });
 
 test('adaptive curve hits track the drawn cubic within half a screen pixel', () => {
-  const rgControls = [[0, 0], [1000, -1800], [2000, 1300], [3000, 0]];
-  const rgPoints = View.FlattenCurve(rgControls);
-  assert.deepEqual(rgPoints[0], rgControls[0]);
-  assert.deepEqual(rgPoints.at(-1), rgControls[3]);
-  for (let nStep = 0; nStep <= 1000; nStep++) {
-    const Point = View.CubicPoint(rgControls, nStep / 1000);
-    assert.ok(rgPoints.slice(1).some((End, nIndex) => View.DistanceToSegment(Point, rgPoints[nIndex], End) <= 0.5));
+  const controls = [[0, 0], [1000, -1800], [2000, 1300], [3000, 0]];
+  const points = view.flattenCurve(controls);
+  assert.deepEqual(points[0], controls[0]);
+  assert.deepEqual(points.at(-1), controls[3]);
+  for (let step = 0; step <= 1000; step++) {
+    const point = view.cubicPoint(controls, step / 1000);
+    assert.ok(points.slice(1).some((end, index) => view.distanceToSegment(point, points[index], end) <= 0.5));
   }
-  assert.equal(View.DistanceToSegment([3, 4], [0, 0], [0, 0]), 5);
+  assert.equal(view.distanceToSegment([3, 4], [0, 0], [0, 0]), 5);
 });
 
 test('label transforms preserve panel-relative size, clockwise rotation and offsets in every focus view', () => {
-  const Topo = g_Doc.Topo;
-  const nTile = Topo.rgTiles.find((Tile) => !Tile.fPartial).nIndex;
-  const Label = { nTile, dSize: 18, dRotation: 90, dDx: 12, dDy: -24 };
-  const rgdT = View.LabelTransform(Topo, Label);
-  const dUnit = Topo.dD / View.g_dLabelUnitsPerHex;
-  const rgdCenter = View.FeatureAnchor(Topo, nTile);
-  AssertPointClose(Projection.ApplyTransform(rgdT, [0, 0]), [rgdCenter[0] + 12 * dUnit, rgdCenter[1] + 24 * dUnit]);
-  AssertPointClose(Util.Subtract(Projection.ApplyTransform(rgdT, [1, 0]), Projection.ApplyTransform(rgdT, [0, 0])), [0, -dUnit]);
-  for (const szPanel of Object.keys(Topo.Panels)) {
-    const Layout = View.BuildFocusLayout(szPanel);
-    const Camera = View.CreateCamera(900, 600);
-    for (const Copy of View.FeatureCopies(Topo, Layout, nTile)) {
-      const rgdScreen = Projection.ComposeTransforms(rgdT, Projection.ComposeTransforms(Copy.rgdFrameToWorld, View.WorldToScreenTransform(Camera)));
-      const Inverse = Projection.InvertTransform(rgdScreen);
-      for (const Point of [[0, 0], [12, -32], [-40, 100]]) {
-        AssertPointClose(Projection.ApplyTransform(Inverse, Projection.ApplyTransform(rgdScreen, Point)), Point);
+  const topo = mapFixture.topo;
+  const tileIndex = topo.tiles.find((tile) => !tile.isPartial).index;
+  const label = { tileIndex, size: 18, rotation: 90, dx: 12, dy: -24 };
+  const t = view.labelTransform(topo, label);
+  const unit = topo.d / view.LABEL_UNITS_PER_HEX;
+  const center = view.featureAnchor(topo, tileIndex);
+  assertPointClose(projection.applyTransform(t, [0, 0]), [center[0] + 12 * unit, center[1] + 24 * unit]);
+  assertPointClose(util.subtract(projection.applyTransform(t, [1, 0]), projection.applyTransform(t, [0, 0])), [0, -unit]);
+  for (const panelId of Object.keys(topo.panels)) {
+    const layout = view.buildFocusLayout(panelId);
+    const camera = view.createCamera(900, 600);
+    for (const copy of view.featureCopies(topo, layout, tileIndex)) {
+      const screen = projection.composeTransforms(t, projection.composeTransforms(copy.frameToWorld, view.worldToScreenTransform(camera)));
+      const inverse = projection.invertTransform(screen);
+      for (const point of [[0, 0], [12, -32], [-40, 100]]) {
+        assertPointClose(projection.applyTransform(inverse, projection.applyTransform(screen, point)), point);
       }
     }
   }

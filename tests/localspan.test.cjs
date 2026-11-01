@@ -1,144 +1,144 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { LoadModules } = require('./_load.cjs');
-const { Util, Projection, Lattice, Topology, Coordinates, Model, View, Edit, FileFormat, Regions, SvgExport } = LoadModules();
+const { loadModules } = require('./_load.cjs');
+const { Util: util, Projection: projection, Lattice: lattice, Topology: topology, Coordinates: coordinates, Model: model, View: view, Edit: edit, FileFormat: fileFormat, Regions: regions, SvgExport: svgExport } = loadModules();
 
-const g_dMilesPerEdge = Projection.MilesPerEdge(Topology.g_nDefaultPanelHexes);
+const MILES_PER_EDGE = projection.getMilesPerEdge(topology.DEFAULT_PANEL_HEXES);
 
-// A local map anchored at (dEast, dNorth) edge units in szPanel's frame.
-function SpanMap(szPanel, dEast, dNorth, nWidth, nHeight, szScale = 'L', Extra = {}) {
-  return Model.CreateLocalMap({
-    nWidth, nHeight, szSystem: 'regional', szScale,
-    Anchor: Coordinates.MakeLocation(szPanel, dEast * g_dMilesPerEdge, dNorth * g_dMilesPerEdge), ...Extra,
+// A local map anchored at (east, north) edge units in panelId's frame.
+function spanMap(panelId, east, north, width, height, scaleName = 'L', extra = {}) {
+  return model.createLocalMap({
+    width, height, systemName: 'regional', scaleName,
+    anchor: coordinates.makeLocation(panelId, east * MILES_PER_EDGE, north * MILES_PER_EDGE), ...extra,
   });
 }
 
 // Every tile sits on its own panel's global lattice of the same scale, so the grid turns
 // to follow each panel: the map looks bent where it meets a seam.
-function AssertPanelLattices(Doc) {
-  const nRatio = Lattice.ScaleRatio('regional', 'XL', Doc.Local.szScale);
-  for (const Tile of Doc.Topo.rgTiles) {
-    const Info = Topology.PanelLattice(Tile.szPanel, Doc.Local.nPanelHexes, nRatio);
-    const [nQ, nJ] = Topology.LatticeNearest(Info, Tile.rgdCenter[0], Tile.rgdCenter[1]);
-    assert.ok(Util.Distance(Topology.LatticeCenter(Info, nQ, nJ), Tile.rgdCenter) < 1e-9, `tile ${Tile.nIndex} is off its panel lattice`);
+function assertPanelLattices(doc) {
+  const ratio = lattice.scaleRatio('regional', 'XL', doc.local.scaleName);
+  for (const tile of doc.topo.tiles) {
+    const info = topology.panelLattice(tile.panelId, doc.local.panelHexes, ratio);
+    const [q, j] = topology.latticeNearest(info, tile.center[0], tile.center[1]);
+    assert.ok(util.pointDistance(topology.latticeCenter(info, q, j), tile.center) < 1e-9, `tile ${tile.index} is off its panel lattice`);
   }
 }
 
-function AssertAdjacentAcross(Doc, szA, szB) {
-  const fFound = Doc.Topo.rgTiles.some((Tile) => Tile.szPanel === szA
-    && Array.from(Topology.Neighbors(Doc.Topo, Tile.nIndex)).some((nOther) => Doc.Topo.rgTiles[nOther].szPanel === szB));
-  assert.ok(fFound, `no ${szA} tile is adjacent to a ${szB} tile`);
+function assertAdjacentAcross(doc, a, b) {
+  const found = doc.topo.tiles.some((tile) => tile.panelId === a
+    && Array.from(topology.neighbors(doc.topo, tile.index)).some((otherIndex) => doc.topo.tiles[otherIndex].panelId === b));
+  assert.ok(found, `no ${a} tile is adjacent to a ${b} tile`);
 }
 
 test('a regional map crossing an equatorial east/west seam keeps whole edge hexes on each side', () => {
-  const Doc = SpanMap('Hyz+-', 0.6, 0.2, 30, 10);
-  assert.ok(Doc.Topo && Doc.Topo.Span, 'the map spans panels');
-  assert.deepEqual([...Doc.Topo.rgszPanels].sort(), ['Hxy++', 'Hyz+-']);
-  assert.equal(Doc.nTiles, 30 * 10, 'equatorial seams cut no tiles');
-  assert.ok(Doc.Topo.rgTiles.every((Tile) => !Tile.rgPieces));
-  AssertPanelLattices(Doc);
-  AssertAdjacentAcross(Doc, 'Hyz+-', 'Hxy++');
+  const doc = spanMap('Hyz+-', 0.6, 0.2, 30, 10);
+  assert.ok(doc.topo && doc.topo.span, 'the map spans panels');
+  assert.deepEqual([...doc.topo.panelIds].sort(), ['Hxy++', 'Hyz+-']);
+  assert.equal(doc.tileCount, 30 * 10, 'equatorial seams cut no tiles');
+  assert.ok(doc.topo.tiles.every((tile) => !tile.pieces));
+  assertPanelLattices(doc);
+  assertAdjacentAcross(doc, 'Hyz+-', 'Hxy++');
 });
 
 test('a regional map crossing a non-equatorial seam crops partial tiles as the global map does', () => {
-  const Doc = SpanMap('Hxz+-', 0.45, 0.3, 40, 30);
-  assert.deepEqual([...Doc.Topo.rgszPanels].sort(), ['Hxz+-', 'Sx+']);
-  assert.ok(Doc.Topo.rgTiles.some((Tile) => Tile.rgPieces), 'seam tiles are clipped to their panel');
-  AssertPanelLattices(Doc);
-  AssertAdjacentAcross(Doc, 'Hxz+-', 'Sx+');
-  const Flat = SpanMap('Hxz+-', 0.45, 0.3, 40, 30, 'L', { fFlat: true });
-  assert.equal(Flat.Topo, null);
-  assert.equal(Flat.nTiles, 40 * 30);
+  const doc = spanMap('Hxz+-', 0.45, 0.3, 40, 30);
+  assert.deepEqual([...doc.topo.panelIds].sort(), ['Hxz+-', 'Sx+']);
+  assert.ok(doc.topo.tiles.some((tile) => tile.pieces), 'seam tiles are clipped to their panel');
+  assertPanelLattices(doc);
+  assertAdjacentAcross(doc, 'Hxz+-', 'Sx+');
+  const flat = spanMap('Hxz+-', 0.45, 0.3, 40, 30, 'L', { isFlat: true });
+  assert.equal(flat.topo, null);
+  assert.equal(flat.tileCount, 40 * 30);
 });
 
 test('a local map may cross several panel seams', () => {
-  const Doc = SpanMap('Hyz+-', 0, 0, 40, 3, 'XL');
-  assert.deepEqual([...Doc.Topo.rgszPanels].sort(), ['Hxy++', 'Hxz++', 'Hyz+-']);
-  AssertPanelLattices(Doc);
-  AssertAdjacentAcross(Doc, 'Hyz+-', 'Hxy++');
-  AssertAdjacentAcross(Doc, 'Hxy++', 'Hxz++');
+  const doc = spanMap('Hyz+-', 0, 0, 40, 3, 'XL');
+  assert.deepEqual([...doc.topo.panelIds].sort(), ['Hxy++', 'Hxz++', 'Hyz+-']);
+  assertPanelLattices(doc);
+  assertAdjacentAcross(doc, 'Hyz+-', 'Hxy++');
+  assertAdjacentAcross(doc, 'Hxy++', 'Hxz++');
 });
 
 test('a local map stops short of panel corner vertices instead of tearing around them', () => {
-  const Doc = SpanMap('Hxz+-', 0.45, 0.5, 60, 60);
-  assert.deepEqual([Doc.Local.nWidth, Doc.Local.nHeight], [29, 60]);
-  const Other = SpanMap('Hyz+-', 0.5, 0.6, 20, 6, 'XL');
-  assert.deepEqual([Other.Local.nWidth, Other.Local.nHeight], [5, 6]);
-  assert.deepEqual(Coordinates.PreviewLocalSpan({
-    nWidth: 20, nHeight: 6, szSystem: 'regional', szScale: 'XL',
-    Anchor: Coordinates.MakeLocation('Hyz+-', 0.5 * g_dMilesPerEdge, 0.6 * g_dMilesPerEdge),
-  }), { nWidth: 5, nHeight: 6, rgszPanels: ['Hyz+-', 'Hxz+-'] });
+  const doc = spanMap('Hxz+-', 0.45, 0.5, 60, 60);
+  assert.deepEqual([doc.local.width, doc.local.height], [29, 60]);
+  const other = spanMap('Hyz+-', 0.5, 0.6, 20, 6, 'XL');
+  assert.deepEqual([other.local.width, other.local.height], [5, 6]);
+  assert.deepEqual(coordinates.previewLocalSpan({
+    width: 20, height: 6, systemName: 'regional', scaleName: 'XL',
+    anchor: coordinates.makeLocation('Hyz+-', 0.5 * MILES_PER_EDGE, 0.6 * MILES_PER_EDGE),
+  }), { width: 5, height: 6, panelIds: ['Hyz+-', 'Hxz+-'] });
   // No two kept panels may meet only at a vertex inside the map.
-  const Built = Projection.Build();
-  for (const Probe of [Doc, Other]) {
-    if (!Probe.Topo) {
+  const built = projection.build();
+  for (const probe of [doc, other]) {
+    if (!probe.topo) {
       continue;
     }
-    const Panels = new Set(Probe.Topo.rgszPanels);
-    for (const szVertex of Object.keys(Built.Vertices)) {
-      const rgszAround = Built.Seams.filter((Seam) => Seam.rgszVertices.includes(szVertex))
-        .flatMap((Seam) => [Seam.szPanelA, Seam.szPanelB]).filter((szPanel) => Panels.has(szPanel));
-      assert.ok(new Set(rgszAround).size <= 2, `the map wraps around vertex ${szVertex}`);
+    const panels = new Set(probe.topo.panelIds);
+    for (const vertexId of Object.keys(built.vertices)) {
+      const around = built.seams.filter((seam) => seam.vertexIds.includes(vertexId))
+        .flatMap((seam) => [seam.panelA, seam.panelB]).filter((panelId) => panels.has(panelId));
+      assert.ok(new Set(around).size <= 2, `the map wraps around vertex ${vertexId}`);
     }
   }
 });
 
 test('yard-scale maps and maps inside one panel stay flat', () => {
-  const Yard = Model.CreateLocalMap({
-    nWidth: 100, nHeight: 10, szSystem: 'local', szScale: 'XL',
-    Anchor: Coordinates.MakeLocation('Hyz+-', 0.8795 * g_dMilesPerEdge - 5, 0),
+  const yard = model.createLocalMap({
+    width: 100, height: 10, systemName: 'local', scaleName: 'XL',
+    anchor: coordinates.makeLocation('Hyz+-', 0.8795 * MILES_PER_EDGE - 5, 0),
   });
-  assert.equal(Yard.Topo, null);
-  assert.equal(Yard.nTiles, 1000);
-  const Inside = SpanMap('Hxz+-', 0, 0, 10, 10, 'M');
-  assert.equal(Inside.Topo, null);
+  assert.equal(yard.topo, null);
+  assert.equal(yard.tileCount, 1000);
+  const inside = spanMap('Hxz+-', 0, 0, 10, 10, 'M');
+  assert.equal(inside.topo, null);
 });
 
 test('span maps write [panel] sections canonically and legacy [local] files stay flat', () => {
-  const Doc = SpanMap('Hyz+-', 0.6, 0.2, 30, 10);
-  Model.SetTerrain(Doc, 0, 3);
-  Model.SetTerrain(Doc, Doc.nTiles - 1, 5);
-  const nLast = Doc.nTiles - 1;
-  Model.AddOverlay(Doc, { szType: 'road', rgnTiles: Edit.FindPath(Doc, 0, nLast) });
-  const szText = FileFormat.Write(Doc);
-  assert.match(szText, /\n\[panel /);
-  assert.doesNotMatch(szText, /\n\[local\]/);
-  const Parsed = FileFormat.Parse(szText);
-  assert.ok(Parsed.Topo && Parsed.Topo.Span);
-  assert.equal(Parsed.nTiles, Doc.nTiles);
-  assert.deepEqual(Array.from(Parsed.rgnTerrain), Array.from(Doc.rgnTerrain));
-  assert.equal(FileFormat.Write(Parsed), szText, 'write → parse → write is byte-identical');
+  const doc = spanMap('Hyz+-', 0.6, 0.2, 30, 10);
+  model.setTerrain(doc, 0, 3);
+  model.setTerrain(doc, doc.tileCount - 1, 5);
+  const last = doc.tileCount - 1;
+  model.addOverlay(doc, { type: 'road', tileIndices: edit.findPath(doc, 0, last) });
+  const text = fileFormat.write(doc);
+  assert.match(text, /\n\[panel /);
+  assert.doesNotMatch(text, /\n\[local\]/);
+  const parsed = fileFormat.parse(text);
+  assert.ok(parsed.topo && parsed.topo.span);
+  assert.equal(parsed.tileCount, doc.tileCount);
+  assert.deepEqual(Array.from(parsed.terrainIds), Array.from(doc.terrainIds));
+  assert.equal(fileFormat.write(parsed), text, 'write → parse → write is byte-identical');
 
-  const Flat = SpanMap('Hyz+-', 0.6, 0.2, 30, 10, 'L', { fFlat: true });
-  const szFlat = FileFormat.Write(Flat);
-  assert.match(szFlat, /\n\[local\]/);
-  const ParsedFlat = FileFormat.Parse(szFlat);
-  assert.equal(ParsedFlat.Topo, null);
-  assert.equal(FileFormat.Write(ParsedFlat), szFlat);
+  const flat = spanMap('Hyz+-', 0.6, 0.2, 30, 10, 'L', { isFlat: true });
+  const flatMapText = fileFormat.write(flat);
+  assert.match(flatMapText, /\n\[local\]/);
+  const parsedFlat = fileFormat.parse(flatMapText);
+  assert.equal(parsedFlat.topo, null);
+  assert.equal(fileFormat.write(parsedFlat), flatMapText);
 });
 
 test('span maps hit-test every tile and lay out one placement per panel', () => {
-  const Doc = SpanMap('Hxz+-', 0.45, 0.3, 40, 30);
-  const Geometry = View.MapGeometry(Doc);
-  const Layout = View.MapLayout(Doc);
-  assert.equal(Layout.szMode, 'span');
-  assert.deepEqual(Layout.rgPlacements.map((Placement) => Placement.szPanel).sort(), [...Doc.Topo.rgszPanels].sort());
-  for (const Tile of Geometry.rgTiles) {
-    const Placement = View.FindPlacement(Layout, Tile.szPanel);
-    const rgdWorld = Projection.ApplyTransform(Placement.rgdFrameToWorld, View.FeatureAnchor(Geometry, Tile.nIndex));
-    assert.equal(View.HitTest(Geometry, Layout, rgdWorld).nTile, Tile.nIndex);
+  const doc = spanMap('Hxz+-', 0.45, 0.3, 40, 30);
+  const geometry = view.mapGeometry(doc);
+  const layout = view.mapLayout(doc);
+  assert.equal(layout.mode, 'span');
+  assert.deepEqual(layout.placements.map((placement) => placement.panelId).sort(), [...doc.topo.panelIds].sort());
+  for (const tile of geometry.tiles) {
+    const placement = view.findPlacement(layout, tile.panelId);
+    const world = projection.applyTransform(placement.frameToWorld, view.featureAnchor(geometry, tile.index));
+    assert.equal(view.hitTest(geometry, layout, world).tileIndex, tile.index);
   }
 });
 
 test('span maps export SVG and regions for the whole map', () => {
-  const Doc = SpanMap('Hyz+-', 0, 0, 40, 3, 'XL');
-  for (let nTile = 0; nTile < Doc.nTiles; nTile += 2) {
-    Model.SetTerrain(Doc, nTile, 4);
+  const doc = spanMap('Hyz+-', 0, 0, 40, 3, 'XL');
+  for (let tileIndex = 0; tileIndex < doc.tileCount; tileIndex += 2) {
+    model.setTerrain(doc, tileIndex, 4);
   }
-  const Built = Regions.Build(Doc, 'local');
-  assert.ok(Built.rgRegions.length > 0);
-  const szSvg = SvgExport.Write(Doc, { szPanel: 'local', nWidth: 800 });
-  assert.match(szSvg, /^<\?xml|^<svg/);
-  assert.match(szSvg, /<\/svg>\s*$/);
+  const built = regions.build(doc, 'local');
+  assert.ok(built.regions.length > 0);
+  const svg = svgExport.write(doc, { panelId: 'local', width: 800 });
+  assert.match(svg, /^<\?xml|^<svg/);
+  assert.match(svg, /<\/svg>\s*$/);
 });
