@@ -2,302 +2,305 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
-const { LoadModules } = require('./_load.cjs');
-const { Util, Projection, Lattice, Coordinates, Model, Terrain, View, Regions, FileFormat, SvgExport } = LoadModules();
+const { loadModules } = require('./_load.cjs');
+const { Util: util, Projection: projection, Lattice: lattice, Coordinates: coordinates, Model: model, Terrain: terrain, View: view, Regions: regions, FileFormat: fileFormat, SvgExport: svgExport } = loadModules();
 
-function LocalMap(szSystem = 'regional', szScale = 'M') {
-  const Doc = Model.CreateLocalMap({
-    nWidth: 9, nHeight: 8, szSystem, szScale, szName: 'A & B <Map> "quoted"',
-    Anchor: Coordinates.ParseUniversal('Eta 123.456789E 98.765432N'),
+function localMap(systemName = 'regional', scaleName = 'M') {
+  const doc = model.createLocalMap({
+    width: 9, height: 8, systemName, scaleName, name: 'A & B <Map> "quoted"',
+    anchor: coordinates.parseUniversal('Eta 123.456789E 98.765432N'),
   });
-  Model.SetTerrain(Doc, 40, 4);
-  for (const szType of ['road', 'trail', 'river']) {
-    Model.AddOverlay(Doc, { szType, rgnTiles: [20, 21, 22, 23] });
+  model.setTerrain(doc, 40, 4);
+  for (const type of ['road', 'trail', 'river']) {
+    model.addOverlay(doc, { type, tileIndices: [20, 21, 22, 23] });
   }
-  Model.SetLandmark(Doc, 40, { szType: 'castle', szName: 'Keep & <town>' });
-  Model.AddLabel(Doc, { nTile: 40, szText: 'A & <B> "quoted" \u03b1 \ud83c\udff0', szCategory: 'region', dRotation: 32, dDx: 5, dDy: -12 });
-  return Doc;
+  model.setLandmark(doc, 40, { type: 'castle', name: 'Keep & <town>' });
+  model.addLabel(doc, { tileIndex: 40, text: 'A & <B> "quoted" \u03b1 \ud83c\udff0', category: 'region', rotation: 32, dx: 5, dy: -12 });
+  return doc;
 }
 
 test('SVG exports are deterministic and leave terrain, features and revision unchanged', () => {
-  const Doc = LocalMap(), Before = FileFormat.Write(Doc), nRevision = Doc.nRevision;
-  const Options = { nWidth: 1200, Layers: { grid: true, landmarkNames: true } };
-  const First = SvgExport.Write(Doc, Options);
-  assert.equal(SvgExport.Write(Doc, Options), First);
-  assert.equal(FileFormat.Write(Doc), Before);
-  assert.equal(Doc.nRevision, nRevision);
-  assert.match(First, /<svg xmlns="http:\/\/www.w3.org\/2000\/svg" width="1200"/);
-  assert.match(First, /fill-rule="evenodd"/);
-  assert.match(First, /clip-path="url\(#map-clip\)"/);
-  assert.match(First, /<symbol id="landmark-castle"/);
-  assert.match(First, /<use href="#landmark-castle"/);
-  assert.match(First, /paint-order="stroke"/);
-  assert.doesNotMatch(First, /(?:NaN|Infinity|undefined)/);
+  const doc = localMap(), before = fileFormat.write(doc), revision = doc.revision;
+  const options = { width: 1200, layers: { grid: true, landmarkNames: true } };
+  const first = svgExport.write(doc, options);
+  assert.equal(svgExport.write(doc, options), first);
+  assert.equal(fileFormat.write(doc), before);
+  assert.equal(doc.revision, revision);
+  assert.match(first, /<svg xmlns="http:\/\/www.w3.org\/2000\/svg" width="1200"/);
+  assert.match(first, /fill-rule="evenodd"/);
+  assert.match(first, /clip-path="url\(#map-clip\)"/);
+  assert.match(first, /<symbol id="landmark-castle"/);
+  assert.match(first, /<use href="#landmark-castle"/);
+  assert.match(first, /paint-order="stroke"/);
+  assert.doesNotMatch(first, /(?:NaN|Infinity|undefined)/);
 });
 
-function ShoreMap(szShape) {
-  const Doc = Model.CreateLocalMap({ nWidth: 13, nHeight: 12, szSystem: 'local', szScale: 'M',
-    Anchor: Coordinates.ParseUniversal('Eta 0E 0N') });
-  for (let nTile = 0; nTile < Doc.nTiles; nTile++) {
-    const [nX, nY] = Model.LocalTileXY(Doc, nTile);
-    const nDistance = Math.max(Math.abs(nX - 6), Math.abs(nY - 5));
-    const fLand = szShape === 'island' ? nDistance < 3
-      : szShape === 'lake' ? nDistance >= 2
-        : szShape === 'ring' ? nDistance >= 2 && nDistance <= 3
-          : szShape === 'channel' ? nX !== 6 : nX > 5;
-    Model.SetTerrain(Doc, nTile, fLand ? 4 + nY % 13 : nY % 4);
+function shoreMap(shape) {
+  const doc = model.createLocalMap({ width: 13, height: 12, systemName: 'local', scaleName: 'M',
+    anchor: coordinates.parseUniversal('Eta 0E 0N') });
+  for (let tileIndex = 0; tileIndex < doc.tileCount; tileIndex++) {
+    const [columnIndex, rowIndex] = model.localTileXY(doc, tileIndex);
+    const distance = Math.max(Math.abs(columnIndex - 6), Math.abs(rowIndex - 5));
+    const land = shape === 'island' ? distance < 3
+      : shape === 'lake' ? distance >= 2
+        : shape === 'ring' ? distance >= 2 && distance <= 3
+          : shape === 'channel' ? columnIndex !== 6 : columnIndex > 5;
+    model.setTerrain(doc, tileIndex, land ? 4 + rowIndex % 13 : rowIndex % 4);
   }
-  return Doc;
+  return doc;
 }
 
 test('SVG shorelines interpolate displaced edge midpoints only, with smooth joins and no corner constraints', () => {
-  let fLandward = false, fWaterward = false;
-  let dMaxOffset = 0;
-  for (const szShape of ['island', 'lake', 'ring', 'channel', 'coast']) {
-    const Doc = ShoreMap(szShape), Data = Regions.Build(Doc), Before = FileFormat.Write(Doc);
-    const Shore = SvgExport.BuildShorelines(Data);
-    for (const Path of Data.rgShorelines) {
-      const Spline = Shore.Paths.get(Path), nEdges = Path.rgrgdPoints.length - 1;
-      assert.equal(Spline.length, nEdges + (Path.fClosed ? 0 : 1), 'one segment between successive midpoints, plus open end caps');
-      for (let nIndex = 0; nIndex + 1 < Path.rgrgdPoints.length; nIndex++) {
-        const A = Path.rgrgdPoints[nIndex], B = Path.rgrgdPoints[nIndex + 1];
-        const Curves = Shore.Edges.get(A).get(B);
-        assert.equal(Curves.length, 2, 'fill pieces meet at the edge midpoint sample');
-        assert.deepEqual(Curves[0][3], Curves[1][0]);
-        assert.deepEqual(Curves[0][0], Shore.Vertices.get(A));
-        assert.deepEqual(Curves[1][3], Shore.Vertices.get(B));
-        assert.deepEqual(Shore.Edges.get(B).get(A), Curves.map((Curve) => [...Curve].reverse()).reverse());
-        const Tangent = Util.Unit(Util.Subtract(B, A)), Normal = [-Tangent[1], Tangent[0]];
-        const Delta = Util.Subtract(Curves[0][3], Util.Scale(Util.Add(A, B), 0.5));
-        const dOffset = Util.Dot(Delta, Normal);
-        dMaxOffset = Math.max(dMaxOffset, Math.abs(dOffset));
-        fLandward ||= dOffset > 0.01;
-        fWaterward ||= dOffset < -0.01;
-        assert.ok(Math.abs(Util.Dot(Delta, Tangent)) < 1e-10, 'the sample moves only along the centre-to-face ray');
-        assert.ok(Math.abs(dOffset) <= 0.30 * 2 / Math.sqrt(3) + 1e-10, 'midpoint displacement is bounded by 30% of hex width');
-        assert.deepEqual(Spline[Path.fClosed ? nIndex : nIndex + 1][0], Curves[0][3]);
-        const Next = nIndex + 2 < Path.rgrgdPoints.length ? Path.rgrgdPoints[nIndex + 2]
-          : Path.fClosed ? Path.rgrgdPoints[1] : null;
-        for (const [First, Second] of [[Curves[0], Curves[1]],
-          ...(Next ? [[Curves[1], Shore.Edges.get(B).get(Next)[0]]] : [])]) {
-          assert.ok(Util.Distance(Util.Unit(Util.Subtract(First[3], First[2])),
-            Util.Unit(Util.Subtract(Second[1], Second[0]))) < 1e-10, 'fill subdivisions keep the spline tangent');
+  let landward = false, waterward = false;
+  let maxOffset = 0;
+  for (const shape of ['island', 'lake', 'ring', 'channel', 'coast']) {
+    const doc = shoreMap(shape), data = regions.build(doc), before = fileFormat.write(doc);
+    const shore = svgExport.buildShorelines(data);
+    for (const path of data.shorelines) {
+      const spline = shore.paths.get(path), edgeCount = path.points.length - 1;
+      assert.equal(spline.length, edgeCount + (path.isClosed ? 0 : 1), 'one segment between successive midpoints, plus open end caps');
+      for (let index = 0; index + 1 < path.points.length; index++) {
+        const a = path.points[index], b = path.points[index + 1];
+        const curves = shore.edges.get(a).get(b);
+        assert.equal(curves.length, 2, 'fill pieces meet at the edge midpoint sample');
+        assert.deepEqual(curves[0][3], curves[1][0]);
+        assert.deepEqual(curves[0][0], shore.vertices.get(a));
+        assert.deepEqual(curves[1][3], shore.vertices.get(b));
+        assert.deepEqual(shore.edges.get(b).get(a), curves.map((curve) => [...curve].reverse()).reverse());
+        const tangent = util.unit(util.subtract(b, a)), normal = [-tangent[1], tangent[0]];
+        const delta = util.subtract(curves[0][3], util.scale(util.add(a, b), 0.5));
+        const offset = util.dot(delta, normal);
+        maxOffset = Math.max(maxOffset, Math.abs(offset));
+        landward ||= offset > 0.01;
+        waterward ||= offset < -0.01;
+        assert.ok(Math.abs(util.dot(delta, tangent)) < 1e-10, 'the sample moves only along the centre-to-face ray');
+        assert.ok(Math.abs(offset) <= 0.30 * 2 / Math.sqrt(3) + 1e-10, 'midpoint displacement is bounded by 30% of hex width');
+        assert.deepEqual(spline[path.isClosed ? index : index + 1][0], curves[0][3]);
+        const next = index + 2 < path.points.length ? path.points[index + 2]
+          : path.isClosed ? path.points[1] : null;
+        for (const [first, second] of [[curves[0], curves[1]],
+          ...(next ? [[curves[1], shore.edges.get(b).get(next)[0]]] : [])]) {
+          assert.ok(util.pointDistance(util.unit(util.subtract(first[3], first[2])),
+            util.unit(util.subtract(second[1], second[0]))) < 1e-10, 'fill subdivisions keep the spline tangent');
         }
-        if (Next) {
-          const dT = Util.Distance(A, B) / (Util.Distance(A, B) + Util.Distance(B, Next));
-          const [First, Second] = View.SplitCurve(Spline[Path.fClosed ? nIndex : nIndex + 1], dT);
-          assert.deepEqual(Curves[1], First, 'the corner junction is derived from the unconstrained midpoint spline');
-          assert.deepEqual(Shore.Edges.get(B).get(Next)[0], Second);
-          assert.ok(Spline.every((Curve) => Util.Distance(Curve[0], B) > 1e-8),
+        if (next) {
+          const t = util.pointDistance(a, b) / (util.pointDistance(a, b) + util.pointDistance(b, next));
+          const [first, second] = view.splitCurve(spline[path.isClosed ? index : index + 1], t);
+          assert.deepEqual(curves[1], first, 'the corner junction is derived from the unconstrained midpoint spline');
+          assert.deepEqual(shore.edges.get(b).get(next)[0], second);
+          assert.ok(spline.every((curve) => util.pointDistance(curve[0], b) > 1e-8),
             'no interior hex corner is an interpolation point');
         }
       }
-      for (let nIndex = 0; nIndex < Spline.length - (Path.fClosed ? 0 : 1); nIndex++) {
-        const First = Spline[nIndex], Second = Spline[(nIndex + 1) % Spline.length];
-        assert.deepEqual(First[3], Second[0]);
-        assert.ok(Util.Distance(Util.Subtract(First[3], First[2]), Util.Subtract(Second[1], Second[0])) < 1e-10,
+      for (let index = 0; index < spline.length - (path.isClosed ? 0 : 1); index++) {
+        const first = spline[index], second = spline[(index + 1) % spline.length];
+        assert.deepEqual(first[3], second[0]);
+        assert.ok(util.pointDistance(util.subtract(first[3], first[2]), util.subtract(second[1], second[0])) < 1e-10,
           'successive midpoint segments have matching derivatives, including the closed join');
       }
-      if (!Path.fClosed) {
-        assert.deepEqual(Shore.Vertices.get(Path.rgrgdPoints[0]), Path.rgrgdPoints[0]);
-        assert.deepEqual(Shore.Vertices.get(Path.rgrgdPoints.at(-1)), Path.rgrgdPoints.at(-1));
+      if (!path.isClosed) {
+        assert.deepEqual(shore.vertices.get(path.points[0]), path.points[0]);
+        assert.deepEqual(shore.vertices.get(path.points.at(-1)), path.points.at(-1));
       }
     }
-    assert.equal(FileFormat.Write(Doc), Before);
+    assert.equal(fileFormat.write(doc), before);
   }
-  assert.ok(fLandward && fWaterward, 'the shoreline wanders to both sides of the hex boundary');
-  assert.ok(dMaxOffset > 0.25 * 2 / Math.sqrt(3), 'full edges can use the expanded 30% range, not the former small-edge cap');
+  assert.ok(landward && waterward, 'the shoreline wanders to both sides of the hex boundary');
+  assert.ok(maxOffset > 0.25 * 2 / Math.sqrt(3), 'full edges can use the expanded 30% range, not the former small-edge cap');
 });
 
-function SvgSegments(szPath) {
-  let Current, Start;
-  const Segments = [];
-  for (const Match of szPath.matchAll(/([MLCZ])([^MLCZ]*)/g)) {
-    const Values = Match[2].trim().split(/\s+/).filter(Boolean).map(Number);
-    if (Match[1] === 'M') {
-      Current = Start = Values;
-    } else if (Match[1] === 'L') {
-      Segments.push([Current, Values]);
-      Current = Values;
-    } else if (Match[1] === 'C') {
-      const Curve = [Current, Values.slice(0, 2), Values.slice(2, 4), Values.slice(4, 6)];
-      Segments.push(Curve);
-      Current = Curve[3];
+function svgSegments(path) {
+  let current, start;
+  const segments = [];
+  for (const match of path.matchAll(/([MLCZ])([^MLCZ]*)/g)) {
+    const values = match[2].trim().split(/\s+/).filter(Boolean).map(Number);
+    if (match[1] === 'M') {
+      current = start = values;
+    } else if (match[1] === 'L') {
+      segments.push([current, values]);
+      current = values;
+    } else if (match[1] === 'C') {
+      const curve = [current, values.slice(0, 2), values.slice(2, 4), values.slice(4, 6)];
+      segments.push(curve);
+      current = curve[3];
     } else {
-      Segments.push([Current, Start]);
-      Current = Start;
+      segments.push([current, start]);
+      current = start;
     }
   }
-  return Segments;
+  return segments;
 }
 
-function ContainsSegments(Segments, Point) {
-  let fInside = false;
-  for (const Segment of Segments) {
-    const Points = Segment.length === 4 ? View.FlattenCurve(Segment, 0.002) : Segment;
-    for (let nIndex = 0; nIndex + 1 < Points.length; nIndex++) {
-      const A = Points[nIndex], B = Points[nIndex + 1];
-      if ((A[1] > Point[1]) !== (B[1] > Point[1])
-        && Point[0] < A[0] + (Point[1] - A[1]) * (B[0] - A[0]) / (B[1] - A[1])) {
-        fInside = !fInside;
+function containsSegments(segments, point) {
+  let inside = false;
+  for (const segment of segments) {
+    const points = segment.length === 4 ? view.flattenCurve(segment, 0.002) : segment;
+    for (let index = 0; index + 1 < points.length; index++) {
+      const a = points[index], b = points[index + 1];
+      if ((a[1] > point[1]) !== (b[1] > point[1])
+        && point[0] < a[0] + (point[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1])) {
+        inside = !inside;
       }
     }
   }
-  return fInside;
+  return inside;
 }
 
 test('SVG land and water fills share the exact shoreline, including mixed terrains and narrow channels', () => {
-  for (const szShape of ['island', 'lake', 'ring', 'channel', 'coast']) {
-    const Doc = ShoreMap(szShape), Data = Regions.Build(Doc), Shore = SvgExport.BuildShorelines(Data);
-    const Text = SvgExport.Write(Doc, { Layers: { embellishment: false } });
-    const Size = SvgExport.Dimensions(Doc);
-    const ToSvg = [48, 0, 0, -48, -Size.rgdBounds[0] * 48, Size.rgdBounds[3] * 48];
-    const Paths = [...Text.matchAll(/<path id="region-(\d+)"[^>]+d="([^"]+)"/g)]
-      .map((Match) => SvgSegments(Match[2]));
-    const FlatPaths = Paths.map((Segments) => Segments.flatMap((Segment) => {
-      const Points = Segment.length === 4 ? View.FlattenCurve(Segment, 0.002) : Segment;
-      return Points.slice(1).map((Point, nIndex) => [Points[nIndex], Point]);
+  for (const shape of ['island', 'lake', 'ring', 'channel', 'coast']) {
+    const doc = shoreMap(shape), data = regions.build(doc), shore = svgExport.buildShorelines(data);
+    const text = svgExport.write(doc, { layers: { embellishment: false } });
+    const size = svgExport.dimensions(doc);
+    const toSvg = [48, 0, 0, -48, -size.bounds[0] * 48, size.bounds[3] * 48];
+    const paths = [...text.matchAll(/<path id="region-(\d+)"[^>]+d="([^"]+)"/g)]
+      .map((match) => svgSegments(match[2]));
+    const flatPaths = paths.map((segments) => segments.flatMap((segment) => {
+      const points = segment.length === 4 ? view.flattenCurve(segment, 0.002) : segment;
+      return points.slice(1).map((point, index) => [points[index], point]);
     }));
-    const Keys = Paths.map((Segments) => new Set(Segments.filter((Segment) => Segment.length === 4).map(JSON.stringify)));
-    const CoastGroup = /<g id="layer-shoreline"[^>]*>([\s\S]*?)<\/g>/.exec(Text)[1];
-    const CoastKeys = new Set([...CoastGroup.matchAll(/<path d="([^"]+)"/g)]
-      .flatMap((Match) => SvgSegments(Match[1]).filter((Segment) => Segment.length === 4).map(JSON.stringify)));
-    for (const Edge of Data.rgEdges) {
-      if (Edge.rgnCells.length !== 2) continue;
-      const Cells = Edge.rgnCells.map((nCell) => Data.rgCells[nCell]);
-      if (Terrain.IsWater(Cells[0].nTerrainId) === Terrain.IsWater(Cells[1].nTerrainId)) continue;
-      const fFirstLand = !Terrain.IsWater(Cells[0].nTerrainId);
-      const A = Data.rgrgdPoints[fFirstLand ? Edge.nA : Edge.nB];
-      const B = Data.rgrgdPoints[fFirstLand ? Edge.nB : Edge.nA];
-      const Land = Cells[fFirstLand ? 0 : 1], Water = Cells[fFirstLand ? 1 : 0];
-      const Curves = Shore.Edges.get(A).get(B);
-      for (const Curve of Curves) {
-        const Mapped = Curve.map((Point) => Projection.ApplyTransform(ToSvg, Point)
-          .map((dValue) => Number(Util.FormatNumber(dValue))));
-        assert.ok(Keys[Land.nRegion].has(JSON.stringify(Mapped)));
-        assert.ok(Keys[Water.nRegion].has(JSON.stringify([...Mapped].reverse())));
+    const keys = paths.map((segments) => new Set(segments.filter((segment) => segment.length === 4).map(JSON.stringify)));
+    const coastGroup = /<g id="layer-shoreline"[^>]*>([\s\S]*?)<\/g>/.exec(text)[1];
+    const coastKeys = new Set([...coastGroup.matchAll(/<path d="([^"]+)"/g)]
+      .flatMap((match) => svgSegments(match[1]).filter((segment) => segment.length === 4).map(JSON.stringify)));
+    for (const edge of data.edges) {
+      if (edge.cellIndices.length !== 2) continue;
+      const cells = edge.cellIndices.map((cellIndex) => data.cells[cellIndex]);
+      if (terrain.isWater(cells[0].terrainId) === terrain.isWater(cells[1].terrainId)) continue;
+      const firstLand = !terrain.isWater(cells[0].terrainId);
+      const a = data.points[firstLand ? edge.indexA : edge.indexB];
+      const b = data.points[firstLand ? edge.indexB : edge.indexA];
+      const land = cells[firstLand ? 0 : 1], water = cells[firstLand ? 1 : 0];
+      const curves = shore.edges.get(a).get(b);
+      for (const curve of curves) {
+        const mapped = curve.map((point) => projection.applyTransform(toSvg, point)
+          .map((value) => Number(util.formatNumber(value))));
+        assert.ok(keys[land.regionIndex].has(JSON.stringify(mapped)));
+        assert.ok(keys[water.regionIndex].has(JSON.stringify([...mapped].reverse())));
       }
-      const Tangent = Util.Unit(Util.Subtract(B, A)), Normal = [-Tangent[1], Tangent[0]];
-      for (const [dSign, Expected] of [[1, Land], [-1, Water]]) {
-        const Point = Projection.ApplyTransform(ToSvg, Util.Add(Curves[0][3], Util.Scale(Normal, dSign * 0.012)));
-        const Owners = FlatPaths.flatMap((Segments, nRegion) => ContainsSegments(Segments, Point) ? [nRegion] : []);
-        assert.deepEqual(Owners, [Expected.nRegion], `${szShape}: only the adjacent terrain colours its side of the coast`);
-      }
-    }
-    for (const Curves of Shore.Paths.values()) {
-      for (const Curve of Curves) {
-        const Mapped = Curve.map((Point) => Projection.ApplyTransform(ToSvg, Point)
-          .map((dValue) => Number(Util.FormatNumber(dValue))));
-        assert.ok(CoastKeys.has(JSON.stringify(Mapped)), 'the stroke exports the unsplit midpoint spline');
+      const tangent = util.unit(util.subtract(b, a)), normal = [-tangent[1], tangent[0]];
+      for (const [sign, expected] of [[1, land], [-1, water]]) {
+        const point = projection.applyTransform(toSvg, util.add(curves[0][3], util.scale(normal, sign * 0.012)));
+        const owners = flatPaths.flatMap((segments, regionIndex) => containsSegments(segments, point) ? [regionIndex] : []);
+        assert.deepEqual(owners, [expected.regionIndex], `${shape}: only the adjacent terrain colours its side of the coast`);
       }
     }
-    const Polygons = Data.rgCells.map((Cell) => Cell.rgnVertices.map((nVertex) => Data.rgrgdPoints[nVertex]));
-    for (let nX = 0; nX < 24; nX++) {
-      for (let nY = 0; nY < 24; nY++) {
-        const Point = [Data.rgdBounds[0] + (nX + 0.317) / 24 * (Data.rgdBounds[2] - Data.rgdBounds[0]),
-          Data.rgdBounds[1] + (nY + 0.641) / 24 * (Data.rgdBounds[3] - Data.rgdBounds[1])];
-        if (!Polygons.some((Polygon) => Util.PointInConvex(Point, Polygon))) continue;
-        const Mapped = Projection.ApplyTransform(ToSvg, Point);
-        const nOwners = FlatPaths.filter((Segments) => ContainsSegments(Segments, Mapped)).length;
-        assert.equal(nOwners, 1, `${szShape}: midpoint smoothing leaves no fill gaps or overlaps near junctions`);
+    for (const curves of shore.paths.values()) {
+      for (const curve of curves) {
+        const mapped = curve.map((point) => projection.applyTransform(toSvg, point)
+          .map((value) => Number(util.formatNumber(value))));
+        assert.ok(coastKeys.has(JSON.stringify(mapped)), 'the stroke exports the unsplit midpoint spline');
+      }
+    }
+    const polygons = data.cells.map((cell) => cell.vertexIndices.map((vertex) => data.points[vertex]));
+    for (let columnIndex = 0; columnIndex < 24; columnIndex++) {
+      for (let rowIndex = 0; rowIndex < 24; rowIndex++) {
+        const point = [data.bounds[0] + (columnIndex + 0.317) / 24 * (data.bounds[2] - data.bounds[0]),
+          data.bounds[1] + (rowIndex + 0.641) / 24 * (data.bounds[3] - data.bounds[1])];
+        if (!polygons.some((polygon) => util.pointInConvex(point, polygon))) continue;
+        const mapped = projection.applyTransform(toSvg, point);
+        const owners = flatPaths.filter((segments) => containsSegments(segments, mapped)).length;
+        assert.equal(owners, 1, `${shape}: midpoint smoothing leaves no fill gaps or overlaps near junctions`);
       }
     }
   }
 });
 
 test('SVG shoreline colour adjustments and embellishment clips follow the existing layer switches', () => {
-  const Doc = ShoreMap('island');
-  const On = SvgExport.Write(Doc), Off = SvgExport.Write(Doc, { Layers: { shoreline: false } });
-  assert.match(On, /<path id="region-\d+"[^>]+d="[^"]*C/);
-  assert.doesNotMatch(Off, /<path id="region-\d+"[^>]+d="[^"]*C|id="layer-shoreline"/);
-  const NoColours = SvgExport.Write(Doc, { Layers: { terrain: false, embellishment: false } });
-  assert.doesNotMatch(NoColours, /id="layer-terrain"|id="region-/);
-  assert.match(NoColours, /<g id="layer-shoreline" fill="none"[\s\S]*?<path d="[^"]*C/);
-  assert.match(On, /<clipPath id="clip-region-\d+"><use href="#region-\d+"\/>/);
-  const Wider = SvgExport.Write(Doc, { nWidth: 2400 });
-  assert.equal(On.replace(/width="\d+" height="\d+"/, ''), Wider.replace(/width="\d+" height="\d+"/, ''));
+  const doc = shoreMap('island');
+  const on = svgExport.write(doc), off = svgExport.write(doc, { layers: { shoreline: false } });
+  assert.match(on, /<path id="region-\d+"[^>]+d="[^"]*C/);
+  assert.doesNotMatch(off, /<path id="region-\d+"[^>]+d="[^"]*C|id="layer-shoreline"/);
+  const noColours = svgExport.write(doc, { layers: { terrain: false, embellishment: false } });
+  assert.doesNotMatch(noColours, /id="layer-terrain"|id="region-/);
+  assert.match(noColours, /<g id="layer-shoreline" fill="none"[\s\S]*?<path d="[^"]*C/);
+  assert.match(on, /<clipPath id="clip-region-\d+"><use href="#region-\d+"\/>/);
+  const wider = svgExport.write(doc, { width: 2400 });
+  assert.equal(on.replace(/width="\d+" height="\d+"/, ''), wider.replace(/width="\d+" height="\d+"/, ''));
 });
 
 test('clipped global and span shorelines retain endpoint anchors and bound midpoint offsets', () => {
-  const Span = Model.CreateLocalMap({ nWidth: 40, nHeight: 30, szSystem: 'regional', szScale: 'L',
-    Anchor: Coordinates.MakeLocation('Hxz+-', 0.45 * Projection.MilesPerEdge(24), 0.3 * Projection.MilesPerEdge(24)) });
-  assert.ok(Span.Topo.Span);
-  for (const Doc of [Model.CreateGlobalMap({ nPanelHexes: 4 }), Span]) {
-    Doc.rgnTerrain.set(View.DemoTerrain(Doc.Topo, 3));
-    for (const szPanel of Doc.Local ? ['local'] : Object.keys(Projection.Build().Panels)) {
-      const Data = Regions.Build(Doc, szPanel), Shore = SvgExport.BuildShorelines(Data);
-      for (const Edge of Data.rgEdges) {
-        const A = Data.rgrgdPoints[Edge.nA], B = Data.rgrgdPoints[Edge.nB];
-        const Curves = Shore.Edges.get(A)?.get(B);
-        const fCoast = Edge.rgnCells.length === 2
-          && Terrain.IsWater(Data.rgCells[Edge.rgnCells[0]].nTerrainId) !== Terrain.IsWater(Data.rgCells[Edge.rgnCells[1]].nTerrainId);
-        assert.equal(!!Curves, fCoast, 'only a shared water/land edge gets shoreline curves');
-        if (Curves) {
-          const Delta = Util.Subtract(Curves[0][3], Util.Scale(Util.Add(A, B), 0.5));
-          assert.ok(Util.Length(Delta) <= SvgExport.g_dShoreDeviation * Math.min(1, Util.Distance(A, B) * Math.sqrt(3)) + 1e-10);
-          assert.ok(Math.abs(Util.Dot(Delta, Util.Unit(Util.Subtract(B, A)))) < 1e-10);
+  const span = model.createLocalMap({ width: 40, height: 30, systemName: 'regional', scaleName: 'L',
+    anchor: coordinates.makeLocation('Hxz+-', 0.45 * projection.getMilesPerEdge(24), 0.3 * projection.getMilesPerEdge(24)) });
+  assert.ok(span.topo.span);
+  for (const doc of [model.createGlobalMap({ panelHexes: 4 }), span]) {
+    doc.terrainIds.set(view.demoTerrain(doc.topo, 3));
+    for (const panelId of doc.local ? ['local'] : Object.keys(projection.build().panels)) {
+      const data = regions.build(doc, panelId), shore = svgExport.buildShorelines(data);
+      for (const edge of data.edges) {
+        const a = data.points[edge.indexA], b = data.points[edge.indexB];
+        const curves = shore.edges.get(a)?.get(b);
+        const coast = edge.cellIndices.length === 2
+          && terrain.isWater(data.cells[edge.cellIndices[0]].terrainId) !== terrain.isWater(data.cells[edge.cellIndices[1]].terrainId);
+        assert.equal(!!curves, coast, 'only a shared water/land edge gets shoreline curves');
+        if (curves) {
+          const delta = util.subtract(curves[0][3], util.scale(util.add(a, b), 0.5));
+          assert.ok(util.vectorLength(delta) <= svgExport.SHORE_DEVIATION * Math.min(1, util.pointDistance(a, b) * Math.sqrt(3)) + 1e-10);
+          assert.ok(Math.abs(util.dot(delta, util.unit(util.subtract(b, a)))) < 1e-10);
         }
       }
-      for (const Path of Data.rgShorelines.filter((Item) => !Item.fClosed)) {
-        assert.deepEqual(Shore.Vertices.get(Path.rgrgdPoints[0]), Path.rgrgdPoints[0]);
-        assert.deepEqual(Shore.Vertices.get(Path.rgrgdPoints.at(-1)), Path.rgrgdPoints.at(-1));
+      for (const path of data.shorelines.filter((item) => !item.isClosed)) {
+        assert.deepEqual(shore.vertices.get(path.points[0]), path.points[0]);
+        assert.deepEqual(shore.vertices.get(path.points.at(-1)), path.points.at(-1));
       }
-      assert.doesNotMatch(SvgExport.Write(Doc, { szPanel }), /(?:NaN|Infinity|undefined)/);
+      assert.doesNotMatch(svgExport.write(doc, { panelId }), /(?:NaN|Infinity|undefined)/);
     }
   }
 });
 
 test('every export layer can be excluded independently without altering other layers', () => {
-  const Doc = LocalMap();
-  const Enabled = Object.fromEntries(SvgExport.g_Layers.map(([szKey]) => [szKey, true]));
-  for (const [szKey] of SvgExport.g_Layers) {
-    const Text = SvgExport.Write(Doc, { Layers: { ...Enabled, [szKey]: false } });
-    if (['road', 'trail', 'river'].includes(szKey)) {
-      assert.ok(!Text.includes(`data-layer="${szKey}"`));
-    } else if (szKey === 'landmarkNames') {
-      assert.ok(!Text.includes('Keep &amp; &lt;town&gt;'));
+  const doc = localMap();
+  const enabled = Object.fromEntries(svgExport.LAYER_DEFINITIONS.map(([key]) => [key, true]));
+  for (const [key] of svgExport.LAYER_DEFINITIONS) {
+    const text = svgExport.write(doc, { layers: { ...enabled, [key]: false } });
+    if (['road', 'trail', 'river'].includes(key)) {
+      assert.ok(!text.includes(`data-layer="${key}"`));
+    } else if (key === 'landmarkNames') {
+      assert.ok(!text.includes('Keep &amp; &lt;town&gt;'));
     } else {
-      assert.ok(!Text.includes(`id="layer-${szKey}"`));
+      assert.ok(!text.includes(`id="layer-${key}"`));
     }
-    if (szKey !== 'label') assert.ok(Text.includes('id="layer-label"'));
-    if (szKey !== 'terrain') assert.ok(Text.includes('id="layer-terrain"'));
-    if (szKey === 'landmark') assert.ok(!Text.includes('<symbol'));
-    if (szKey === 'terrain') assert.ok(Text.includes('id="region-'), 'embellishments still clip to regions');
-    if (szKey === 'embellishment') assert.ok(!Text.includes('<clipPath id="clip-region-'));
+    if (key !== 'label') assert.ok(text.includes('id="layer-label"'));
+    if (key !== 'terrain') assert.ok(text.includes('id="layer-terrain"'));
+    if (key === 'landmark') assert.ok(!text.includes('<symbol'));
+    if (key === 'terrain') assert.ok(text.includes('id="region-'), 'embellishments still clip to regions');
+    if (key === 'embellishment') assert.ok(!text.includes('<clipPath id="clip-region-'));
   }
-  const NoTerrain = SvgExport.Write(Doc, { Layers: { terrain: false, embellishment: false } });
-  assert.ok(!NoTerrain.includes('id="region-'));
-  const Empty = SvgExport.Write(Doc, { Layers: Object.fromEntries(SvgExport.g_Layers.map(([szKey]) => [szKey, false])) });
-  assert.doesNotMatch(Empty, /id="layer-|data-layer=|<text|<symbol/);
+  const noTerrain = svgExport.write(doc, { layers: { terrain: false, embellishment: false } });
+  assert.ok(!noTerrain.includes('id="region-'));
+  const empty = svgExport.write(doc, { layers: Object.fromEntries(svgExport.LAYER_DEFINITIONS.map(([key]) => [key, false])) });
+  assert.doesNotMatch(empty, /id="layer-|data-layer=|<text|<symbol/);
 });
 
 test('XML escaping handles text and attributes and rejects unrepresentable characters', () => {
-  assert.equal(SvgExport.Escape('&<>"\''), '&amp;&lt;&gt;&quot;&apos;');
-  const Text = SvgExport.Write(LocalMap(), { Layers: { landmarkNames: true } });
-  assert.match(Text, /A &amp; B &lt;Map&gt; &quot;quoted&quot;/);
-  assert.match(Text, /Keep &amp; &lt;town&gt;/);
-  assert.match(Text, /A &amp; &lt;B&gt; &quot;quoted&quot; \u03b1 \ud83c\udff0/);
-  for (const szText of ['\u0000', '\u000b', '\ud800', '\udfff', '\uffff']) {
-    assert.throws(() => SvgExport.Escape(szText), /XML/);
+  assert.equal(svgExport.Escape('&<>"\''), '&amp;&lt;&gt;&quot;&apos;');
+  const text = svgExport.write(localMap(), { layers: { landmarkNames: true } });
+  assert.match(text, /A &amp; B &lt;Map&gt; &quot;quoted&quot;/);
+  assert.match(text, /Keep &amp; &lt;town&gt;/);
+  assert.match(text, /A &amp; &lt;B&gt; &quot;quoted&quot; \u03b1 \ud83c\udff0/);
+  for (const text of ['\u0000', '\u000b', '\ud800', '\udfff', '\uffff']) {
+    assert.throws(() => svgExport.Escape(text), /XML/);
   }
 });
 
-test('SVG is well-formed XML with unique ids and resolved internal references', (Context) => {
-  const Doc = LocalMap();
-  const Global = Model.CreateGlobalMap({ nPanelHexes: 4 });
-  const Rich = Model.CreateGlobalMap({ nPanelHexes: 8 });
-  Rich.rgnTerrain.set(View.DemoTerrain(Rich.Topo, 3));
-  for (let nTile = 0; nTile < Doc.nTiles; nTile++) {
-    Model.SetTerrain(Doc, nTile, nTile % 17);
+test('SVG is well-formed XML with unique ids and resolved internal references', (context) => {
+  const doc = localMap();
+  const global = model.createGlobalMap({ panelHexes: 4 });
+  const rich = model.createGlobalMap({ panelHexes: 8 });
+  rich.terrainIds.set(view.demoTerrain(rich.topo, 3));
+  for (let tileIndex = 0; tileIndex < doc.tileCount; tileIndex++) {
+    model.setTerrain(doc, tileIndex, tileIndex % 17);
   }
-  const Texts = [SvgExport.Write(Doc), SvgExport.Write(Doc, { Layers: { grid: true, landmarkNames: true } }),
-    SvgExport.Write(Doc, { Layers: { terrain: false } }),
-    SvgExport.Write(Global, { szPanel: Coordinates.PanelIdByName('Eta') }),
-    ...['Beta', 'Gamma', 'Delta', 'Iota'].map((szName) => SvgExport.Write(Rich, { szPanel: Coordinates.PanelIdByName(szName) }))];
-  const Check = spawnSync('python3', ['-c', `
-import json, sys, re, xml.etree.ElementTree as ET
+  const texts = [svgExport.write(doc), svgExport.write(doc, { layers: { grid: true, landmarkNames: true } }),
+    svgExport.write(doc, { layers: { terrain: false } }),
+    svgExport.write(global, { panelId: coordinates.panelIdByName('Eta') }),
+    ...['Beta', 'Gamma', 'Delta', 'Iota'].map((name) => svgExport.write(rich, { panelId: coordinates.panelIdByName(name) }))];
+  const check = spawnSync('python3', ['-c', `
+import json
+import re
+import sys
+import xml.etree.ElementTree as et
 for text in json.load(sys.stdin):
-    root = ET.fromstring(text)
+    root = et.fromstring(text)
     assert root.tag == '{http://www.w3.org/2000/svg}svg'
     ids = [e.attrib['id'] for e in root.iter() if 'id' in e.attrib]
     assert len(ids) == len(set(ids))
@@ -308,148 +311,148 @@ for text in json.load(sys.stdin):
             for ref in re.findall(r'url\\(#([^)]*)\\)', value):
                 assert ref in ids
     assert len(root.findall('.//{http://www.w3.org/2000/svg}title')) == 1
-`], { input: JSON.stringify(Texts), encoding: 'utf8' });
-  if (Check.error && Check.error.code === 'ENOENT') {
-    Context.skip('Python 3 is unavailable; browser smoke checks also parse with DOMParser');
+`], { input: JSON.stringify(texts), encoding: 'utf8' });
+  if (check.error && check.error.code === 'ENOENT') {
+    context.skip('Python 3 is unavailable; browser smoke checks also parse with DOMParser');
     return;
   }
-  assert.equal(Check.status, 0, Check.stderr || String(Check.error));
+  assert.equal(check.status, 0, check.stderr || String(check.error));
 });
 
 test('all eight local scales use the same normalized SVG dimensions and label units', () => {
-  for (const szSystem of ['regional', 'local']) {
-    for (const szScale of Lattice.g_rgszSizes) {
-      const Doc = LocalMap(szSystem, szScale);
-      const Size = SvgExport.Dimensions(Doc, 'local', 900);
-      assert.equal(Size.nWidth, 900);
-      assert.ok(Math.abs(Size.nHeight - 900 * Size.dHeight / Size.dWidth) <= 0.5);
-      const Text = SvgExport.Write(Doc, { nWidth: 900 });
-      const Match = /<text data-id="label1" transform="matrix\(([^)]+)\)"/.exec(Text);
-      const Actual = Match[1].split(' ').map(Number);
-      const ToSvg = [48, 0, 0, -48, -Size.rgdBounds[0] * 48, Size.rgdBounds[3] * 48];
+  for (const systemName of ['regional', 'local']) {
+    for (const scaleName of lattice.SIZES) {
+      const doc = localMap(systemName, scaleName);
+      const size = svgExport.dimensions(doc, 'local', 900);
+      assert.equal(size.width, 900);
+      assert.ok(Math.abs(size.height - 900 * size.spanHeight / size.spanWidth) <= 0.5);
+      const text = svgExport.write(doc, { width: 900 });
+      const match = /<text data-id="label1" transform="matrix\(([^)]+)\)"/.exec(text);
+      const actual = match[1].split(' ').map(Number);
+      const toSvg = [48, 0, 0, -48, -size.bounds[0] * 48, size.bounds[3] * 48];
       // Local maps that span a seam draw in their anchor panel's frame (edge units).
-      const Geometry = View.MapGeometry(Doc);
-      const rgdToHex = Geometry.Span
-        ? Projection.ComposeTransforms(View.FeatureCopies(Geometry, View.MapLayout(Doc), Doc.rgLabels[0].nTile)[0].rgdFrameToWorld,
-          [1 / Geometry.dD, 0, 0, 1 / Geometry.dD, 0, 0])
+      const geometry = view.mapGeometry(doc);
+      const toHex = geometry.span
+        ? projection.composeTransforms(view.featureCopies(geometry, view.mapLayout(doc), doc.labels[0].tileIndex)[0].frameToWorld,
+          [1 / geometry.d, 0, 0, 1 / geometry.d, 0, 0])
         : [1, 0, 0, 1, 0, 0];
-      const Expected = Projection.ComposeTransforms(View.LabelTransform(Geometry, Doc.rgLabels[0]), Projection.ComposeTransforms(rgdToHex, ToSvg));
-      Actual.forEach((dValue, nIndex) => assert.ok(Math.abs(dValue - Expected[nIndex]) <= 1e-6));
-      assert.ok(Math.abs(Math.hypot(Actual[0], Actual[1]) - 1) < 1e-6, 'a label unit is one SVG viewBox unit');
+      const expected = projection.composeTransforms(view.labelTransform(geometry, doc.labels[0]), projection.composeTransforms(toHex, toSvg));
+      actual.forEach((value, index) => assert.ok(Math.abs(value - expected[index]) <= 1e-6));
+      assert.ok(Math.abs(Math.hypot(actual[0], actual[1]) - 1) < 1e-6, 'a label unit is one SVG viewBox unit');
     }
   }
 });
 
 test('global export is panel-north-up, with seam-transformed curves and label copies', () => {
-  const Doc = Model.CreateGlobalMap({ nPanelHexes: 4 });
-  const szA = Coordinates.PanelIdByName('Gamma'), szB = Coordinates.PanelIdByName('Beta');
-  const Tile = Doc.Topo.rgTiles.find((Item) => Item.szPanel === szA
-    && Item.nColumn === Doc.Topo.Panels[szA].nColumns - 1 && !Item.fPartial);
-  const nOther = Model.Neighbors(Doc, Tile.nIndex).find((nTile) => Doc.Topo.rgTiles[nTile].szPanel === szB);
-  Model.AddOverlay(Doc, { szType: 'road', rgnTiles: [Tile.nIndex, nOther] });
-  Model.AddLabel(Doc, { nTile: Tile.nIndex, szCategory: 'location', szText: 'Seam label', dRotation: 20 });
-  for (const szPanel of [szA, szB]) {
-    const Text = SvgExport.Write(Doc, { szPanel });
-    const Size = SvgExport.Dimensions(Doc, szPanel);
-    const ToSvg = [48 / Doc.Topo.dD, 0, 0, -48 / Doc.Topo.dD, -Size.rgdBounds[0] * 48, Size.rgdBounds[3] * 48];
-    const Curve = View.OverlayCurves(Doc.Topo, Doc.rgOverlays[0]).find((Item) => Item.szPanel === szPanel);
-    const Match = /<path data-point="0" d="M([^C]+)C([^"]+)"/.exec(Text);
-    const Values = `${Match[1]} ${Match[2]}`.trim().split(/\s+/).map(Number);
-    const Expected = Curve.rgrgdControl.flatMap((Point) => Projection.ApplyTransform(ToSvg, Point));
-    Values.forEach((dValue, nIndex) => assert.ok(Math.abs(dValue - Expected[nIndex]) <= 1e-6));
-    assert.match(Text, /Seam label/);
-    assert.match(Text, new RegExp(`- ${Projection.Build().Panels[szPanel].szName}</title>`));
+  const doc = model.createGlobalMap({ panelHexes: 4 });
+  const a = coordinates.panelIdByName('Gamma'), b = coordinates.panelIdByName('Beta');
+  const tile = doc.topo.tiles.find((item) => item.panelId === a
+    && item.column === doc.topo.panels[a].columnCount - 1 && !item.isPartial);
+  const otherIndex = model.neighbors(doc, tile.index).find((tileIndex) => doc.topo.tiles[tileIndex].panelId === b);
+  model.addOverlay(doc, { type: 'road', tileIndices: [tile.index, otherIndex] });
+  model.addLabel(doc, { tileIndex: tile.index, category: 'location', text: 'Seam label', rotation: 20 });
+  for (const panelId of [a, b]) {
+    const text = svgExport.write(doc, { panelId });
+    const size = svgExport.dimensions(doc, panelId);
+    const toSvg = [48 / doc.topo.d, 0, 0, -48 / doc.topo.d, -size.bounds[0] * 48, size.bounds[3] * 48];
+    const curve = view.overlayCurves(doc.topo, doc.overlays[0]).find((item) => item.panelId === panelId);
+    const match = /<path data-point="0" d="M([^C]+)C([^"]+)"/.exec(text);
+    const values = `${match[1]} ${match[2]}`.trim().split(/\s+/).map(Number);
+    const expected = curve.control.flatMap((point) => projection.applyTransform(toSvg, point));
+    values.forEach((value, index) => assert.ok(Math.abs(value - expected[index]) <= 1e-6));
+    assert.match(text, /Seam label/);
+    assert.match(text, new RegExp(`- ${projection.build().panels[panelId].name}</title>`));
   }
-  const Remote = SvgExport.Write(Doc, { szPanel: Coordinates.PanelIdByName('Mu') });
-  assert.doesNotMatch(Remote, />Seam label</);
+  const remote = svgExport.write(doc, { panelId: coordinates.panelIdByName('Mu') });
+  assert.doesNotMatch(remote, />Seam label</);
 });
 
 test('rivers taper from source to mouth along exact cubic sub-curves; trails stay dashed', () => {
-  const Doc = LocalMap();
-  const Text = SvgExport.Write(Doc);
-  const River = /<g id="overlay-river1"[\s\S]*?<\/g>/.exec(Text)[0];
-  const Widths = [...River.matchAll(/<path[^>]+stroke-width="([^"]+)"/g)].map((Match) => Number(Match[1]));
-  assert.equal(Widths.length, 24);
-  assert.ok(Widths.every((dWidth, nIndex) => nIndex === 0 || dWidth > Widths[nIndex - 1]));
-  assert.match(Text, /id="overlay-trail1"[^>]+stroke-dasharray="4 3"/);
-  const Curve = View.OverlayCurves(View.MapGeometry(Doc), Doc.rgOverlays[2])[0].rgrgdControl;
-  const [First, Second] = View.SplitCurve(Curve);
-  assert.deepEqual(First[0], Curve[0]);
-  assert.deepEqual(Second[3], Curve[3]);
-  assert.deepEqual(First[3], Second[0]);
-  for (const dT of [0, 0.1, 0.3, 0.5, 0.75, 1]) {
-    assert.ok(Util.Distance(View.CubicPoint(First, dT), View.CubicPoint(Curve, dT / 2)) < 1e-12);
-    assert.ok(Util.Distance(View.CubicPoint(Second, dT), View.CubicPoint(Curve, (1 + dT) / 2)) < 1e-12);
+  const doc = localMap();
+  const text = svgExport.write(doc);
+  const river = /<g id="overlay-river1"[\s\S]*?<\/g>/.exec(text)[0];
+  const widths = [...river.matchAll(/<path[^>]+stroke-width="([^"]+)"/g)].map((match) => Number(match[1]));
+  assert.equal(widths.length, 24);
+  assert.ok(widths.every((spanWidth, index) => index === 0 || spanWidth > widths[index - 1]));
+  assert.match(text, /id="overlay-trail1"[^>]+stroke-dasharray="4 3"/);
+  const curve = view.overlayCurves(view.mapGeometry(doc), doc.overlays[2])[0].control;
+  const [first, second] = view.splitCurve(curve);
+  assert.deepEqual(first[0], curve[0]);
+  assert.deepEqual(second[3], curve[3]);
+  assert.deepEqual(first[3], second[0]);
+  for (const t of [0, 0.1, 0.3, 0.5, 0.75, 1]) {
+    assert.ok(util.pointDistance(view.cubicPoint(first, t), view.cubicPoint(curve, t / 2)) < 1e-12);
+    assert.ok(util.pointDistance(view.cubicPoint(second, t), view.cubicPoint(curve, (1 + t) / 2)) < 1e-12);
   }
 });
 
 test('partial-tile labels and glyphs retain their anchors and rotation across non-equatorial seams', () => {
-  const Doc = Model.CreateGlobalMap({ nPanelHexes: 4 });
-  const szOwner = Coordinates.PanelIdByName('Eta');
-  const Tile = Doc.Topo.rgTiles.find((Item) => Item.szPanel === szOwner && Item.fPartial);
-  Model.AddLabel(Doc, { nTile: Tile.nIndex, szCategory: 'location', szText: 'Partial', dRotation: 35 });
-  Model.SetLandmark(Doc, Tile.nIndex, { szType: 'tower' });
-  const Panels = [szOwner, ...Projection.Build().Seams.filter((Seam) => Seam.szPanelA === szOwner || Seam.szPanelB === szOwner)
-    .map((Seam) => Seam.szPanelA === szOwner ? Seam.szPanelB : Seam.szPanelA)];
-  for (const szPanel of Panels) {
-    const Text = SvgExport.Write(Doc, { szPanel }), Size = SvgExport.Dimensions(Doc, szPanel);
-    const Label = /<text data-id="label1" transform="matrix\(([^)]+)\)"/.exec(Text)[1].split(' ').map(Number);
-    const Glyph = new RegExp(`data-tile="${Tile.nIndex}" transform="matrix\\(([^)]+)\\)"`).exec(Text)[1].split(' ').map(Number);
-    const SeamTransform = View.PanelTransform(szOwner, szPanel);
-    const Anchor = Projection.ApplyTransform(SeamTransform, View.FeatureAnchor(Doc.Topo, Tile.nIndex));
-    const Expected = [(Anchor[0] / Doc.Topo.dD - Size.rgdBounds[0]) * 48, (Size.rgdBounds[3] - Anchor[1] / Doc.Topo.dD) * 48];
-    for (const Transform of [Label, Glyph]) {
-      assert.ok(Util.Distance(Transform.slice(4), Expected) < 1e-6);
+  const doc = model.createGlobalMap({ panelHexes: 4 });
+  const owner = coordinates.panelIdByName('Eta');
+  const tile = doc.topo.tiles.find((item) => item.panelId === owner && item.isPartial);
+  model.addLabel(doc, { tileIndex: tile.index, category: 'location', text: 'Partial', rotation: 35 });
+  model.setLandmark(doc, tile.index, { type: 'tower' });
+  const panels = [owner, ...projection.build().seams.filter((seam) => seam.panelA === owner || seam.panelB === owner)
+    .map((seam) => seam.panelA === owner ? seam.panelB : seam.panelA)];
+  for (const panelId of panels) {
+    const text = svgExport.write(doc, { panelId }), size = svgExport.dimensions(doc, panelId);
+    const label = /<text data-id="label1" transform="matrix\(([^)]+)\)"/.exec(text)[1].split(' ').map(Number);
+    const glyph = new RegExp(`data-tile="${tile.index}" transform="matrix\\(([^)]+)\\)"`).exec(text)[1].split(' ').map(Number);
+    const seamTransform = view.panelTransform(owner, panelId);
+    const anchor = projection.applyTransform(seamTransform, view.featureAnchor(doc.topo, tile.index));
+    const expected = [(anchor[0] / doc.topo.d - size.bounds[0]) * 48, (size.bounds[3] - anchor[1] / doc.topo.d) * 48];
+    for (const transform of [label, glyph]) {
+      assert.ok(util.pointDistance(transform.slice(4), expected) < 1e-6);
     }
-    const dAngle = 35 * Math.PI / 180 - Math.atan2(SeamTransform[1], SeamTransform[0]);
-    assert.ok(Math.abs(Label[0] - Math.cos(dAngle)) < 1e-6);
-    assert.ok(Math.abs(Label[1] - Math.sin(dAngle)) < 1e-6);
-    assert.ok(Math.abs(Math.hypot(Glyph[0], Glyph[1]) - 26 / 24) < 1e-6);
+    const angle = 35 * Math.PI / 180 - Math.atan2(seamTransform[1], seamTransform[0]);
+    assert.ok(Math.abs(label[0] - Math.cos(angle)) < 1e-6);
+    assert.ok(Math.abs(label[1] - Math.sin(angle)) < 1e-6);
+    assert.ok(Math.abs(Math.hypot(glyph[0], glyph[1]) - 26 / 24) < 1e-6);
   }
 });
 
 test('single-point paths export a clipped point and invalid options report errors', () => {
-  const Doc = LocalMap();
-  Model.AddOverlay(Doc, { szType: 'road', rgnTiles: [0] });
-  assert.match(SvgExport.Write(Doc), /<circle cx="[^"]+" cy="[^"]+" r="3"/);
-  for (const nWidth of [0, -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
-    assert.throws(() => SvgExport.Write(Doc, { nWidth }), /width/);
+  const doc = localMap();
+  model.addOverlay(doc, { type: 'road', tileIndices: [0] });
+  assert.match(svgExport.write(doc), /<circle cx="[^"]+" cy="[^"]+" r="3"/);
+  for (const width of [0, -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => svgExport.write(doc, { width }), /width/);
   }
-  assert.throws(() => SvgExport.Write(Doc, { szPanel: 'Alpha' }), /panel/);
-  assert.throws(() => SvgExport.Write(Doc, { Layers: { grid: 'yes' } }), /layer/);
-  assert.throws(() => SvgExport.Write(Doc, { Layers: { unknown: true } }), /layer/);
-  for (const Layers of [null, [], false, 'all']) {
-    assert.throws(() => SvgExport.Write(Doc, { Layers }), /layers/);
+  assert.throws(() => svgExport.write(doc, { panelId: 'Alpha' }), /panel/);
+  assert.throws(() => svgExport.write(doc, { layers: { grid: 'yes' } }), /layer/);
+  assert.throws(() => svgExport.write(doc, { layers: { unknown: true } }), /layer/);
+  for (const layers of [null, [], false, 'all']) {
+    assert.throws(() => svgExport.write(doc, { layers }), /layers/);
   }
-  assert.throws(() => SvgExport.Write(Model.CreateGlobalMap({ nPanelHexes: 4 })), /panel/);
+  assert.throws(() => svgExport.write(model.createGlobalMap({ panelHexes: 4 })), /panel/);
 });
 
 test('export filenames identify the selected global panel and preserve the map basename', () => {
-  const Global = Model.CreateGlobalMap({ nPanelHexes: 4, szName: 'My world' });
-  assert.equal(SvgExport.FileName(Global, Coordinates.PanelIdByName('Alpha')), 'My-world-Alpha.svg');
-  const Local = LocalMap();
-  assert.equal(SvgExport.FileName(Local), FileFormat.FileName(Local).replace(/\.map\.txt$/, '.svg'));
+  const global = model.createGlobalMap({ panelHexes: 4, name: 'My world' });
+  assert.equal(svgExport.fileName(global, coordinates.panelIdByName('Alpha')), 'My-world-Alpha.svg');
+  const local = localMap();
+  assert.equal(svgExport.fileName(local), fileFormat.fileName(local).replace(/\.map\.txt$/, '.svg'));
 });
 
 test('export size estimates bound the written terrain and drop with embellishments off', () => {
-  const { Terrain } = LoadModules();
-  const Global = Model.CreateGlobalMap({ nPanelHexes: 4, szTileScale: 'XL' });
-  const Water = SvgExport.Estimate(Global, 'Hyz+-');
-  assert.equal(Water.nTiles, Global.Topo.Panels['Hyz+-'].nTileCount);
-  assert.equal(Water.nEmbellished, 0);
-  for (const Type of Terrain.g_rgTerrains.filter((Item) => Item.Embellish)) {
-    Global.rgnTerrain.fill(Type.nId);
-    const Estimate = SvgExport.Estimate(Global, 'Hyz+-');
-    assert.equal(Estimate.nEmbellished, Estimate.nTiles, Type.szKey);
-    assert.ok(Estimate.nBytes >= SvgExport.Write(Global, { szPanel: 'Hyz+-' }).length, Type.szKey);
-    assert.ok(SvgExport.Estimate(Global, 'Hyz+-', false).nBytes < Estimate.nBytes);
+  const { Terrain: terrain } = loadModules();
+  const global = model.createGlobalMap({ panelHexes: 4, tileScale: 'XL' });
+  const water = svgExport.estimate(global, 'Hyz+-');
+  assert.equal(water.tileCount, global.topo.panels['Hyz+-'].tileCount);
+  assert.equal(water.embellishedCount, 0);
+  for (const type of terrain.TERRAINS.filter((item) => item.embellish)) {
+    global.terrainIds.fill(type.id);
+    const estimate = svgExport.estimate(global, 'Hyz+-');
+    assert.equal(estimate.embellishedCount, estimate.tileCount, type.key);
+    assert.ok(estimate.bytes >= svgExport.write(global, { panelId: 'Hyz+-' }).length, type.key);
+    assert.ok(svgExport.estimate(global, 'Hyz+-', false).bytes < estimate.bytes);
   }
-  const Local = LocalMap();
-  const LocalEstimate = SvgExport.Estimate(Local);
-  assert.equal(LocalEstimate.nTiles, Local.nTiles);
-  assert.equal(LocalEstimate.nEmbellished, [...Local.rgnTerrain].filter((nId) => Terrain.ById(nId).Embellish).length);
-  const Coast = ShoreMap('channel');
-  assert.ok(SvgExport.Estimate(Coast, 'local', false).nBytes
-    >= SvgExport.Write(Coast, { Layers: { embellishment: false } }).length, 'curved coast geometry is included');
-  assert.throws(() => SvgExport.Estimate(Global, 'nowhere'));
+  const local = localMap();
+  const localEstimate = svgExport.estimate(local);
+  assert.equal(localEstimate.tileCount, local.tileCount);
+  assert.equal(localEstimate.embellishedCount, [...local.terrainIds].filter((id) => terrain.byId(id).embellish).length);
+  const coast = shoreMap('channel');
+  assert.ok(svgExport.estimate(coast, 'local', false).bytes
+    >= svgExport.write(coast, { layers: { embellishment: false } }).length, 'curved coast geometry is included');
+  assert.throws(() => svgExport.estimate(global, 'nowhere'));
 });

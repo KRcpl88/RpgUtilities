@@ -3,226 +3,226 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { LoadModules } = require('./_load.cjs');
+const { loadModules } = require('./_load.cjs');
 
-const { Coordinates, Terrain, Model, View, Topology, FileFormat } = LoadModules();
+const { Coordinates: coordinates, Terrain: terrain, Model: model, View: view, Topology: topology, FileFormat: fileFormat } = loadModules();
 
-const g_szGlobalFixture = fs.readFileSync(path.join(__dirname, 'fixtures', 'sample-global.map.txt'), 'utf8');
-const g_szLocalFixture = fs.readFileSync(path.join(__dirname, 'fixtures', 'sample-local.map.txt'), 'utf8');
+const GLOBAL_FIXTURE = fs.readFileSync(path.join(__dirname, 'fixtures', 'sample-global.map.txt'), 'utf8');
+const LOCAL_FIXTURE = fs.readFileSync(path.join(__dirname, 'fixtures', 'sample-local.map.txt'), 'utf8');
 
-function AssertSameDocument(Actual, Expected) {
-  assert.equal(Actual.szKind, Expected.szKind);
-  assert.equal(Actual.szName, Expected.szName);
-  assert.deepEqual(Actual.Global, Expected.Global);
-  assert.deepEqual(Actual.Local, Expected.Local);
-  assert.equal(Actual.nTiles, Expected.nTiles);
-  assert.deepEqual(Actual.rgnTerrain, Expected.rgnTerrain);
-  assert.deepEqual([...Actual.Landmarks].sort((A, B) => A[0] - B[0]), [...Expected.Landmarks].sort((A, B) => A[0] - B[0]));
-  assert.deepEqual(Actual.rgOverlays, Expected.rgOverlays);
-  assert.deepEqual(Actual.rgLabels, Expected.rgLabels);
+function assertSameDocument(actual, expected) {
+  assert.equal(actual.kind, expected.kind);
+  assert.equal(actual.name, expected.name);
+  assert.deepEqual(actual.global, expected.global);
+  assert.deepEqual(actual.local, expected.local);
+  assert.equal(actual.tileCount, expected.tileCount);
+  assert.deepEqual(actual.terrainIds, expected.terrainIds);
+  assert.deepEqual([...actual.landmarks].sort((a, b) => a[0] - b[0]), [...expected.landmarks].sort((a, b) => a[0] - b[0]));
+  assert.deepEqual(actual.overlays, expected.overlays);
+  assert.deepEqual(actual.labels, expected.labels);
 }
 
-function RoundTrip(Doc) {
-  const szText = FileFormat.Write(Doc);
-  const Parsed = FileFormat.Parse(szText);
-  AssertSameDocument(Parsed, Doc);
-  assert.equal(FileFormat.Write(Parsed), szText, 'write → parse → write is byte-identical');
-  return szText;
+function roundTrip(doc) {
+  const text = fileFormat.write(doc);
+  const parsed = fileFormat.parse(text);
+  assertSameDocument(parsed, doc);
+  assert.equal(fileFormat.write(parsed), text, 'write → parse → write is byte-identical');
+  return text;
 }
 
-// Replaces line nLine (1-based) of the global fixture.
-function WithLine(nLine, fnEdit) {
-  const rgszLines = g_szGlobalFixture.split('\n');
-  rgszLines[nLine - 1] = fnEdit(rgszLines[nLine - 1]);
-  return rgszLines.join('\n');
+// Replaces line lineNumber (1-based) of the global fixture.
+function withLine(lineNumber, edit) {
+  const lines = GLOBAL_FIXTURE.split('\n');
+  lines[lineNumber - 1] = edit(lines[lineNumber - 1]);
+  return lines.join('\n');
 }
 
-function LineOf(szText, szStart, nFrom = 1) {
-  const rgszLines = szText.split('\n');
-  for (let nIndex = nFrom - 1; nIndex < rgszLines.length; nIndex++) {
-    if (rgszLines[nIndex].startsWith(szStart)) {
-      return nIndex + 1;
+function lineOf(text, start, fromIndex = 1) {
+  const lines = text.split('\n');
+  for (let index = fromIndex - 1; index < lines.length; index++) {
+    if (lines[index].startsWith(start)) {
+      return index + 1;
     }
   }
-  throw new Error(`No line starts with ${szStart}`);
+  throw new Error(`No line starts with ${start}`);
 }
 
-function AssertFileError(szText, nLine, rePattern) {
-  assert.throws(() => FileFormat.Parse(szText), (Caught) => {
-    assert.equal(Caught.nLine, nLine, `line of "${Caught.message}"`);
-    assert.match(Caught.message, rePattern);
-    if (nLine > 0) {
-      assert.match(Caught.message, new RegExp(`^Line ${nLine}: `));
+function assertFileError(text, lineNumber, rePattern) {
+  assert.throws(() => fileFormat.parse(text), (caught) => {
+    assert.equal(caught.lineNumber, lineNumber, `line of "${caught.message}"`);
+    assert.match(caught.message, rePattern);
+    if (lineNumber > 0) {
+      assert.match(caught.message, new RegExp(`^Line ${lineNumber}: `));
     }
     return true;
   });
 }
 
 test('fixtures parse and are in canonical form', () => {
-  const Global = FileFormat.Parse(g_szGlobalFixture);
-  assert.equal(Global.szKind, 'global');
-  assert.equal(Global.szName, 'Sample world');
-  assert.equal(Global.Landmarks.size, 2);
-  assert.equal(Global.rgLabels.length, 2);
-  assert.deepEqual(Global.rgOverlays.map((Overlay) => Overlay.szId), ['river1', 'road1', 'trail1']);
-  assert.equal(Global.Landmarks.get(Global.rgOverlays[1].rgnTiles[0]).szNotes, 'Capital of the "north"');
-  assert.equal(Global.nRevision, 0);
-  assert.equal(FileFormat.Write(Global), g_szGlobalFixture);
+  const global = fileFormat.parse(GLOBAL_FIXTURE);
+  assert.equal(global.kind, 'global');
+  assert.equal(global.name, 'Sample world');
+  assert.equal(global.landmarks.size, 2);
+  assert.equal(global.labels.length, 2);
+  assert.deepEqual(global.overlays.map((overlay) => overlay.id), ['river1', 'road1', 'trail1']);
+  assert.equal(global.landmarks.get(global.overlays[1].tileIndices[0]).notes, 'Capital of the "north"');
+  assert.equal(global.revision, 0);
+  assert.equal(fileFormat.write(global), GLOBAL_FIXTURE);
 
-  const Local = FileFormat.Parse(g_szLocalFixture);
-  assert.equal(Local.szKind, 'local');
-  assert.equal(Local.Local.szScale, 'M');
-  assert.equal(Local.nTiles, 96);
-  assert.equal(Local.rgOverlays[0].rgnTiles.length, 7);
-  assert.equal(FileFormat.Write(Local), g_szLocalFixture);
+  const local = fileFormat.parse(LOCAL_FIXTURE);
+  assert.equal(local.kind, 'local');
+  assert.equal(local.local.scaleName, 'M');
+  assert.equal(local.tileCount, 96);
+  assert.equal(local.overlays[0].tileIndices.length, 7);
+  assert.equal(fileFormat.write(local), LOCAL_FIXTURE);
 });
 
 test('version 2 files round trip and version 1 and unknown versions are rejected', () => {
-  const rgDocs = [
-    Model.CreateGlobalMap({ nPanelHexes: 4 }),
-    Model.CreatePanelMap({ nPanelHexes: 2, szPanel: Coordinates.PanelIdByName('Alpha'), szTileScale: 'M' }),
-    Model.CreateLocalMap({ nWidth: 3, nHeight: 3, szSystem: 'regional', szScale: 'M',
-      Anchor: Coordinates.ParseUniversal('Eta 0.0E 0.0N') }),
+  const docs = [
+    model.createGlobalMap({ panelHexes: 4 }),
+    model.createPanelMap({ panelHexes: 2, panelId: coordinates.panelIdByName('Alpha'), tileScale: 'M' }),
+    model.createLocalMap({ width: 3, height: 3, systemName: 'regional', scaleName: 'M',
+      anchor: coordinates.parseUniversal('Eta 0.0E 0.0N') }),
   ];
-  for (const Doc of rgDocs) {
-    const szText = FileFormat.Write(Doc);
-    assert.ok(szText.startsWith('# RPGMAP 2\n'));
-    assert.equal(FileFormat.Parse(szText).nVersion, 2);
-    for (const nVersion of [0, 1, 3, 99]) {
-      const szOtherVersion = szText.replace('# RPGMAP 2', `# RPGMAP ${nVersion}`);
-      const reWarning = nVersion < 2
-        ? new RegExp(`Older map file version ${nVersion} is no longer supported\\. Expected "# RPGMAP 2"`)
-        : new RegExp(`Newer map file version ${nVersion} is not recognized by this editor\\. Expected "# RPGMAP 2"`);
-      AssertFileError(szOtherVersion, 1, reWarning);
-      AssertFileError('\n\n' + szOtherVersion, 3, reWarning);
+  for (const doc of docs) {
+    const text = fileFormat.write(doc);
+    assert.ok(text.startsWith('# RPGMAP 2\n'));
+    assert.equal(fileFormat.parse(text).versionNumber, 2);
+    for (const versionNumber of [0, 1, 3, 99]) {
+      const otherVersion = text.replace('# RPGMAP 2', `# RPGMAP ${versionNumber}`);
+      const reWarning = versionNumber < 2
+        ? new RegExp(`Older map file version ${versionNumber} is no longer supported\\. Expected "# RPGMAP 2"`)
+        : new RegExp(`Newer map file version ${versionNumber} is not recognized by this editor\\. Expected "# RPGMAP 2"`);
+      assertFileError(otherVersion, 1, reWarning);
+      assertFileError('\n\n' + otherVersion, 3, reWarning);
     }
   }
 });
 
 test('global round trips: demo terrain at n = 4, 24 XL and 4 L, with every item kind', () => {
-  for (const [nPanelHexes, szTileScale] of [[4, 'XL'], [24, 'XL'], [4, 'L']]) {
-    const Doc = Model.CreateGlobalMap({ nPanelHexes, szTileScale, szName: `World ${nPanelHexes}${szTileScale}` });
-    Doc.rgnTerrain.set(View.DemoTerrain(Doc.Topo, 2));
+  for (const [panelHexes, tileScale] of [[4, 'XL'], [24, 'XL'], [4, 'L']]) {
+    const doc = model.createGlobalMap({ panelHexes, tileScale, name: `World ${panelHexes}${tileScale}` });
+    doc.terrainIds.set(view.demoTerrain(doc.topo, 2));
     // Items on partial tiles and across seams.
-    const nPartial = Doc.Topo.rgTiles.find((Tile) => Tile.fPartial).nIndex;
-    const nAcross = Array.from(Topology.Neighbors(Doc.Topo, nPartial))
-      .find((nOther) => Doc.Topo.rgTiles[nOther].szPanel !== Doc.Topo.rgTiles[nPartial].szPanel);
-    Model.SetLandmark(Doc, nPartial, { szType: 'castle', szName: 'Edge Keep', szNotes: 'On a seam' });
-    Model.SetLandmark(Doc, Doc.nTiles - 1, { szType: 'ruins', szName: 'Ünïcode ☃ ruin' });
-    Model.AddLabel(Doc, { nTile: nAcross, szText: 'Across', szCategory: 'location', dSize: 12.5, dRotation: 33.25 });
-    Model.AddOverlay(Doc, { szType: 'river', szName: 'Seam River', rgnTiles: [nPartial, nAcross] });
-    Model.AddOverlay(Doc, { szType: 'road', szId: 'old-road_2', szStyle: 'dirt', rgnTiles: [5] });
-    const szText = RoundTrip(Doc);
-    assert.ok(/^[\x20-\x7e\n]*$/.test(szText), 'printable ASCII only');
+    const partial = doc.topo.tiles.find((tile) => tile.isPartial).index;
+    const across = Array.from(topology.neighbors(doc.topo, partial))
+      .find((otherIndex) => doc.topo.tiles[otherIndex].panelId !== doc.topo.tiles[partial].panelId);
+    model.setLandmark(doc, partial, { type: 'castle', name: 'Edge Keep', notes: 'On a seam' });
+    model.setLandmark(doc, doc.tileCount - 1, { type: 'ruins', name: 'Ünïcode ☃ ruin' });
+    model.addLabel(doc, { tileIndex: across, text: 'Across', category: 'location', size: 12.5, rotation: 33.25 });
+    model.addOverlay(doc, { type: 'river', name: 'Seam River', tileIndices: [partial, across] });
+    model.addOverlay(doc, { type: 'road', id: 'old-road_2', style: 'dirt', tileIndices: [5] });
+    const text = roundTrip(doc);
+    assert.ok(/^[\x20-\x7e\n]*$/.test(text), 'printable ASCII only');
   }
 });
 
 test('local round trips for every scale', () => {
-  const Anchor = Coordinates.ParseUniversal('Gamma 123.4W 456.7N');
-  for (const szSystem of ['regional', 'local']) {
-    for (const szScale of ['S', 'M', 'L', 'XL']) {
-      const Doc = Model.CreateLocalMap({ nWidth: 9, nHeight: 6, szSystem, szScale, Anchor, szName: `${szSystem} ${szScale}` });
-      for (let nTile = 0; nTile < Doc.nTiles; nTile++) {
-        Doc.rgnTerrain[nTile] = nTile % Terrain.g_rgTerrains.length;
+  const anchor = coordinates.parseUniversal('Gamma 123.4W 456.7N');
+  for (const systemName of ['regional', 'local']) {
+    for (const scaleName of ['S', 'M', 'L', 'XL']) {
+      const doc = model.createLocalMap({ width: 9, height: 6, systemName, scaleName, anchor, name: `${systemName} ${scaleName}` });
+      for (let tileIndex = 0; tileIndex < doc.tileCount; tileIndex++) {
+        doc.terrainIds[tileIndex] = tileIndex % terrain.TERRAINS.length;
       }
-      Model.SetLandmark(Doc, 0, { szType: 'village', szName: 'Corner' });
-      Model.SetLandmark(Doc, Doc.nTiles - 1, { szType: 'dungeon' });
-      Model.AddLabel(Doc, { nTile: 10, szText: 'Middle', szCategory: 'region' });
-      Model.AddOverlay(Doc, { szType: 'trail', rgnTiles: [0, ...Model.Neighbors(Doc, 0).slice(0, 1)] });
-      RoundTrip(Doc);
+      model.setLandmark(doc, 0, { type: 'village', name: 'Corner' });
+      model.setLandmark(doc, doc.tileCount - 1, { type: 'dungeon' });
+      model.addLabel(doc, { tileIndex: 10, text: 'Middle', category: 'region' });
+      model.addOverlay(doc, { type: 'trail', tileIndices: [0, ...model.neighbors(doc, 0).slice(0, 1)] });
+      roundTrip(doc);
     }
   }
 });
 
 test('every tile location written at n = 24 L snaps back to the same tile', () => {
-  const Topo = Topology.Build(24, 'L');
-  const nDecimals = FileFormat.CoordinateDecimals(Topo.dD * Topo.dMilesPerEdge);
-  assert.equal(nDecimals, 1);
-  for (let nTile = 0; nTile < Topo.nTiles; nTile += 7) {
-    const szText = Coordinates.FormatUniversal(Coordinates.TileToUniversal(Topo, nTile), nDecimals);
-    assert.equal(Coordinates.UniversalToTile(Topo, Coordinates.ParseUniversal(szText)), nTile, szText);
+  const topo = topology.build(24, 'L');
+  const decimals = fileFormat.coordinateDecimals(topo.d * topo.milesPerEdge);
+  assert.equal(decimals, 1);
+  for (let tileIndex = 0; tileIndex < topo.tileCount; tileIndex += 7) {
+    const text = coordinates.formatUniversal(coordinates.tileToUniversal(topo, tileIndex), decimals);
+    assert.equal(coordinates.universalToTile(topo, coordinates.parseUniversal(text)), tileIndex, text);
   }
 });
 
 test('CRLF, comments, blank lines, a missing legend and custom legend characters are accepted', () => {
-  const szCommented = g_szGlobalFixture.split('\n')
-    .flatMap((szLine) => szLine.startsWith('[') ? ['# a comment', '', `  ${szLine}  `] : [szLine])
+  const commented = GLOBAL_FIXTURE.split('\n')
+    .flatMap((line) => line.startsWith('[') ? ['# a comment', '', `  ${line}  `] : [line])
     .join('\r\n');
-  AssertSameDocument(FileFormat.Parse('\n\n' + szCommented), FileFormat.Parse(g_szGlobalFixture));
+  assertSameDocument(fileFormat.parse('\n\n' + commented), fileFormat.parse(GLOBAL_FIXTURE));
 
-  const szNoLegend = g_szLocalFixture.replace(/\[legend\][^[]*/, '');
-  AssertSameDocument(FileFormat.Parse(szNoLegend), FileFormat.Parse(g_szLocalFixture));
+  const noLegend = LOCAL_FIXTURE.replace(/\[legend\][^[]*/, '');
+  assertSameDocument(fileFormat.parse(noLegend), fileFormat.parse(LOCAL_FIXTURE));
 
-  const szCustom = g_szLocalFixture.replace('~ water', 'W water').replace(/^~+/gm, (szRun) => 'W'.repeat(szRun.length));
-  AssertSameDocument(FileFormat.Parse(szCustom), FileFormat.Parse(g_szLocalFixture));
+  const custom = LOCAL_FIXTURE.replace('~ water', 'W water').replace(/^~+/gm, (run) => 'W'.repeat(run.length));
+  assertSameDocument(fileFormat.parse(custom), fileFormat.parse(LOCAL_FIXTURE));
 });
 
 test('optional item fields take their defaults', () => {
-  const szText = g_szLocalFixture.replace(/\[labels\][\s\S]*$/, '') +
+  const text = LOCAL_FIXTURE.replace(/\[labels\][\s\S]*$/, '') +
     '[labels]\nEta 140.3W 315.0N city "Defaults"\n\n[overlays]\nriver : Eta 176.7W 282.0N\n'.replace('river :', 'river r :');
-  const Doc = FileFormat.Parse(szText);
-  assert.deepEqual({ ...Doc.rgLabels[0] }, { szId: 'label1', nTile: Doc.rgLabels[0].nTile, szText: 'Defaults', szCategory: 'city', dSize: 18, dRotation: 0, dDx: 0, dDy: 0 });
-  assert.deepEqual({ ...Doc.rgOverlays[0], rgnTiles: [...Doc.rgOverlays[0].rgnTiles] },
-    { szId: 'r', szType: 'river', szName: '', szStyle: '', rgnTiles: [Doc.rgOverlays[0].rgnTiles[0]] });
+  const doc = fileFormat.parse(text);
+  assert.deepEqual({ ...doc.labels[0] }, { id: 'label1', tileIndex: doc.labels[0].tileIndex, text: 'Defaults', category: 'city', size: 18, rotation: 0, dx: 0, dy: 0 });
+  assert.deepEqual({ ...doc.overlays[0], tileIndices: [...doc.overlays[0].tileIndices] },
+    { id: 'r', type: 'river', name: '', style: '', tileIndices: [doc.overlays[0].tileIndices[0]] });
 });
 
 test('quoting escapes backslash, quote and non-ASCII and tokenizing reverses it', () => {
-  const szText = 'a "b" \\ c ☃ é\u00a0';
-  const szQuoted = FileFormat.Quote(szText);
-  assert.equal(szQuoted, '"a \\"b\\" \\\\ c \\u2603 \\u00e9\\u00a0"');
-  assert.deepEqual(FileFormat.Tokenize(`x k=v n=${szQuoted} ${szQuoted};:`, 1), [
-    { szKind: 'word', szValue: 'x' },
-    { szKind: 'pair', szKey: 'k', szValue: 'v' },
-    { szKind: 'pair', szKey: 'n', szValue: szText },
-    { szKind: 'string', szValue: szText },
-    { szKind: 'punct', szValue: ';' },
-    { szKind: 'punct', szValue: ':' },
+  const text = 'a "b" \\ c ☃ é\u00a0';
+  const quoted = fileFormat.quote(text);
+  assert.equal(quoted, '"a \\"b\\" \\\\ c \\u2603 \\u00e9\\u00a0"');
+  assert.deepEqual(fileFormat.tokenize(`x k=v n=${quoted} ${quoted};:`, 1), [
+    { kind: 'word', value: 'x' },
+    { kind: 'pair', key: 'k', value: 'v' },
+    { kind: 'pair', key: 'n', value: text },
+    { kind: 'string', value: text },
+    { kind: 'punct', value: ';' },
+    { kind: 'punct', value: ':' },
   ]);
 });
 
 test('errors report the offending line', () => {
-  const nMap = LineOf(g_szGlobalFixture, '[map]');
-  const nAlpha = LineOf(g_szGlobalFixture, '[panel Alpha]');
-  const nFirstRow = nAlpha + 5;
-  const nLandmark = LineOf(g_szGlobalFixture, '[landmarks]') + 1;
-  const nLabel = LineOf(g_szGlobalFixture, '[labels]') + 1;
-  const nRiver = LineOf(g_szGlobalFixture, 'river ');
-  const nLegend = LineOf(g_szGlobalFixture, '~ water');
+  const map = lineOf(GLOBAL_FIXTURE, '[map]');
+  const alpha = lineOf(GLOBAL_FIXTURE, '[panel Alpha]');
+  const firstRow = alpha + 5;
+  const landmark = lineOf(GLOBAL_FIXTURE, '[landmarks]') + 1;
+  const label = lineOf(GLOBAL_FIXTURE, '[labels]') + 1;
+  const river = lineOf(GLOBAL_FIXTURE, 'river ');
+  const legend = lineOf(GLOBAL_FIXTURE, '~ water');
 
-  AssertFileError('hello', 1, /Not a map file/);
-  AssertFileError(WithLine(nMap + 1, () => 'kind = flat'), nMap + 1, /"global", "panel" or "local"/);
-  AssertFileError(WithLine(nMap + 3, () => 'panelHexes = 5'), nMap, /even/);
-  AssertFileError(WithLine(nMap + 3, () => 'color = red'), nMap + 3, /Unknown key "color"/);
-  AssertFileError(WithLine(nLegend, () => '~ lava'), nLegend, /Unknown terrain "lava"/);
-  AssertFileError(WithLine(nLegend, () => '. water'), nLegend + 4, /defined twice/);
-  AssertFileError(WithLine(nAlpha + 1, () => 'columns = 3'), nAlpha + 1, /columns = 4/);
-  AssertFileError(WithLine(nFirstRow, (szLine) => szLine + '~'), nFirstRow, /5 characters wide, expected 4/);
-  AssertFileError(WithLine(nFirstRow + 1, (szLine) => 'Q' + szLine.slice(1)), nFirstRow + 1, /Unknown terrain character "Q" in column 1/);
-  const szRow = g_szGlobalFixture.split('\n')[nFirstRow - 1];
-  const nReserved = szRow.indexOf('_');
-  assert.ok(nReserved >= 0, 'the fixture has a reserved cell in Alpha row 1');
-  AssertFileError(WithLine(nFirstRow, (szLine) => szLine.slice(0, nReserved) + '~' + szLine.slice(nReserved + 1)), nFirstRow, /not a tile of this panel/);
-  const nTileColumn = szRow.search(/[^_]/);
-  AssertFileError(WithLine(nFirstRow, (szLine) => szLine.slice(0, nTileColumn) + '_' + szLine.slice(nTileColumn + 1)), nFirstRow, /is a tile/);
-  AssertFileError(WithLine(nAlpha, () => '[panel Omega]'), nAlpha, /Unknown panel "Omega"/);
-  AssertFileError(WithLine(nAlpha, () => '[panel Beta]'), LineOf(g_szGlobalFixture, '[panel Beta]'), /Duplicate section \[panel Beta\] \(first on line/);
-  AssertFileError(g_szGlobalFixture.replace(/\[panel Mu\][^[]*/, ''), 0, /Missing panel sections: Mu/);
-  AssertFileError(WithLine(nLandmark, (szLine) => szLine.replace('city', 'spaceport')), nLandmark, /Unknown landmark type/);
-  AssertFileError(WithLine(nLandmark + 1, () => g_szGlobalFixture.split('\n')[nLandmark - 1]), nLandmark + 1, /already exists/);
-  AssertFileError(WithLine(nLandmark, (szLine) => szLine.replace(/^Iota \S+/, 'Iota 5000.0W')), nLandmark, /No tile within/);
-  AssertFileError(WithLine(nLandmark + 1, (szLine) => szLine.replace(/"$/, '')), nLandmark + 1, /Unterminated/);
-  AssertFileError(WithLine(nLabel, (szLine) => szLine.replace('rot=-15', 'rot=steep')), nLabel, /"rot" must be a number/);
-  AssertFileError(WithLine(nLabel, (szLine) => szLine.replace('rot=-15', 'tilt=3')), nLabel, /Unknown option "tilt"/);
-  AssertFileError(WithLine(nRiver, (szLine) => szLine.replace(/; 0\.0E 216\.0N/, '')), nRiver, /not adjacent/);
-  AssertFileError(WithLine(nRiver, (szLine) => szLine.replace(' : ', ' ')), nRiver, /Missing ":"/);
-  AssertFileError(WithLine(nRiver, (szLine) => szLine + ';'), nRiver, /Empty overlay point 5/);
-  AssertFileError(g_szGlobalFixture + '\n[weather]\n', LineOf(g_szGlobalFixture + '\n[weather]\n', '[weather]'), /Unknown section/);
-  AssertFileError(g_szLocalFixture.replace(/\[local\][^[]*/, ''), 0, /Missing \[local\]/);
-  AssertFileError(g_szLocalFixture.replace('size = M', 'size = XXL'), LineOf(g_szLocalFixture, 'size = M'), /Unknown regional size "XXL"/);
+  assertFileError('hello', 1, /Not a map file/);
+  assertFileError(withLine(map + 1, () => 'kind = flat'), map + 1, /"global", "panel" or "local"/);
+  assertFileError(withLine(map + 3, () => 'panelHexes = 5'), map, /even/);
+  assertFileError(withLine(map + 3, () => 'color = red'), map + 3, /Unknown key "color"/);
+  assertFileError(withLine(legend, () => '~ lava'), legend, /Unknown terrain "lava"/);
+  assertFileError(withLine(legend, () => '. water'), legend + 4, /defined twice/);
+  assertFileError(withLine(alpha + 1, () => 'columns = 3'), alpha + 1, /columns = 4/);
+  assertFileError(withLine(firstRow, (line) => line + '~'), firstRow, /5 characters wide, expected 4/);
+  assertFileError(withLine(firstRow + 1, (line) => 'Q' + line.slice(1)), firstRow + 1, /Unknown terrain character "Q" in column 1/);
+  const row = GLOBAL_FIXTURE.split('\n')[firstRow - 1];
+  const reserved = row.indexOf('_');
+  assert.ok(reserved >= 0, 'the fixture has a reserved cell in Alpha row 1');
+  assertFileError(withLine(firstRow, (line) => line.slice(0, reserved) + '~' + line.slice(reserved + 1)), firstRow, /not a tile of this panel/);
+  const tileColumn = row.search(/[^_]/);
+  assertFileError(withLine(firstRow, (line) => line.slice(0, tileColumn) + '_' + line.slice(tileColumn + 1)), firstRow, /is a tile/);
+  assertFileError(withLine(alpha, () => '[panel Omega]'), alpha, /Unknown panel "Omega"/);
+  assertFileError(withLine(alpha, () => '[panel Beta]'), lineOf(GLOBAL_FIXTURE, '[panel Beta]'), /Duplicate section \[panel Beta\] \(first on line/);
+  assertFileError(GLOBAL_FIXTURE.replace(/\[panel Mu\][^[]*/, ''), 0, /Missing panel sections: Mu/);
+  assertFileError(withLine(landmark, (line) => line.replace('city', 'spaceport')), landmark, /Unknown landmark type/);
+  assertFileError(withLine(landmark + 1, () => GLOBAL_FIXTURE.split('\n')[landmark - 1]), landmark + 1, /already exists/);
+  assertFileError(withLine(landmark, (line) => line.replace(/^Iota \S+/, 'Iota 5000.0W')), landmark, /No tile within/);
+  assertFileError(withLine(landmark + 1, (line) => line.replace(/"$/, '')), landmark + 1, /Unterminated/);
+  assertFileError(withLine(label, (line) => line.replace('rot=-15', 'rot=steep')), label, /"rot" must be a number/);
+  assertFileError(withLine(label, (line) => line.replace('rot=-15', 'tilt=3')), label, /Unknown option "tilt"/);
+  assertFileError(withLine(river, (line) => line.replace(/; 0\.0E 216\.0N/, '')), river, /not adjacent/);
+  assertFileError(withLine(river, (line) => line.replace(' : ', ' ')), river, /Missing ":"/);
+  assertFileError(withLine(river, (line) => line + ';'), river, /Empty overlay point 5/);
+  assertFileError(GLOBAL_FIXTURE + '\n[weather]\n', lineOf(GLOBAL_FIXTURE + '\n[weather]\n', '[weather]'), /Unknown section/);
+  assertFileError(LOCAL_FIXTURE.replace(/\[local\][^[]*/, ''), 0, /Missing \[local\]/);
+  assertFileError(LOCAL_FIXTURE.replace('size = M', 'size = XXL'), lineOf(LOCAL_FIXTURE, 'size = M'), /Unknown regional size "XXL"/);
 });
 
 test('file names come from the map name', () => {
-  const Doc = Model.CreateGlobalMap({ nPanelHexes: 4, szName: '  My World: Part/2 ' });
-  assert.equal(FileFormat.FileName(Doc), 'My-World_-Part_2.map.txt');
-  assert.equal(FileFormat.FileName(Model.CreateGlobalMap({ nPanelHexes: 4 })), 'map.map.txt');
+  const doc = model.createGlobalMap({ panelHexes: 4, name: '  My World: Part/2 ' });
+  assert.equal(fileFormat.fileName(doc), 'My-World_-Part_2.map.txt');
+  assert.equal(fileFormat.fileName(model.createGlobalMap({ panelHexes: 4 })), 'map.map.txt');
 });

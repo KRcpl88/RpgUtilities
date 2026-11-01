@@ -1,145 +1,145 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { LoadModules } = require('./_load.cjs');
-const { Util, Projection, Lattice, Coordinates, Model, Terrain, View, Regions } = LoadModules();
+const { loadModules } = require('./_load.cjs');
+const { Util: util, Projection: projection, Lattice: lattice, Coordinates: coordinates, Model: model, Terrain: terrain, View: view, Regions: regions } = loadModules();
 
-function LocalMap(nWidth = 9, nHeight = 9) {
-  return Model.CreateLocalMap({ nWidth, nHeight, szSystem: 'regional', szScale: 'M', Anchor: Coordinates.ParseUniversal('Eta 0E 0N') });
+function localMap(width = 9, height = 9) {
+  return model.createLocalMap({ width, height, systemName: 'regional', scaleName: 'M', anchor: coordinates.parseUniversal('Eta 0E 0N') });
 }
 
-function Area(Region) {
-  return Region.rgrgrgdLoops.reduce((dSum, Loop) => dSum + Util.PolygonArea(Loop), 0);
+function area(region) {
+  return region.loops.reduce((sum, loop) => sum + util.polygonArea(loop), 0);
 }
 
 test('one local hex yields one closed six-edge region and no exterior shoreline', () => {
-  const Doc = LocalMap(1, 1);
-  Model.SetTerrain(Doc, 0, 4);
-  const Result = Regions.Build(Doc);
-  assert.equal(Result.rgRegions.length, 1);
-  assert.equal(Result.rgRegions[0].rgrgrgdLoops.length, 1);
-  const Loop = Result.rgRegions[0].rgrgrgdLoops[0];
-  assert.equal(Loop.length, 7);
-  assert.deepEqual(Loop[0], Loop.at(-1));
-  assert.ok(Math.abs(Area(Result.rgRegions[0]) - Lattice.HexArea(1)) < 1e-12);
-  assert.equal(Result.rgEdges.length, 6);
-  assert.deepEqual(Result.rgShorelines, []);
+  const doc = localMap(1, 1);
+  model.setTerrain(doc, 0, 4);
+  const result = regions.build(doc);
+  assert.equal(result.regions.length, 1);
+  assert.equal(result.regions[0].loops.length, 1);
+  const loop = result.regions[0].loops[0];
+  assert.equal(loop.length, 7);
+  assert.deepEqual(loop[0], loop.at(-1));
+  assert.ok(Math.abs(area(result.regions[0]) - lattice.hexArea(1)) < 1e-12);
+  assert.equal(result.edges.length, 6);
+  assert.deepEqual(result.shorelines, []);
 });
 
 test('a same-terrain ring retains its hole; disconnected equal terrain stays separate', () => {
-  const Doc = LocalMap();
-  const nCenter = Model.LocalTileIndex(Doc, 4, 4);
-  const Ring = Model.Neighbors(Doc, nCenter);
-  Ring.forEach((nTile) => Model.SetTerrain(Doc, nTile, 10));
-  const Result = Regions.Build(Doc);
-  const Forest = Result.rgRegions.find((Region) => Region.nTerrainId === 10);
-  assert.equal(Result.rgRegions.length, 3);
-  assert.equal(Forest.rgnTiles.length, 6);
-  assert.equal(Forest.rgrgrgdLoops.length, 2);
-  assert.ok(Forest.rgrgrgdLoops.some((Loop) => Util.PolygonArea(Loop) > 0));
-  assert.ok(Forest.rgrgrgdLoops.some((Loop) => Util.PolygonArea(Loop) < 0));
-  assert.ok(Math.abs(Area(Forest) - 6 * Lattice.HexArea(1)) < 1e-10);
-  assert.equal(Result.rgShorelines.length, 2);
-  assert.ok(Result.rgShorelines.every((Path) => Path.fClosed));
-  assert.equal(Result.rgShorelines.reduce((nSum, Path) => nSum + Path.rgrgdPoints.length - 1, 0), 24);
-  Model.SetTerrain(Doc, 0, 10);
-  assert.equal(Regions.Build(Doc).rgRegions.filter((Region) => Region.nTerrainId === 10).length, 2);
+  const doc = localMap();
+  const center = model.localTileIndex(doc, 4, 4);
+  const ring = model.neighbors(doc, center);
+  ring.forEach((tileIndex) => model.setTerrain(doc, tileIndex, 10));
+  const result = regions.build(doc);
+  const forest = result.regions.find((region) => region.terrainId === 10);
+  assert.equal(result.regions.length, 3);
+  assert.equal(forest.tileIndices.length, 6);
+  assert.equal(forest.loops.length, 2);
+  assert.ok(forest.loops.some((loop) => util.polygonArea(loop) > 0));
+  assert.ok(forest.loops.some((loop) => util.polygonArea(loop) < 0));
+  assert.ok(Math.abs(area(forest) - 6 * lattice.hexArea(1)) < 1e-10);
+  assert.equal(result.shorelines.length, 2);
+  assert.ok(result.shorelines.every((path) => path.isClosed));
+  assert.equal(result.shorelines.reduce((sum, path) => sum + path.points.length - 1, 0), 24);
+  model.setTerrain(doc, 0, 10);
+  assert.equal(regions.build(doc).regions.filter((region) => region.terrainId === 10).length, 2);
 });
 
 test('coasts separate land from any water terrain, never colour changes or the export border', () => {
-  const Doc = LocalMap(10, 8);
-  for (let nTile = 0; nTile < Doc.nTiles; nTile++) {
-    const [nX, nY] = Model.LocalTileXY(Doc, nTile);
-    Model.SetTerrain(Doc, nTile, nX < 5 ? nY % 4 : 4 + nY % 3);
+  const doc = localMap(10, 8);
+  for (let tileIndex = 0; tileIndex < doc.tileCount; tileIndex++) {
+    const [columnIndex, rowIndex] = model.localTileXY(doc, tileIndex);
+    model.setTerrain(doc, tileIndex, columnIndex < 5 ? rowIndex % 4 : 4 + rowIndex % 3);
   }
-  const Result = Regions.Build(Doc);
-  assert.equal(Result.rgShorelines.length, 1);
-  assert.equal(Result.rgShorelines[0].fClosed, false);
-  const Expected = Result.rgEdges.filter((Edge) => Edge.rgnCells.length === 2
-    && Terrain.IsWater(Result.rgCells[Edge.rgnCells[0]].nTerrainId) !== Terrain.IsWater(Result.rgCells[Edge.rgnCells[1]].nTerrainId));
-  assert.equal(Result.rgShorelines[0].rgrgdPoints.length - 1, Expected.length);
-  const Smoothed = Regions.SmoothPath(Result.rgShorelines[0]);
-  assert.deepEqual(Smoothed.rgrgdPoints[0], Result.rgShorelines[0].rgrgdPoints[0]);
-  assert.deepEqual(Smoothed.rgrgdPoints.at(-1), Result.rgShorelines[0].rgrgdPoints.at(-1));
+  const result = regions.build(doc);
+  assert.equal(result.shorelines.length, 1);
+  assert.equal(result.shorelines[0].isClosed, false);
+  const expected = result.edges.filter((edge) => edge.cellIndices.length === 2
+    && terrain.isWater(result.cells[edge.cellIndices[0]].terrainId) !== terrain.isWater(result.cells[edge.cellIndices[1]].terrainId));
+  assert.equal(result.shorelines[0].points.length - 1, expected.length);
+  const smoothed = regions.smoothPath(result.shorelines[0]);
+  assert.deepEqual(smoothed.points[0], result.shorelines[0].points[0]);
+  assert.deepEqual(smoothed.points.at(-1), result.shorelines[0].points.at(-1));
 });
 
 test('Chaikin smoothing preserves closure, endpoints and convex panel containment', () => {
-  const Closed = { fClosed: true, rgrgdPoints: [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]] };
-  const Smooth = Regions.SmoothPath(Closed);
-  assert.equal(Smooth.rgrgdPoints.length, 17);
-  assert.deepEqual(Smooth.rgrgdPoints[0], Smooth.rgrgdPoints.at(-1));
-  assert.ok(Smooth.rgrgdPoints.every((Point) => Util.PointInConvex(Point, Closed.rgrgdPoints.slice(0, -1))));
-  assert.deepEqual(Regions.SmoothPath(Closed, 0), Closed);
-  assert.notEqual(Regions.SmoothPath(Closed, 0).rgrgdPoints, Closed.rgrgdPoints);
-  assert.throws(() => Regions.SmoothPath(Closed, 4), /0 to 3/);
+  const closed = { isClosed: true, points: [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]] };
+  const smooth = regions.smoothPath(closed);
+  assert.equal(smooth.points.length, 17);
+  assert.deepEqual(smooth.points[0], smooth.points.at(-1));
+  assert.ok(smooth.points.every((point) => util.pointInConvex(point, closed.points.slice(0, -1))));
+  assert.deepEqual(regions.smoothPath(closed, 0), closed);
+  assert.notEqual(regions.smoothPath(closed, 0).points, closed.points);
+  assert.throws(() => regions.smoothPath(closed, 4), /0 to 3/);
 });
 
 test('clipped regions cover every global panel with closed loops at XL and L', () => {
-  for (const [nPanelHexes, szTileScale] of [[4, 'XL'], [24, 'XL'], [4, 'L']]) {
-    const Doc = Model.CreateGlobalMap({ nPanelHexes, szTileScale });
-    Doc.rgnTerrain.set(View.DemoTerrain(Doc.Topo, 1));
-    for (const szPanel of Object.keys(Projection.Build().Panels)) {
-      const Result = Regions.Build(Doc, szPanel);
-      assert.ok(Math.abs(Result.rgRegions.reduce((dSum, Region) => dSum + Area(Region), 0)
-        - Util.PolygonArea(Result.rgrgdOutline)) < 1e-5, `${nPanelHexes} ${szTileScale} ${szPanel}`);
-      for (const Region of Result.rgRegions) {
-        assert.ok(Region.rgrgrgdLoops.every((Loop) => Loop.length >= 4 && Util.Distance(Loop[0], Loop.at(-1)) === 0));
-        assert.ok(Region.rgnTiles.every((nTile) => Model.GetTerrain(Doc, nTile) === Region.nTerrainId));
+  for (const [panelHexes, tileScale] of [[4, 'XL'], [24, 'XL'], [4, 'L']]) {
+    const doc = model.createGlobalMap({ panelHexes, tileScale });
+    doc.terrainIds.set(view.demoTerrain(doc.topo, 1));
+    for (const panelId of Object.keys(projection.build().panels)) {
+      const result = regions.build(doc, panelId);
+      assert.ok(Math.abs(result.regions.reduce((sum, region) => sum + area(region), 0)
+        - util.polygonArea(result.outline)) < 1e-5, `${panelHexes} ${tileScale} ${panelId}`);
+      for (const region of result.regions) {
+        assert.ok(region.loops.every((loop) => loop.length >= 4 && util.pointDistance(loop[0], loop.at(-1)) === 0));
+        assert.ok(region.tileIndices.every((tileIndex) => model.getTerrain(doc, tileIndex) === region.terrainId));
       }
-      assert.ok(Result.rgrgdPoints.every((Point) => Util.PointInConvex(Point, Result.rgrgdOutline, 1e-7)));
-      for (const Path of Result.rgShorelines) {
-        assert.ok(Regions.SmoothPath(Path).rgrgdPoints.every((Point) => Util.PointInConvex(Point, Result.rgrgdOutline, 1e-7)));
+      assert.ok(result.points.every((point) => util.pointInConvex(point, result.outline, 1e-7)));
+      for (const path of result.shorelines) {
+        assert.ok(regions.smoothPath(path).points.every((point) => util.pointInConvex(point, result.outline, 1e-7)));
       }
     }
   }
 });
 
 test('n=24 L export cancels interior edges rather than retaining individual tile rings', () => {
-  const Doc = Model.CreateGlobalMap({ nPanelHexes: 24, szTileScale: 'L' });
-  const Result = Regions.Build(Doc, Coordinates.PanelIdByName('Alpha'));
-  assert.ok(Result.rgCells.length > 10000);
-  assert.equal(Result.rgRegions.length, 1);
-  assert.equal(Result.rgRegions[0].rgrgrgdLoops.length, 1);
-  assert.ok(Result.rgRegions[0].rgrgrgdLoops[0].length < 1000);
-  assert.deepEqual(Result.rgShorelines, []);
+  const doc = model.createGlobalMap({ panelHexes: 24, tileScale: 'L' });
+  const result = regions.build(doc, coordinates.panelIdByName('Alpha'));
+  assert.ok(result.cells.length > 10000);
+  assert.equal(result.regions.length, 1);
+  assert.equal(result.regions[0].loops.length, 1);
+  assert.ok(result.regions[0].loops[0].length < 1000);
+  assert.deepEqual(result.shorelines, []);
 });
 
 test('equatorial export includes the neighbouring owner of each overhanging hex tip', () => {
-  const Doc = Model.CreateGlobalMap({ nPanelHexes: 4 });
-  const szOwner = Coordinates.PanelIdByName('Gamma'), szDraw = Coordinates.PanelIdByName('Beta');
-  const Tile = Doc.Topo.rgTiles.find((Item) => Item.szPanel === szOwner
-    && Item.nColumn === Doc.Topo.Panels[szOwner].nColumns - 1 && !Item.fPartial);
-  Model.SetTerrain(Doc, Tile.nIndex, 10);
-  const Result = Regions.Build(Doc, szDraw);
-  const Cell = Result.rgCells.find((Item) => Item.nTile === Tile.nIndex);
-  assert.ok(Cell, 'the Beta export includes the Gamma-owned tip');
-  assert.equal(Cell.nTerrainId, 10);
-  const dArea = Util.PolygonArea(Cell.rgnVertices.map((nIndex) => Result.rgrgdPoints[nIndex]));
-  assert.ok(dArea > 0 && dArea < Lattice.HexArea(1) / 4);
-  const TipRegion = Result.rgRegions.find((Region) => Region.nTerrainId === 10);
-  assert.deepEqual(TipRegion.rgnTiles, [Tile.nIndex]);
-  assert.ok(Result.rgShorelines.every((Path) => !Path.fClosed), 'no coastline is invented along the panel cut');
+  const doc = model.createGlobalMap({ panelHexes: 4 });
+  const owner = coordinates.panelIdByName('Gamma'), draw = coordinates.panelIdByName('Beta');
+  const tile = doc.topo.tiles.find((item) => item.panelId === owner
+    && item.column === doc.topo.panels[owner].columnCount - 1 && !item.isPartial);
+  model.setTerrain(doc, tile.index, 10);
+  const result = regions.build(doc, draw);
+  const cell = result.cells.find((item) => item.tileIndex === tile.index);
+  assert.ok(cell, 'the Beta export includes the Gamma-owned tip');
+  assert.equal(cell.terrainId, 10);
+  const area = util.polygonArea(cell.vertexIndices.map((index) => result.points[index]));
+  assert.ok(area > 0 && area < lattice.hexArea(1) / 4);
+  const tipRegion = result.regions.find((region) => region.terrainId === 10);
+  assert.deepEqual(tipRegion.tileIndices, [tile.index]);
+  assert.ok(result.shorelines.every((path) => !path.isClosed), 'no coastline is invented along the panel cut');
 });
 
 test('random local terrain partitions preserve area and topology without modifying the model', () => {
-  const Random = Util.CreateRng(140);
-  for (let nTrial = 0; nTrial < 20; nTrial++) {
-    const Doc = LocalMap(12, 12);
-    for (let nTile = 0; nTile < Doc.nTiles; nTile++) {
-      Model.SetTerrain(Doc, nTile, Math.floor(Random() * 17));
+  const random = util.createRng(140);
+  for (let trial = 0; trial < 20; trial++) {
+    const doc = localMap(12, 12);
+    for (let tileIndex = 0; tileIndex < doc.tileCount; tileIndex++) {
+      model.setTerrain(doc, tileIndex, Math.floor(random() * 17));
     }
-    const Before = Doc.rgnTerrain.slice(), nRevision = Doc.nRevision;
-    const Result = Regions.Build(Doc);
-    assert.equal(Result.rgCells.length, Doc.nTiles);
-    assert.ok(Math.abs(Result.rgRegions.reduce((dSum, Region) => dSum + Area(Region), 0) - Doc.nTiles * Lattice.HexArea(1)) < 1e-8);
-    assert.deepEqual(Doc.rgnTerrain, Before);
-    assert.equal(Doc.nRevision, nRevision);
+    const before = doc.terrainIds.slice(), revision = doc.revision;
+    const result = regions.build(doc);
+    assert.equal(result.cells.length, doc.tileCount);
+    assert.ok(Math.abs(result.regions.reduce((sum, region) => sum + area(region), 0) - doc.tileCount * lattice.hexArea(1)) < 1e-8);
+    assert.deepEqual(doc.terrainIds, before);
+    assert.equal(doc.revision, revision);
   }
 });
 
 test('region export rejects invalid scope and ambiguous boundaries explicitly', () => {
-  assert.throws(() => Regions.Build(LocalMap(), 'Alpha'), /panel/);
-  assert.throws(() => Regions.Build(Model.CreateGlobalMap({ nPanelHexes: 4 })), /panel/);
-  assert.throws(() => Regions.Build(Model.CreateGlobalMap({ nPanelHexes: 4 }), 'constructor'), /panel/);
-  assert.throws(() => Regions.TracePaths([{ nA: 0, nB: 1 }, { nA: 0, nB: 2 }], [[0, 0], [1, 0], [0, 1]]), /Ambiguous/);
+  assert.throws(() => regions.build(localMap(), 'Alpha'), /panel/);
+  assert.throws(() => regions.build(model.createGlobalMap({ panelHexes: 4 })), /panel/);
+  assert.throws(() => regions.build(model.createGlobalMap({ panelHexes: 4 }), 'constructor'), /panel/);
+  assert.throws(() => regions.tracePaths([{ indexA: 0, indexB: 1 }, { indexA: 0, indexB: 2 }], [[0, 0], [1, 0], [0, 1]]), /Ambiguous/);
 });

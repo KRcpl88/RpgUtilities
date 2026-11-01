@@ -1,73 +1,73 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { LoadModules } = require('./_load.cjs');
-const { Util, Projection, Coordinates, Model, View, SvgExport } = LoadModules();
+const { loadModules } = require('./_load.cjs');
+const { Util: util, Projection: projection, Coordinates: coordinates, Model: model, View: view, SvgExport: svgExport } = loadModules();
 
 test('equator segments lie on zero latitude and polar markers lie at true north/south', () => {
-  const Doc = Model.CreateGlobalMap({ nPanelHexes: 4 });
-  let nEquators = 0, nNorth = 0, nSouth = 0;
-  for (const szPanel of Doc.Topo.rgszPanels) {
-    const Reference = View.ReferenceGeometry(Doc, szPanel);
-    const Frame = Projection.Build().Frames[szPanel];
-    if (Frame.fEquatorial) {
-      assert.equal(Reference.rgrgdEquator.length, 2);
-      nEquators++;
+  const doc = model.createGlobalMap({ panelHexes: 4 });
+  let equators = 0, north = 0, south = 0;
+  for (const panelId of doc.topo.panelIds) {
+    const reference = view.referenceGeometry(doc, panelId);
+    const frame = projection.build().frames[panelId];
+    if (frame.isEquatorial) {
+      assert.equal(reference.equator.length, 2);
+      equators++;
     } else {
-      assert.equal(Reference.rgrgdEquator.length, 0);
+      assert.equal(reference.equator.length, 0);
     }
-    for (const Point of Reference.rgrgdEquator) {
-      const True = Coordinates.TrueCoordinates(Coordinates.MakeLocation(szPanel,
-        Point[0] * Doc.Topo.dMilesPerEdge, Point[1] * Doc.Topo.dMilesPerEdge), Doc.Topo.dMilesPerEdge);
-      assert.ok(Math.abs(True.dLatitude) < 1e-8);
-      assert.ok(Util.PointInConvex(Point, Frame.rgrgdPolygon));
+    for (const point of reference.equator) {
+      const trueLocation = coordinates.trueCoordinates(coordinates.makeLocation(panelId,
+        point[0] * doc.topo.milesPerEdge, point[1] * doc.topo.milesPerEdge), doc.topo.milesPerEdge);
+      assert.ok(Math.abs(trueLocation.latitude) < 1e-8);
+      assert.ok(util.pointInConvex(point, frame.polygon));
     }
-    for (const Pole of Reference.rgPoles) {
-      const True = Coordinates.TrueCoordinates(Coordinates.MakeLocation(szPanel,
-        Pole.rgdPoint[0] * Doc.Topo.dMilesPerEdge, Pole.rgdPoint[1] * Doc.Topo.dMilesPerEdge), Doc.Topo.dMilesPerEdge);
-      assert.ok(Math.abs(True.dLatitude - (Pole.szLabel === 'N' ? 90 : -90)) < 1e-6);
-      assert.ok(Util.PointInConvex(Pole.rgdPoint, Frame.rgrgdPolygon));
-      if (Pole.szLabel === 'N') nNorth++;
-      else nSouth++;
+    for (const pole of reference.poles) {
+      const trueLocation = coordinates.trueCoordinates(coordinates.makeLocation(panelId,
+        pole.point[0] * doc.topo.milesPerEdge, pole.point[1] * doc.topo.milesPerEdge), doc.topo.milesPerEdge);
+      assert.ok(Math.abs(trueLocation.latitude - (pole.label === 'N' ? 90 : -90)) < 1e-6);
+      assert.ok(util.pointInConvex(pole.point, frame.polygon));
+      if (pole.label === 'N') north++;
+      else south++;
     }
   }
-  assert.equal(nEquators, 6);
-  assert.equal(nNorth, 3);
-  assert.equal(nSouth, 3);
+  assert.equal(equators, 6);
+  assert.equal(north, 3);
+  assert.equal(south, 3);
 });
 
 test('reference layer exports red equators and labeled crosshair circles and can be disabled', () => {
-  for (const [szName, szReference] of [['Beta', 'equator'], ['Eta', 'pole-N'], ['Kappa', 'pole-S']]) {
-    const Doc = Model.CreatePanelMap({ szPanel: Coordinates.PanelIdByName(szName), nPanelHexes: 4 });
-    const Svg = SvgExport.Write(Doc);
-    assert.match(Svg, /id="layer-reference"[^>]+stroke="#d32f2f"/);
-    assert.ok(Svg.includes(`data-reference="${szReference}"`));
-    if (szReference !== 'equator') {
-      assert.match(Svg, /<circle[^>]+r="/);
-      assert.ok(Svg.includes(`>${szReference.slice(-1)}</text>`));
-      assert.match(Svg, /<path d="M[^"]+h[^"]+M[^"]+v/);
-      const Size = SvgExport.Dimensions(Doc);
-      const WithoutReferences = SvgExport.Dimensions(Doc, Doc.Global.szPanel, 1600, false);
-      assert.ok(Size.dHeight > WithoutReferences.dHeight, 'polar symbols have space beyond the panel vertex');
-      const Match = /<circle cx="([^"]+)" cy="([^"]+)" r="([^"]+)"/.exec(Svg);
-      const [dX, dY, dRadius] = Match.slice(1).map(Number);
-      assert.ok(dX - dRadius * 1.4 >= 0 && dX + dRadius * 1.4 <= Size.dWidth);
-      assert.ok(dY - dRadius * 1.4 >= 0 && dY + dRadius * 1.4 <= Size.dHeight);
+  for (const [name, reference] of [['Beta', 'equator'], ['Eta', 'pole-N'], ['Kappa', 'pole-S']]) {
+    const doc = model.createPanelMap({ panelId: coordinates.panelIdByName(name), panelHexes: 4 });
+    const svg = svgExport.write(doc);
+    assert.match(svg, /id="layer-reference"[^>]+stroke="#d32f2f"/);
+    assert.ok(svg.includes(`data-reference="${reference}"`));
+    if (reference !== 'equator') {
+      assert.match(svg, /<circle[^>]+r="/);
+      assert.ok(svg.includes(`>${reference.slice(-1)}</text>`));
+      assert.match(svg, /<path d="M[^"]+h[^"]+M[^"]+v/);
+      const size = svgExport.dimensions(doc);
+      const withoutReferences = svgExport.dimensions(doc, doc.global.panelId, 1600, false);
+      assert.ok(size.spanHeight > withoutReferences.spanHeight, 'polar symbols have space beyond the panel vertex');
+      const match = /<circle cx="([^"]+)" cy="([^"]+)" r="([^"]+)"/.exec(svg);
+      const [x, y, radius] = match.slice(1).map(Number);
+      assert.ok(x - radius * 1.4 >= 0 && x + radius * 1.4 <= size.spanWidth);
+      assert.ok(y - radius * 1.4 >= 0 && y + radius * 1.4 <= size.spanHeight);
     }
-    assert.doesNotMatch(SvgExport.Write(Doc, { Layers: { reference: false } }), /layer-reference|data-reference=/);
+    assert.doesNotMatch(svgExport.write(doc, { layers: { reference: false } }), /layer-reference|data-reference=/);
   }
 });
 
 test('local reference geometry uses the anchor frame and local hex units', () => {
-  for (const szSystem of ['regional', 'local']) {
-    const Doc = Model.CreateLocalMap({ nWidth: 7, nHeight: 6, szSystem, szScale: 'XL', nPanelHexes: 4,
-      Anchor: Coordinates.ParseUniversal('Beta 0E 0N') });
-    const Reference = View.ReferenceGeometry(Doc, 'local');
-    assert.equal(Reference.rgrgdEquator.length, 2);
-    for (const Point of Reference.rgrgdEquator) {
-      assert.ok(Math.abs(Doc.Local.Anchor.dNorth + Point[1] * Doc.Local.dHexMiles) < 1e-8);
+  for (const systemName of ['regional', 'local']) {
+    const doc = model.createLocalMap({ width: 7, height: 6, systemName, scaleName: 'XL', panelHexes: 4,
+      anchor: coordinates.parseUniversal('Beta 0E 0N') });
+    const reference = view.referenceGeometry(doc, 'local');
+    assert.equal(reference.equator.length, 2);
+    for (const point of reference.equator) {
+      assert.ok(Math.abs(doc.local.anchor.north + point[1] * doc.local.hexMiles) < 1e-8);
     }
-    assert.match(SvgExport.Write(Doc), /data-reference="equator"/);
-    assert.equal(Reference.rgPoles.length, 0);
+    assert.match(svgExport.write(doc), /data-reference="equator"/);
+    assert.equal(reference.poles.length, 0);
   }
 });

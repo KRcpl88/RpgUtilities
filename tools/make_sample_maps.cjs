@@ -8,88 +8,88 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { LoadModules, g_szRepositoryRoot } = require('../tests/_load.cjs');
+const { loadModules, REPOSITORY_ROOT } = require('../tests/_load.cjs');
 
-const RpgMap = LoadModules();
-const { Util, Lattice, Coordinates, Terrain, Model, View, Edit, FileFormat } = RpgMap;
-const g_szSampleDir = path.join(g_szRepositoryRoot, 'map-editor', 'samples');
+const rpgMap = loadModules();
+const { Util: util, Lattice: lattice, Coordinates: coordinates, Terrain: terrain, Model: model, View: view, Edit: edit, FileFormat: fileFormat } = rpgMap;
+const SAMPLE_DIR = path.join(REPOSITORY_ROOT, 'map-editor', 'samples');
 
-function TerrainId(szKey) {
-  return Terrain.ByKey(szKey).nId;
+function terrainId(key) {
+  return terrain.byKey(key).id;
 }
 
 // Joins shortest tile paths through each waypoint into one adjacent tile path.
-function RoutedPath(Doc, rgnWaypoints) {
-  const rgnTiles = [rgnWaypoints[0]];
-  for (let nIndex = 1; nIndex < rgnWaypoints.length; nIndex++) {
-    rgnTiles.push(...Edit.FindPath(Doc, rgnTiles[rgnTiles.length - 1], rgnWaypoints[nIndex]).slice(1));
+function routedPath(doc, waypoints) {
+  const tileIndices = [waypoints[0]];
+  for (let index = 1; index < waypoints.length; index++) {
+    tileIndices.push(...edit.findPath(doc, tileIndices[tileIndices.length - 1], waypoints[index]).slice(1));
   }
-  return rgnTiles;
+  return tileIndices;
 }
 
 // The global tile whose centre is nearest a frame point of the named panel.
-function GlobalTile(Doc, szPanelName, dEast, dNorth) {
-  const szPanel = Coordinates.PanelIdByName(szPanelName);
-  const Info = Doc.Topo.Panels[szPanel];
-  let nBest = -1;
-  let dBest = Infinity;
-  for (let nTile = Info.nFirstTile; nTile < Info.nFirstTile + Info.nTileCount; nTile++) {
-    const dDistance = Util.Distance(Doc.Topo.rgTiles[nTile].rgdCenter, [dEast, dNorth]);
-    if (dDistance < dBest) {
-      dBest = dDistance;
-      nBest = nTile;
+function globalTile(doc, panelName, east, north) {
+  const panelId = coordinates.panelIdByName(panelName);
+  const info = doc.topo.panels[panelId];
+  let bestIndex = -1;
+  let bestDistance = Infinity;
+  for (let tileIndex = info.firstTile; tileIndex < info.firstTile + info.tileCount; tileIndex++) {
+    const distance = util.pointDistance(doc.topo.tiles[tileIndex].center, [east, north]);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = tileIndex;
     }
   }
-  return nBest;
+  return bestIndex;
 }
 
-function MakeWorld() {
-  const Doc = Model.CreateGlobalMap({ nPanelHexes: 8, szTileScale: 'XL', szName: 'Sample World' });
-  View.DemoTerrain(Doc.Topo, 7).forEach((nId, nTile) => Model.SetTerrain(Doc, nTile, nId));
-  const Tile = (szPanel, dEast, dNorth, szTerrain) => {
-    const nTile = GlobalTile(Doc, szPanel, dEast, dNorth);
-    if (szTerrain) {
-      Model.SetTerrain(Doc, nTile, TerrainId(szTerrain));
+function makeWorld() {
+  const doc = model.createGlobalMap({ panelHexes: 8, tileScale: 'XL', name: 'Sample World' });
+  view.demoTerrain(doc.topo, 7).forEach((id, tileIndex) => model.setTerrain(doc, tileIndex, id));
+  const tile = (panelId, east, north, terrain) => {
+    const tileIndex = globalTile(doc, panelId, east, north);
+    if (terrain) {
+      model.setTerrain(doc, tileIndex, terrainId(terrain));
     }
-    return nTile;
+    return tileIndex;
   };
-  const Capital = Tile('Eta', 0.05, -0.1, 'plain');
-  const Harbour = Tile('Alpha', 0.1, 0.25, 'plain');
-  const Pass = Tile('Theta', 0.2, -0.15, 'hills');
-  const Oasis = Tile('Beta', -0.1, 0.1, 'desert');
-  const Spring = Tile('Theta', -0.25, 0.2, 'mountains');
-  const Mouth = Tile('Zeta', 0.3, -0.2, 'firth');
+  const capital = tile('Eta', 0.05, -0.1, 'plain');
+  const harbour = tile('Alpha', 0.1, 0.25, 'plain');
+  const pass = tile('Theta', 0.2, -0.15, 'hills');
+  const oasis = tile('Beta', -0.1, 0.1, 'desert');
+  const spring = tile('Theta', -0.25, 0.2, 'mountains');
+  const mouth = tile('Zeta', 0.3, -0.2, 'firth');
   // Roads, rivers and trails cross both kinds of seam: polar–equatorial and the equatorial strip.
-  Model.AddOverlay(Doc, { szType: 'road', szName: 'Imperial Way', rgnTiles: RoutedPath(Doc, [Capital, Harbour, Oasis]) });
-  Model.AddOverlay(Doc, { szType: 'road', szName: 'North Road', szStyle: 'paved', rgnTiles: RoutedPath(Doc, [Capital, Pass]) });
-  Model.AddOverlay(Doc, { szType: 'river', szName: 'Long River', rgnTiles: RoutedPath(Doc, [Spring, Pass, Capital, Mouth]) });
-  Model.AddOverlay(Doc, { szType: 'trail', szName: 'Pilgrim Trail', rgnTiles: RoutedPath(Doc, [Oasis, Tile('Gamma', 0, 0)]) });
-  Model.SetLandmark(Doc, Capital, { szType: 'city', szName: 'Aurelia', szNotes: 'Imperial capital on the prime meridian' });
-  Model.SetLandmark(Doc, Harbour, { szType: 'town', szName: 'Saltmere' });
-  Model.SetLandmark(Doc, Pass, { szType: 'fortress', szName: 'Gatehold' });
-  Model.SetLandmark(Doc, Oasis, { szType: 'temple', szName: 'Shrine of Sands' });
-  Model.SetLandmark(Doc, Tile('Iota', 0, 0, 'tundra'), { szType: 'ruins', szName: 'Frostspire' });
-  Model.SetLandmark(Doc, Tile('Lambda', 0, 0, 'mountains'), { szType: 'dungeon', szName: 'Deepdelve' });
-  for (const [szPanel, szText] of [['Eta', 'The Old Empire'], ['Delta', 'Sunward Isles'], ['Kappa', 'Southern Wastes'], ['Omicron', 'Frost March']]) {
-    Model.AddLabel(Doc, { nTile: Tile(szPanel, 0, 0.15), szText, szCategory: 'region' });
+  model.addOverlay(doc, { type: 'road', name: 'Imperial Way', tileIndices: routedPath(doc, [capital, harbour, oasis]) });
+  model.addOverlay(doc, { type: 'road', name: 'North Road', style: 'paved', tileIndices: routedPath(doc, [capital, pass]) });
+  model.addOverlay(doc, { type: 'river', name: 'Long River', tileIndices: routedPath(doc, [spring, pass, capital, mouth]) });
+  model.addOverlay(doc, { type: 'trail', name: 'Pilgrim Trail', tileIndices: routedPath(doc, [oasis, tile('Gamma', 0, 0)]) });
+  model.setLandmark(doc, capital, { type: 'city', name: 'Aurelia', notes: 'Imperial capital on the prime meridian' });
+  model.setLandmark(doc, harbour, { type: 'town', name: 'Saltmere' });
+  model.setLandmark(doc, pass, { type: 'fortress', name: 'Gatehold' });
+  model.setLandmark(doc, oasis, { type: 'temple', name: 'Shrine of Sands' });
+  model.setLandmark(doc, tile('Iota', 0, 0, 'tundra'), { type: 'ruins', name: 'Frostspire' });
+  model.setLandmark(doc, tile('Lambda', 0, 0, 'mountains'), { type: 'dungeon', name: 'Deepdelve' });
+  for (const [panelId, text] of [['Eta', 'The Old Empire'], ['Delta', 'Sunward Isles'], ['Kappa', 'Southern Wastes'], ['Omicron', 'Frost March']]) {
+    model.addLabel(doc, { tileIndex: tile(panelId, 0, 0.15), text, category: 'region' });
   }
-  Model.AddLabel(Doc, { nTile: Capital, szText: 'Aurelia', szCategory: 'city', dDy: 18 });
-  Model.AddLabel(Doc, { nTile: Spring, szText: 'Long River', szCategory: 'location', dRotation: 20 });
-  return Doc;
+  model.addLabel(doc, { tileIndex: capital, text: 'Aurelia', category: 'city', dy: 18 });
+  model.addLabel(doc, { tileIndex: spring, text: 'Long River', category: 'location', rotation: 20 });
+  return doc;
 }
 
 // A hand-placed local valley that uses every terrain, landmark type and label category.
-function MakeValley() {
-  const nWidth = 36;
-  const nHeight = 26;
-  const Doc = Model.CreateLocalMap({
-    nWidth, nHeight, szSystem: 'regional', szScale: 'M', szName: 'Sample Valley',
-    Anchor: Coordinates.ParseUniversal('Eta 120W 340N'),
+function makeValley() {
+  const width = 36;
+  const height = 26;
+  const doc = model.createLocalMap({
+    width, height, systemName: 'regional', scaleName: 'M', name: 'Sample Valley',
+    anchor: coordinates.parseUniversal('Eta 120W 340N'),
   });
-  const Point = (nX, nY) => Coordinates.LocalTilePoint(Doc.Local, nX, nY);
-  const At = (nX, nY) => Model.LocalTileIndex(Doc, nX, nY);
+  const point = (columnIndex, rowIndex) => coordinates.localTilePoint(doc.local, columnIndex, rowIndex);
+  const at = (columnIndex, rowIndex) => model.localTileIndex(doc, columnIndex, rowIndex);
   // Blobs painted in order: [terrain, x, y, radius in hexes]. Edges are roughened by hash.
-  const rgBlobs = [
+  const blobs = [
     ['plain', 18, 13, 40],
     ['water', -4, 13, 9.5], ['water', 2, 24, 5],
     ['islands', 2, 8, 1.6], ['islands', 1, 16, 1.2],
@@ -102,70 +102,70 @@ function MakeValley() {
     ['lakes', 20, 6, 1.2],
     ['desert', 30, 19, 4.5], ['sandDunes', 32, 22, 2.2], ['badlands', 24, 22, 2.8], ['canyon', 26, 18, 1.4], ['canyon', 27, 19, 1],
   ];
-  for (let nY = 0; nY < nHeight; nY++) {
-    for (let nX = 0; nX < nWidth; nX++) {
-      const rgdHere = Point(nX, nY);
-      for (const [szTerrain, nCX, nCY, dRadius] of rgBlobs) {
-        const rgdCentre = Point(nCX, nCY);
-        const dNoise = (Util.HashIntegers(nX, nY, TerrainId(szTerrain)) / 4294967296 - 0.5) * Math.min(1.2, dRadius * 0.5);
-        if (Util.Distance(rgdHere, rgdCentre) <= dRadius + dNoise) {
-          Model.SetTerrain(Doc, At(nX, nY), TerrainId(szTerrain));
+  for (let rowIndex = 0; rowIndex < height; rowIndex++) {
+    for (let columnIndex = 0; columnIndex < width; columnIndex++) {
+      const here = point(columnIndex, rowIndex);
+      for (const [terrain, cx, cy, radius] of blobs) {
+        const centre = point(cx, cy);
+        const noise = (util.hashIntegers(columnIndex, rowIndex, terrainId(terrain)) / 4294967296 - 0.5) * Math.min(1.2, radius * 0.5);
+        if (util.pointDistance(here, centre) <= radius + noise) {
+          model.setTerrain(doc, at(columnIndex, rowIndex), terrainId(terrain));
         }
       }
     }
   }
-  const Places = {
+  const places = {
     city: [17, 13, 'Riverford'], town: [14, 8, 'Millbrook'], village: [21, 17, 'Ashby'],
     castle: [19, 11, 'Highwatch'], fortress: [26, 9, 'Ironpass Keep'], tower: [10, 20, 'Fen Tower'],
     ruins: [31, 20, 'Sunken Court'], mine: [27, 4, 'Deep Seam'], temple: [11, 4, 'Grove Shrine'],
     cave: [25, 19, 'Echo Cave'], dungeon: [32, 3, 'Ice Vault'],
   };
-  for (const [szType, [nX, nY, szName]] of Object.entries(Places)) {
-    Model.SetLandmark(Doc, At(nX, nY), { szType, szName });
+  for (const [type, [columnIndex, rowIndex, name]] of Object.entries(places)) {
+    model.setLandmark(doc, at(columnIndex, rowIndex), { type, name });
   }
-  const Tile = (szType) => At(Places[szType][0], Places[szType][1]);
-  Model.AddOverlay(Doc, { szType: 'road', szName: 'Kings Road', rgnTiles: RoutedPath(Doc, [Tile('town'), Tile('city'), Tile('village'), At(35, 17)]) });
-  Model.AddOverlay(Doc, { szType: 'road', szName: 'Pass Road', szStyle: 'paved', rgnTiles: RoutedPath(Doc, [Tile('castle'), Tile('fortress')]) });
-  Model.AddOverlay(Doc, { szType: 'trail', szName: 'Miners Path', rgnTiles: RoutedPath(Doc, [Tile('fortress'), Tile('mine'), Tile('dungeon')]) });
-  Model.AddOverlay(Doc, { szType: 'trail', rgnTiles: RoutedPath(Doc, [Tile('village'), Tile('cave'), Tile('ruins')]) });
-  Model.AddOverlay(Doc, { szType: 'river', szName: 'Silverrun', rgnTiles: RoutedPath(Doc, [At(26, 6), At(20, 6), At(18, 12), At(9, 13)]) });
-  Model.AddOverlay(Doc, { szType: 'river', szName: 'Fenwater', rgnTiles: RoutedPath(Doc, [At(13, 17), At(8, 19)]) });
-  Model.AddLabel(Doc, { nTile: At(4, 13), szText: 'Grey Sea', szCategory: 'region', dRotation: -80 });
-  Model.AddLabel(Doc, { nTile: At(30, 21), szText: 'Ember Waste', szCategory: 'region' });
-  Model.AddLabel(Doc, { nTile: At(13, 3), szText: 'Old Wood', szCategory: 'location' });
-  Model.AddLabel(Doc, { nTile: At(17, 13), szText: 'Riverford', szCategory: 'city', dDy: 22 });
-  Model.AddLabel(Doc, { nTile: At(24, 15), szText: 'Kings Road', szCategory: 'location', dRotation: 15 });
-  Model.AddLabel(Doc, { nTile: At(29, 5), szText: 'Miners Path', szCategory: 'location', dRotation: -30 });
-  Model.AddLabel(Doc, { nTile: At(22, 8), szText: 'Silverrun', szCategory: 'location', dRotation: 25, dDy: -10 });
-  return Doc;
+  const tile = (type) => at(places[type][0], places[type][1]);
+  model.addOverlay(doc, { type: 'road', name: 'Kings Road', tileIndices: routedPath(doc, [tile('town'), tile('city'), tile('village'), at(35, 17)]) });
+  model.addOverlay(doc, { type: 'road', name: 'Pass Road', style: 'paved', tileIndices: routedPath(doc, [tile('castle'), tile('fortress')]) });
+  model.addOverlay(doc, { type: 'trail', name: 'Miners Path', tileIndices: routedPath(doc, [tile('fortress'), tile('mine'), tile('dungeon')]) });
+  model.addOverlay(doc, { type: 'trail', tileIndices: routedPath(doc, [tile('village'), tile('cave'), tile('ruins')]) });
+  model.addOverlay(doc, { type: 'river', name: 'Silverrun', tileIndices: routedPath(doc, [at(26, 6), at(20, 6), at(18, 12), at(9, 13)]) });
+  model.addOverlay(doc, { type: 'river', name: 'Fenwater', tileIndices: routedPath(doc, [at(13, 17), at(8, 19)]) });
+  model.addLabel(doc, { tileIndex: at(4, 13), text: 'Grey Sea', category: 'region', rotation: -80 });
+  model.addLabel(doc, { tileIndex: at(30, 21), text: 'Ember Waste', category: 'region' });
+  model.addLabel(doc, { tileIndex: at(13, 3), text: 'Old Wood', category: 'location' });
+  model.addLabel(doc, { tileIndex: at(17, 13), text: 'Riverford', category: 'city', dy: 22 });
+  model.addLabel(doc, { tileIndex: at(24, 15), text: 'Kings Road', category: 'location', rotation: 15 });
+  model.addLabel(doc, { tileIndex: at(29, 5), text: 'Miners Path', category: 'location', rotation: -30 });
+  model.addLabel(doc, { tileIndex: at(22, 8), text: 'Silverrun', category: 'location', rotation: 25, dy: -10 });
+  return doc;
 }
 
-const g_Samples = [
-  ['sample-world.map.txt', MakeWorld],
-  ['sample-valley.map.txt', MakeValley],
+const SAMPLES = [
+  ['sample-world.map.txt', makeWorld],
+  ['sample-valley.map.txt', makeValley],
 ];
 
-function Main(rgszArgs) {
-  const fCheck = rgszArgs.includes('--check');
-  let fStale = false;
-  for (const [szFile, fnMake] of g_Samples) {
-    const szText = FileFormat.Write(fnMake());
-    const szPath = path.join(g_szSampleDir, szFile);
-    if (fCheck) {
-      const fCurrent = fs.existsSync(szPath) && fs.readFileSync(szPath, 'utf8') === szText;
-      console.log(`${fCurrent ? 'ok' : 'STALE'} ${path.relative(g_szRepositoryRoot, szPath)}`);
-      fStale = fStale || !fCurrent;
+function main(args) {
+  const check = args.includes('--check');
+  let stale = false;
+  for (const [file, make] of SAMPLES) {
+    const text = fileFormat.write(make());
+    const filePath = path.join(SAMPLE_DIR, file);
+    if (check) {
+      const current = fs.existsSync(filePath) && fs.readFileSync(filePath, 'utf8') === text;
+      console.log(`${current ? 'ok' : 'STALE'} ${path.relative(REPOSITORY_ROOT, filePath)}`);
+      stale = stale || !current;
     } else {
-      fs.mkdirSync(g_szSampleDir, { recursive: true });
-      fs.writeFileSync(szPath, szText);
-      console.log(`wrote ${path.relative(g_szRepositoryRoot, szPath)} (${szText.length} bytes)`);
+      fs.mkdirSync(SAMPLE_DIR, { recursive: true });
+      fs.writeFileSync(filePath, text);
+      console.log(`wrote ${path.relative(REPOSITORY_ROOT, filePath)} (${text.length} bytes)`);
     }
   }
-  return fStale ? 1 : 0;
+  return stale ? 1 : 0;
 }
 
 if (require.main === module) {
-  process.exitCode = Main(process.argv.slice(2));
+  process.exitCode = main(process.argv.slice(2));
 }
 
-module.exports = { g_Samples, MakeWorld, MakeValley, Main };
+module.exports = { SAMPLES, makeWorld, makeValley, main };

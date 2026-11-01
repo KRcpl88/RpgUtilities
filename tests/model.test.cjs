@@ -1,12 +1,12 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { LoadModules } = require('./_load.cjs');
+const { loadModules } = require('./_load.cjs');
 
-const { Topology, Coordinates, Terrain, Model, History } = LoadModules();
+const { Topology: topology, Coordinates: coordinates, Terrain: terrain, Model: model, History: history } = loadModules();
 
 // The plan §5 table: char → terrain key, water flag.
-const g_rgExpectedTerrains = [
+const EXPECTED_TERRAINS = [
   ['~', 'water', true], ['i', 'islands', true], ['o', 'lakes', true], ['v', 'firth', true],
   ['.', 'plain', false], ['h', 'hills', false], ['M', 'mountains', false], ['A', 'mountainPeak', false],
   ['d', 'desert', false], ['D', 'sandDunes', false], ['f', 'forest', false], ['m', 'marsh', false],
@@ -14,297 +14,297 @@ const g_rgExpectedTerrains = [
   ['=', 'farmland', false],
 ];
 
-function SmallGlobal() {
-  return Model.CreateGlobalMap({ nPanelHexes: 4, szTileScale: 'XL', szName: 'Test' });
+function smallGlobal() {
+  return model.createGlobalMap({ panelHexes: 4, tileScale: 'XL', name: 'Test' });
 }
 
-function Snapshot(Doc) {
+function snapshot(doc) {
   return {
-    rgnTerrain: Array.from(Doc.rgnTerrain),
-    rgLandmarks: [...Doc.Landmarks.entries()].sort((rgA, rgB) => rgA[0] - rgB[0]),
-    rgOverlays: Doc.rgOverlays.map((Overlay) => ({ ...Overlay, rgnTiles: [...Overlay.rgnTiles] })),
-    rgLabels: Doc.rgLabels.map((Label) => ({ ...Label })),
+    terrainIds: Array.from(doc.terrainIds),
+    landmarks: [...doc.landmarks.entries()].sort((a, b) => a[0] - b[0]),
+    overlays: doc.overlays.map((overlay) => ({ ...overlay, tileIndices: [...overlay.tileIndices] })),
+    labels: doc.labels.map((label) => ({ ...label })),
   };
 }
 
-// A non-adjacent tile and a three-tile path of adjacent tiles starting at nStart.
-function Path(Doc, nStart, nLength) {
-  const rgnPath = [nStart];
-  while (rgnPath.length < nLength) {
-    const nNext = Model.Neighbors(Doc, rgnPath.at(-1)).find((nTile) => !rgnPath.includes(nTile));
-    rgnPath.push(nNext);
+// A non-adjacent tile and a three-tile path of adjacent tiles starting at start.
+function path(doc, start, length) {
+  const path = [start];
+  while (path.length < length) {
+    const next = model.neighbors(doc, path.at(-1)).find((tileIndex) => !path.includes(tileIndex));
+    path.push(next);
   }
-  return rgnPath;
+  return path;
 }
 
-function FarTile(Doc, nTile) {
-  const Near = new Set([nTile, ...Model.Neighbors(Doc, nTile)]);
-  for (let nOther = 0; nOther < Doc.nTiles; nOther++) {
-    if (!Near.has(nOther)) {
-      return nOther;
+function farTile(doc, tileIndex) {
+  const near = new Set([tileIndex, ...model.neighbors(doc, tileIndex)]);
+  for (let otherIndex = 0; otherIndex < doc.tileCount; otherIndex++) {
+    if (!near.has(otherIndex)) {
+      return otherIndex;
     }
   }
   throw new Error('no far tile');
 }
 
 test('terrain table matches plan §5 with unique chars and IDs', () => {
-  assert.equal(Terrain.g_rgTerrains.length, 17);
-  assert.deepEqual(Terrain.g_rgTerrains.map((Item) => [Item.szChar, Item.szKey, Item.fWater]), g_rgExpectedTerrains);
-  const rgszChars = Terrain.g_rgTerrains.map((Item) => Item.szChar);
-  assert.equal(new Set(rgszChars).size, 17);
-  assert.equal(new Set(Terrain.g_rgTerrains.map((Item) => Item.szName)).size, 17);
-  Terrain.g_rgTerrains.forEach((Item, nIndex) => {
-    assert.equal(Item.nId, nIndex);
-    assert.match(Item.szChar, /^[!-~]$/, 'printable ASCII');
-    assert.match(Item.szColor, /^#[0-9a-f]{6}$/);
-    assert.equal(Terrain.ById(nIndex), Item);
-    assert.equal(Terrain.ByChar(Item.szChar), Item);
-    assert.equal(Terrain.ByKey(Item.szKey), Item);
-    assert.ok('Embellish' in Item);
-    assert.ok(Object.isFrozen(Item));
+  assert.equal(terrain.TERRAINS.length, 17);
+  assert.deepEqual(terrain.TERRAINS.map((item) => [item.char, item.key, item.isWater]), EXPECTED_TERRAINS);
+  const chars = terrain.TERRAINS.map((item) => item.char);
+  assert.equal(new Set(chars).size, 17);
+  assert.equal(new Set(terrain.TERRAINS.map((item) => item.name)).size, 17);
+  terrain.TERRAINS.forEach((item, index) => {
+    assert.equal(item.id, index);
+    assert.match(item.char, /^[!-~]$/, 'printable ASCII');
+    assert.match(item.color, /^#[0-9a-f]{6}$/);
+    assert.equal(terrain.byId(index), item);
+    assert.equal(terrain.byChar(item.char), item);
+    assert.equal(terrain.byKey(item.key), item);
+    assert.ok('embellish' in item);
+    assert.ok(Object.isFrozen(item));
   });
-  assert.ok(!rgszChars.includes(Terrain.g_szReservedChar));
-  assert.equal(Terrain.g_szReservedChar, '_');
-  assert.equal(Terrain.ByChar('_'), null);
-  assert.equal(Terrain.ById(17), null);
-  assert.equal(Terrain.ById(1.5), null);
-  assert.equal(Terrain.ById(Terrain.g_nWaterId).szKey, 'water');
-  assert.ok(Terrain.IsWater(Terrain.ByChar('i').nId));
-  assert.ok(!Terrain.IsWater(Terrain.ByChar('.').nId));
+  assert.ok(!chars.includes(terrain.RESERVED_CHAR));
+  assert.equal(terrain.RESERVED_CHAR, '_');
+  assert.equal(terrain.byChar('_'), null);
+  assert.equal(terrain.byId(17), null);
+  assert.equal(terrain.byId(1.5), null);
+  assert.equal(terrain.byId(terrain.WATER_ID).key, 'water');
+  assert.ok(terrain.isWater(terrain.byChar('i').id));
+  assert.ok(!terrain.isWater(terrain.byChar('.').id));
 });
 
 test('landmark types follow prompt.md', () => {
-  assert.deepEqual(Terrain.g_rgLandmarkTypes.map((Item) => Item.szKey),
+  assert.deepEqual(terrain.LANDMARK_TYPES.map((item) => item.key),
     ['village', 'town', 'city', 'castle', 'fortress', 'tower', 'ruins', 'mine', 'temple', 'cave', 'dungeon']);
-  assert.ok(Terrain.IsLandmarkType('castle'));
-  assert.ok(!Terrain.IsLandmarkType('volcano'));
-  assert.equal(Terrain.LandmarkType('city').szName, 'City');
+  assert.ok(terrain.isLandmarkType('castle'));
+  assert.ok(!terrain.isLandmarkType('volcano'));
+  assert.equal(terrain.landmarkType('city').name, 'City');
 });
 
 test('CreateGlobalMap sizes the terrain to the topology and defaults to water', () => {
-  const Doc = SmallGlobal();
-  const Topo = Topology.Build(4, 'XL');
-  assert.equal(Doc.szKind, 'global');
-  assert.equal(Doc.szName, 'Test');
-  assert.deepEqual({ ...Doc.Global }, { nPanelHexes: 4, szTileScale: 'XL' });
-  assert.equal(Doc.Topo, Topo);
-  assert.equal(Doc.nTiles, Topo.nTiles);
-  assert.ok(Doc.rgnTerrain instanceof Uint8Array);
-  assert.equal(Doc.rgnTerrain.length, Topo.nTiles);
-  assert.ok(Doc.rgnTerrain.every((nId) => nId === Terrain.g_nWaterId));
-  assert.equal(Doc.Landmarks.size, 0);
-  assert.deepEqual(Doc.rgOverlays, []);
-  assert.deepEqual(Doc.rgLabels, []);
-  assert.equal(Model.CreateGlobalMap().Global.nPanelHexes, 24);
-  assert.throws(() => Model.CreateGlobalMap({ szTileScale: 'M' }), /tile scale/);
-  assert.throws(() => Model.CreateGlobalMap({ nPanelHexes: 5 }), /even/);
+  const doc = smallGlobal();
+  const topo = topology.build(4, 'XL');
+  assert.equal(doc.kind, 'global');
+  assert.equal(doc.name, 'Test');
+  assert.deepEqual({ ...doc.global }, { panelHexes: 4, tileScale: 'XL' });
+  assert.equal(doc.topo, topo);
+  assert.equal(doc.tileCount, topo.tileCount);
+  assert.ok(doc.terrainIds instanceof Uint8Array);
+  assert.equal(doc.terrainIds.length, topo.tileCount);
+  assert.ok(doc.terrainIds.every((id) => id === terrain.WATER_ID));
+  assert.equal(doc.landmarks.size, 0);
+  assert.deepEqual(doc.overlays, []);
+  assert.deepEqual(doc.labels, []);
+  assert.equal(model.createGlobalMap().global.panelHexes, 24);
+  assert.throws(() => model.createGlobalMap({ tileScale: 'M' }), /tile scale/);
+  assert.throws(() => model.createGlobalMap({ panelHexes: 5 }), /even/);
 });
 
 test('CreateLocalMap uses the local rectangle and local adjacency', () => {
-  const Anchor = Coordinates.ParseUniversal('Eta 187.1W 324.0N');
-  const Doc = Model.CreateLocalMap({ nWidth: 5, nHeight: 4, szSystem: 'regional', szScale: 'M', Anchor, szName: 'Vale' });
-  assert.equal(Doc.szKind, 'local');
-  assert.equal(Doc.nTiles, 20);
-  assert.equal(Doc.Topo, null);
-  assert.equal(Doc.Local.nWidth, 5);
-  assert.equal(Model.LocalTileIndex(Doc, 2, 3), 17);
-  assert.deepEqual(Model.LocalTileXY(Doc, 17), [2, 3]);
-  assert.equal(Model.LocalTileIndex(Doc, 5, 0), -1);
+  const anchor = coordinates.parseUniversal('Eta 187.1W 324.0N');
+  const doc = model.createLocalMap({ width: 5, height: 4, systemName: 'regional', scaleName: 'M', anchor, name: 'Vale' });
+  assert.equal(doc.kind, 'local');
+  assert.equal(doc.tileCount, 20);
+  assert.equal(doc.topo, null);
+  assert.equal(doc.local.width, 5);
+  assert.equal(model.localTileIndex(doc, 2, 3), 17);
+  assert.deepEqual(model.localTileXY(doc, 17), [2, 3]);
+  assert.equal(model.localTileIndex(doc, 5, 0), -1);
   // Adjacent tiles are exactly one hex spacing apart in universal coordinates.
-  for (let nTile = 0; nTile < Doc.nTiles; nTile++) {
-    const Center = Coordinates.LocalTileToUniversal(Doc.Local, ...Model.LocalTileXY(Doc, nTile));
-    for (let nOther = 0; nOther < Doc.nTiles; nOther++) {
-      const Other = Coordinates.LocalTileToUniversal(Doc.Local, ...Model.LocalTileXY(Doc, nOther));
-      const dDistance = Math.hypot(Center.dEast - Other.dEast, Center.dNorth - Other.dNorth);
-      const fExpected = nOther !== nTile && Math.abs(dDistance - Doc.Local.dHexMiles) < 1e-6;
-      assert.equal(Model.AreAdjacent(Doc, nTile, nOther), fExpected, `${nTile}–${nOther}`);
+  for (let tileIndex = 0; tileIndex < doc.tileCount; tileIndex++) {
+    const center = coordinates.localTileToUniversal(doc.local, ...model.localTileXY(doc, tileIndex));
+    for (let otherIndex = 0; otherIndex < doc.tileCount; otherIndex++) {
+      const other = coordinates.localTileToUniversal(doc.local, ...model.localTileXY(doc, otherIndex));
+      const distance = Math.hypot(center.east - other.east, center.north - other.north);
+      const expected = otherIndex !== tileIndex && Math.abs(distance - doc.local.hexMiles) < 1e-6;
+      assert.equal(model.areAdjacent(doc, tileIndex, otherIndex), expected, `${tileIndex}–${otherIndex}`);
     }
   }
-  const nInterior = Model.LocalTileIndex(Doc, 2, 1);
-  assert.equal(Model.Neighbors(Doc, nInterior).length, 6);
+  const interior = model.localTileIndex(doc, 2, 1);
+  assert.equal(model.neighbors(doc, interior).length, 6);
 });
 
 test('set terrain, undo and redo round trip', () => {
-  const Doc = SmallGlobal();
-  const Hist = History.Create(Doc);
-  const nForest = Terrain.ByChar('f').nId;
-  assert.equal(History.CanUndo(Hist), false);
-  const Command = History.Perform(Hist, 'Paint', (_Doc, Record) => Record(Model.SetTerrain(Doc, 7, nForest)));
-  assert.deepEqual(Command.rgChanges.map((Change) => [Change.szLayer, Change.Key, Change.Before, Change.After]),
-    [['terrain', 7, Terrain.g_nWaterId, nForest]]);
-  assert.equal(Model.GetTerrain(Doc, 7), nForest);
-  assert.ok(History.CanUndo(Hist));
-  assert.equal(History.Undo(Hist), Command);
-  assert.equal(Model.GetTerrain(Doc, 7), Terrain.g_nWaterId);
-  assert.ok(History.CanRedo(Hist));
-  History.Redo(Hist);
-  assert.equal(Model.GetTerrain(Doc, 7), nForest);
-  assert.equal(History.Redo(Hist), null);
+  const doc = smallGlobal();
+  const hist = history.create(doc);
+  const forestId = terrain.byChar('f').id;
+  assert.equal(history.canUndo(hist), false);
+  const command = history.perform(hist, 'Paint', (_Doc, record) => record(model.setTerrain(doc, 7, forestId)));
+  assert.deepEqual(command.changes.map((change) => [change.layer, change.key, change.before, change.after]),
+    [['terrain', 7, terrain.WATER_ID, forestId]]);
+  assert.equal(model.getTerrain(doc, 7), forestId);
+  assert.ok(history.canUndo(hist));
+  assert.equal(history.undo(hist), command);
+  assert.equal(model.getTerrain(doc, 7), terrain.WATER_ID);
+  assert.ok(history.canRedo(hist));
+  history.redo(hist);
+  assert.equal(model.getTerrain(doc, 7), forestId);
+  assert.equal(history.redo(hist), null);
   // A no-op does not create a command or clear redo.
-  History.Undo(Hist);
-  assert.equal(History.Perform(Hist, 'Noop', (_Doc, Record) => Record(Model.SetTerrain(Doc, 7, Terrain.g_nWaterId))), null);
-  assert.ok(History.CanRedo(Hist));
+  history.undo(hist);
+  assert.equal(history.perform(hist, 'Noop', (_Doc, record) => record(model.setTerrain(doc, 7, terrain.WATER_ID))), null);
+  assert.ok(history.canRedo(hist));
   // A new command clears redo.
-  History.Perform(Hist, 'Paint', (_Doc, Record) => Record(Model.SetTerrain(Doc, 8, nForest)));
-  assert.equal(History.CanRedo(Hist), false);
-  assert.throws(() => Model.SetTerrain(Doc, Doc.nTiles, nForest), /Unknown tile/);
-  assert.throws(() => Model.SetTerrain(Doc, 0, 99), /Unknown terrain/);
+  history.perform(hist, 'Paint', (_Doc, record) => record(model.setTerrain(doc, 8, forestId)));
+  assert.equal(history.canRedo(hist), false);
+  assert.throws(() => model.setTerrain(doc, doc.tileCount, forestId), /Unknown tile/);
+  assert.throws(() => model.setTerrain(doc, 0, 99), /Unknown terrain/);
 });
 
 test('a grouped brush stroke undoes as one command', () => {
-  const Doc = SmallGlobal();
-  const Hist = History.Create(Doc);
-  const Before = Snapshot(Doc);
-  const nHills = Terrain.ByChar('h').nId;
-  const nMountains = Terrain.ByChar('M').nId;
-  History.Begin(Hist, 'Brush');
-  assert.equal(History.CanUndo(Hist), false, 'no undo while a stroke is open');
-  for (const nTile of [1, 2, 3, 2, 1]) {
-    History.Record(Hist, Model.SetTerrain(Doc, nTile, nTile === 2 ? nMountains : nHills));
+  const doc = smallGlobal();
+  const hist = history.create(doc);
+  const before = snapshot(doc);
+  const hills = terrain.byChar('h').id;
+  const mountains = terrain.byChar('M').id;
+  history.begin(hist, 'Brush');
+  assert.equal(history.canUndo(hist), false, 'no undo while a stroke is open');
+  for (const tileIndex of [1, 2, 3, 2, 1]) {
+    history.record(hist, model.setTerrain(doc, tileIndex, tileIndex === 2 ? mountains : hills));
   }
-  History.Record(Hist, [Model.SetTerrain(Doc, 4, nHills), Model.SetTerrain(Doc, 4, Terrain.g_nWaterId)]);
-  const Command = History.Commit(Hist);
+  history.record(hist, [model.setTerrain(doc, 4, hills), model.setTerrain(doc, 4, terrain.WATER_ID)]);
+  const command = history.commit(hist);
   // Repeats coalesce; tile 4 ends where it started and is dropped.
-  assert.deepEqual(Command.rgChanges.map((Change) => [Change.Key, Change.Before, Change.After]),
-    [[1, 0, nHills], [2, 0, nMountains], [3, 0, nHills]]);
-  assert.equal(Hist.rgUndo.length, 1);
-  const After = Snapshot(Doc);
-  History.Undo(Hist);
-  assert.deepEqual(Snapshot(Doc), Before);
-  History.Redo(Hist);
-  assert.deepEqual(Snapshot(Doc), After);
-  assert.throws(() => History.Record(Hist, null), /Begin/);
-  History.Begin(Hist, 'x');
-  assert.throws(() => History.Begin(Hist, 'y'), /already open/);
-  History.Record(Hist, Model.SetTerrain(Doc, 9, nHills));
-  History.Cancel(Hist);
-  assert.deepEqual(Snapshot(Doc), After, 'Cancel reverts the open group');
+  assert.deepEqual(command.changes.map((change) => [change.key, change.before, change.after]),
+    [[1, 0, hills], [2, 0, mountains], [3, 0, hills]]);
+  assert.equal(hist.undoStack.length, 1);
+  const after = snapshot(doc);
+  history.undo(hist);
+  assert.deepEqual(snapshot(doc), before);
+  history.redo(hist);
+  assert.deepEqual(snapshot(doc), after);
+  assert.throws(() => history.record(hist, null), /Begin/);
+  history.begin(hist, 'x');
+  assert.throws(() => history.begin(hist, 'y'), /already open/);
+  history.record(hist, model.setTerrain(doc, 9, hills));
+  history.cancel(hist);
+  assert.deepEqual(snapshot(doc), after, 'Cancel reverts the open group');
 });
 
 test('Perform reverts partial changes when the mutation throws', () => {
-  const Doc = SmallGlobal();
-  const Hist = History.Create(Doc);
-  const Before = Snapshot(Doc);
-  assert.throws(() => History.Perform(Hist, 'Bad', (_Doc, Record) => {
-    Record(Model.SetTerrain(Doc, 3, Terrain.ByChar('d').nId));
-    Record(Model.SetLandmark(Doc, 3, { szType: 'town' }));
-    Model.SetTerrain(Doc, 4, 200);
+  const doc = smallGlobal();
+  const hist = history.create(doc);
+  const before = snapshot(doc);
+  assert.throws(() => history.perform(hist, 'Bad', (_Doc, record) => {
+    record(model.setTerrain(doc, 3, terrain.byChar('d').id));
+    record(model.setLandmark(doc, 3, { type: 'town' }));
+    model.setTerrain(doc, 4, 200);
   }), /Unknown terrain/);
-  assert.deepEqual(Snapshot(Doc), Before);
-  assert.equal(History.CanUndo(Hist), false);
-  assert.equal(Hist.Pending, null);
+  assert.deepEqual(snapshot(doc), before);
+  assert.equal(history.canUndo(hist), false);
+  assert.equal(hist.pending, null);
 });
 
 test('at most one landmark per tile; place, replace, edit and remove undo exactly', () => {
-  const Doc = SmallGlobal();
-  const Hist = History.Create(Doc);
-  History.Perform(Hist, 'Place', (_Doc, Record) => Record(Model.SetLandmark(Doc, 5, { szType: 'village', szName: 'Ash' })));
-  History.Perform(Hist, 'Replace', (_Doc, Record) => Record(Model.SetLandmark(Doc, 5, { szType: 'city', szName: 'Karador', szNotes: 'Capital' })));
-  assert.equal(Doc.Landmarks.size, 1);
-  assert.deepEqual({ ...Model.GetLandmark(Doc, 5) }, { szType: 'city', szName: 'Karador', szNotes: 'Capital' });
-  History.Perform(Hist, 'Other', (_Doc, Record) => Record(Model.SetLandmark(Doc, 6, { szType: 'cave' })));
-  assert.equal(Doc.Landmarks.size, 2);
-  History.Perform(Hist, 'Remove', (_Doc, Record) => Record(Model.RemoveLandmark(Doc, 5)));
-  assert.equal(Model.GetLandmark(Doc, 5), null);
-  assert.equal(Model.RemoveLandmark(Doc, 5), null, 'removing nothing is a no-op');
-  History.Undo(Hist);
-  assert.equal(Model.GetLandmark(Doc, 5).szName, 'Karador');
-  History.Undo(Hist);
-  History.Undo(Hist);
-  assert.equal(Model.GetLandmark(Doc, 5).szName, 'Ash');
-  History.Undo(Hist);
-  assert.equal(Doc.Landmarks.size, 0);
-  assert.throws(() => Model.SetLandmark(Doc, 5, { szType: 'volcano' }), /landmark type/);
-  assert.throws(() => Model.SetLandmark(Doc, 5, { szType: 'town', szName: 'a\nb' }), /control/);
-  assert.throws(() => Model.SetLandmark(Doc, -1, { szType: 'town' }), /Unknown tile/);
+  const doc = smallGlobal();
+  const hist = history.create(doc);
+  history.perform(hist, 'Place', (_Doc, record) => record(model.setLandmark(doc, 5, { type: 'village', name: 'Ash' })));
+  history.perform(hist, 'Replace', (_Doc, record) => record(model.setLandmark(doc, 5, { type: 'city', name: 'Karador', notes: 'Capital' })));
+  assert.equal(doc.landmarks.size, 1);
+  assert.deepEqual({ ...model.getLandmark(doc, 5) }, { type: 'city', name: 'Karador', notes: 'Capital' });
+  history.perform(hist, 'Other', (_Doc, record) => record(model.setLandmark(doc, 6, { type: 'cave' })));
+  assert.equal(doc.landmarks.size, 2);
+  history.perform(hist, 'Remove', (_Doc, record) => record(model.removeLandmark(doc, 5)));
+  assert.equal(model.getLandmark(doc, 5), null);
+  assert.equal(model.removeLandmark(doc, 5), null, 'removing nothing is a no-op');
+  history.undo(hist);
+  assert.equal(model.getLandmark(doc, 5).name, 'Karador');
+  history.undo(hist);
+  history.undo(hist);
+  assert.equal(model.getLandmark(doc, 5).name, 'Ash');
+  history.undo(hist);
+  assert.equal(doc.landmarks.size, 0);
+  assert.throws(() => model.setLandmark(doc, 5, { type: 'volcano' }), /landmark type/);
+  assert.throws(() => model.setLandmark(doc, 5, { type: 'town', name: 'a\nb' }), /control/);
+  assert.throws(() => model.setLandmark(doc, -1, { type: 'town' }), /Unknown tile/);
 });
 
 test('overlay validation rejects non-adjacent paths and accepts shared tiles', () => {
-  const Doc = SmallGlobal();
-  const rgnRoad = Path(Doc, 10, 4);
-  const Road = Model.AddOverlay(Doc, { szType: 'road', szName: "King's Road", szStyle: 'highway', rgnTiles: rgnRoad }).After;
-  assert.equal(Road.szId, 'road1');
-  assert.deepEqual([...Road.rgnTiles], rgnRoad);
-  const rgnRiver = [rgnRoad[1], ...Model.Neighbors(Doc, rgnRoad[1]).filter((nTile) => !rgnRoad.includes(nTile)).slice(0, 1)];
-  const River = Model.AddOverlay(Doc, { szType: 'river', rgnTiles: rgnRiver }).After;
-  assert.equal(River.szId, 'river1');
-  assert.deepEqual(Model.OverlaysAt(Doc, rgnRoad[1]).map((Overlay) => Overlay.szId), ['road1', 'river1']);
-  const nFar = FarTile(Doc, 10);
-  assert.throws(() => Model.AddOverlay(Doc, { szType: 'trail', rgnTiles: [10, nFar] }), /not adjacent/);
-  assert.throws(() => Model.AddOverlay(Doc, { szType: 'trail', rgnTiles: [10, 10] }), /not adjacent/);
-  assert.throws(() => Model.AddOverlay(Doc, { szType: 'trail', rgnTiles: [] }), /at least one/);
-  assert.throws(() => Model.AddOverlay(Doc, { szType: 'canal', rgnTiles: [10] }), /overlay type/);
-  assert.throws(() => Model.AddOverlay(Doc, { szType: 'road', szId: 'road1', rgnTiles: [10] }), /Duplicate/);
-  assert.throws(() => Model.AddOverlay(Doc, { szType: 'road', szStyle: 'two words', rgnTiles: [10] }), /style/);
-  assert.throws(() => Model.UpdateOverlay(Doc, 'road1', { rgnTiles: [10, nFar] }), /not adjacent/);
-  assert.equal(Doc.rgOverlays.length, 2, 'failed mutations change nothing');
+  const doc = smallGlobal();
+  const roadTiles = path(doc, 10, 4);
+  const road = model.addOverlay(doc, { type: 'road', name: "King's Road", style: 'highway', tileIndices: roadTiles }).after;
+  assert.equal(road.id, 'road1');
+  assert.deepEqual([...road.tileIndices], roadTiles);
+  const riverTiles = [roadTiles[1], ...model.neighbors(doc, roadTiles[1]).filter((tileIndex) => !roadTiles.includes(tileIndex)).slice(0, 1)];
+  const river = model.addOverlay(doc, { type: 'river', tileIndices: riverTiles }).after;
+  assert.equal(river.id, 'river1');
+  assert.deepEqual(model.overlaysAt(doc, roadTiles[1]).map((overlay) => overlay.id), ['road1', 'river1']);
+  const far = farTile(doc, 10);
+  assert.throws(() => model.addOverlay(doc, { type: 'trail', tileIndices: [10, far] }), /not adjacent/);
+  assert.throws(() => model.addOverlay(doc, { type: 'trail', tileIndices: [10, 10] }), /not adjacent/);
+  assert.throws(() => model.addOverlay(doc, { type: 'trail', tileIndices: [] }), /at least one/);
+  assert.throws(() => model.addOverlay(doc, { type: 'canal', tileIndices: [10] }), /overlay type/);
+  assert.throws(() => model.addOverlay(doc, { type: 'road', id: 'road1', tileIndices: [10] }), /Duplicate/);
+  assert.throws(() => model.addOverlay(doc, { type: 'road', style: 'two words', tileIndices: [10] }), /style/);
+  assert.throws(() => model.updateOverlay(doc, 'road1', { tileIndices: [10, far] }), /not adjacent/);
+  assert.equal(doc.overlays.length, 2, 'failed mutations change nothing');
   // Seam-crossing paths are accepted when the topology says the tiles are adjacent.
-  const Topo = Doc.Topo;
-  const nCross = Topo.rgTiles.findIndex((Tile) => Array.from(Topology.Neighbors(Topo, Tile.nIndex))
-    .some((nOther) => Topo.rgTiles[nOther].szPanel !== Tile.szPanel));
-  const nAcross = Array.from(Topology.Neighbors(Topo, nCross)).find((nOther) => Topo.rgTiles[nOther].szPanel !== Topo.rgTiles[nCross].szPanel);
-  assert.ok(Model.AddOverlay(Doc, { szType: 'trail', rgnTiles: [nCross, nAcross] }));
+  const topo = doc.topo;
+  const cross = topo.tiles.findIndex((tile) => Array.from(topology.neighbors(topo, tile.index))
+    .some((otherIndex) => topo.tiles[otherIndex].panelId !== tile.panelId));
+  const across = Array.from(topology.neighbors(topo, cross)).find((otherIndex) => topo.tiles[otherIndex].panelId !== topo.tiles[cross].panelId);
+  assert.ok(model.addOverlay(doc, { type: 'trail', tileIndices: [cross, across] }));
 });
 
 test('overlays and labels round-trip through undo and redo', () => {
-  const Doc = SmallGlobal();
-  const Hist = History.Create(Doc);
-  const rgSnapshots = [Snapshot(Doc)];
-  const Step = (szLabel, fnMutate) => {
-    History.Perform(Hist, szLabel, fnMutate);
-    rgSnapshots.push(Snapshot(Doc));
+  const doc = smallGlobal();
+  const hist = history.create(doc);
+  const snapshots = [snapshot(doc)];
+  const step = (label, mutate) => {
+    history.perform(hist, label, mutate);
+    snapshots.push(snapshot(doc));
   };
-  Step('Road', (_Doc, Record) => Record(Model.AddOverlay(Doc, { szType: 'road', rgnTiles: Path(Doc, 20, 3) })));
-  Step('Trail', (_Doc, Record) => Record(Model.AddOverlay(Doc, { szType: 'trail', rgnTiles: Path(Doc, 40, 2) })));
-  Step('River', (_Doc, Record) => Record(Model.AddOverlay(Doc, { szType: 'river', szName: 'Silverrun', rgnTiles: Path(Doc, 60, 5) })));
-  Step('Extend', (_Doc, Record) => Record(Model.UpdateOverlay(Doc, 'road1', { rgnTiles: Path(Doc, 20, 4), szName: 'Old Road' })));
-  Step('Remove middle', (_Doc, Record) => Record(Model.RemoveOverlay(Doc, 'trail1')));
-  Step('Labels', (_Doc, Record) => {
-    Record(Model.AddLabel(Doc, { nTile: 3, szText: 'The Northern Wastes', szCategory: 'region', dRotation: -15 }));
-    Record(Model.AddLabel(Doc, { nTile: 3, szText: 'Karador', szCategory: 'city', dDx: 2, dDy: -1 }));
+  step('Road', (_Doc, record) => record(model.addOverlay(doc, { type: 'road', tileIndices: path(doc, 20, 3) })));
+  step('Trail', (_Doc, record) => record(model.addOverlay(doc, { type: 'trail', tileIndices: path(doc, 40, 2) })));
+  step('River', (_Doc, record) => record(model.addOverlay(doc, { type: 'river', name: 'Silverrun', tileIndices: path(doc, 60, 5) })));
+  step('Extend', (_Doc, record) => record(model.updateOverlay(doc, 'road1', { tileIndices: path(doc, 20, 4), name: 'Old Road' })));
+  step('Remove middle', (_Doc, record) => record(model.removeOverlay(doc, 'trail1')));
+  step('Labels', (_Doc, record) => {
+    record(model.addLabel(doc, { tileIndex: 3, text: 'The Northern Wastes', category: 'region', rotation: -15 }));
+    record(model.addLabel(doc, { tileIndex: 3, text: 'Karador', category: 'city', dx: 2, dy: -1 }));
   });
-  Step('Edit label', (_Doc, Record) => Record(Model.UpdateLabel(Doc, 'label1', { dSize: 32, szText: 'Wastes' })));
-  Step('Remove label', (_Doc, Record) => Record(Model.RemoveLabel(Doc, 'label1')));
-  assert.deepEqual(Doc.rgOverlays.map((Overlay) => Overlay.szId), ['road1', 'river1']);
-  assert.deepEqual(Doc.rgLabels.map((Label) => Label.szId), ['label2']);
-  assert.equal(Model.GetLabel(Doc, 'label2').dSize, Model.g_LabelDefaultSizes.city);
-  assert.equal(Model.LabelsAt(Doc, 3).length, 1);
-  for (let nIndex = rgSnapshots.length - 2; nIndex >= 0; nIndex--) {
-    History.Undo(Hist);
-    assert.deepEqual(Snapshot(Doc), rgSnapshots[nIndex], `after undo to step ${nIndex}`);
+  step('Edit label', (_Doc, record) => record(model.updateLabel(doc, 'label1', { size: 32, text: 'Wastes' })));
+  step('Remove label', (_Doc, record) => record(model.removeLabel(doc, 'label1')));
+  assert.deepEqual(doc.overlays.map((overlay) => overlay.id), ['road1', 'river1']);
+  assert.deepEqual(doc.labels.map((label) => label.id), ['label2']);
+  assert.equal(model.getLabel(doc, 'label2').size, model.LABEL_DEFAULT_SIZES.city);
+  assert.equal(model.labelsAt(doc, 3).length, 1);
+  for (let index = snapshots.length - 2; index >= 0; index--) {
+    history.undo(hist);
+    assert.deepEqual(snapshot(doc), snapshots[index], `after undo to step ${index}`);
   }
-  assert.equal(History.Undo(Hist), null);
-  for (let nIndex = 1; nIndex < rgSnapshots.length; nIndex++) {
-    History.Redo(Hist);
-    assert.deepEqual(Snapshot(Doc), rgSnapshots[nIndex], `after redo to step ${nIndex}`);
+  assert.equal(history.undo(hist), null);
+  for (let index = 1; index < snapshots.length; index++) {
+    history.redo(hist);
+    assert.deepEqual(snapshot(doc), snapshots[index], `after redo to step ${index}`);
   }
   // Ids come from the current contents, so a freed id is reused.
-  assert.equal(Model.AddOverlay(Doc, { szType: 'trail', rgnTiles: [0] }).After.szId, 'trail1');
+  assert.equal(model.addOverlay(doc, { type: 'trail', tileIndices: [0] }).after.id, 'trail1');
 });
 
 test('label validation', () => {
-  const Doc = SmallGlobal();
-  assert.throws(() => Model.AddLabel(Doc, { nTile: 0, szText: 'x', szCategory: 'continent' }), /category/);
-  assert.throws(() => Model.AddLabel(Doc, { nTile: 0, szText: '  ', szCategory: 'region' }), /empty/);
-  assert.throws(() => Model.AddLabel(Doc, { nTile: 0, szText: 'x', szCategory: 'region', dSize: 0 }), /positive/);
-  assert.throws(() => Model.AddLabel(Doc, { nTile: 0, szText: 'x', szCategory: 'region', dRotation: NaN }), /finite/);
-  assert.throws(() => Model.AddLabel(Doc, { nTile: Doc.nTiles, szText: 'x', szCategory: 'region' }), /Unknown tile/);
-  assert.throws(() => Model.AddLabel(Doc, { nTile: 0, szText: 'x', szCategory: 'region', szId: '1abc' }), /label id/);
-  assert.throws(() => Model.UpdateLabel(Doc, 'missing', { szText: 'y' }), /Unknown label/);
-  assert.equal(Doc.rgLabels.length, 0);
+  const doc = smallGlobal();
+  assert.throws(() => model.addLabel(doc, { tileIndex: 0, text: 'x', category: 'continent' }), /category/);
+  assert.throws(() => model.addLabel(doc, { tileIndex: 0, text: '  ', category: 'region' }), /empty/);
+  assert.throws(() => model.addLabel(doc, { tileIndex: 0, text: 'x', category: 'region', size: 0 }), /positive/);
+  assert.throws(() => model.addLabel(doc, { tileIndex: 0, text: 'x', category: 'region', rotation: NaN }), /finite/);
+  assert.throws(() => model.addLabel(doc, { tileIndex: doc.tileCount, text: 'x', category: 'region' }), /Unknown tile/);
+  assert.throws(() => model.addLabel(doc, { tileIndex: 0, text: 'x', category: 'region', id: '1abc' }), /label id/);
+  assert.throws(() => model.updateLabel(doc, 'missing', { text: 'y' }), /Unknown label/);
+  assert.equal(doc.labels.length, 0);
 });
 
 test('history limit drops the oldest commands and Clear empties both stacks', () => {
-  const Doc = SmallGlobal();
-  const Hist = History.Create(Doc, { nLimit: 3 });
-  for (let nTile = 0; nTile < 5; nTile++) {
-    History.Perform(Hist, 'Paint', (_Doc, Record) => Record(Model.SetTerrain(Doc, nTile, Terrain.ByChar('.').nId)));
+  const doc = smallGlobal();
+  const hist = history.create(doc, { limit: 3 });
+  for (let tileIndex = 0; tileIndex < 5; tileIndex++) {
+    history.perform(hist, 'Paint', (_Doc, record) => record(model.setTerrain(doc, tileIndex, terrain.byChar('.').id)));
   }
-  assert.equal(Hist.rgUndo.length, 3);
-  while (History.Undo(Hist)) { /* undo all that remain */ }
-  assert.deepEqual(Array.from(Doc.rgnTerrain.subarray(0, 5)), [4, 4, 0, 0, 0]);
-  assert.ok(History.CanRedo(Hist));
-  History.Clear(Hist);
-  assert.equal(History.CanUndo(Hist) || History.CanRedo(Hist), false);
-  assert.throws(() => History.Create(Doc, { nLimit: 0 }), /limit/);
+  assert.equal(hist.undoStack.length, 3);
+  while (history.undo(hist)) { /* undo all that remain */ }
+  assert.deepEqual(Array.from(doc.terrainIds.subarray(0, 5)), [4, 4, 0, 0, 0]);
+  assert.ok(history.canRedo(hist));
+  history.clear(hist);
+  assert.equal(history.canUndo(hist) || history.canRedo(hist), false);
+  assert.throws(() => history.create(doc, { limit: 0 }), /limit/);
 });

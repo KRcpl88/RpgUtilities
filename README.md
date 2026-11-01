@@ -2,6 +2,11 @@
 
 Utilities for fantasy role-playing games.
 
+Coding conventions are documented in
+[Copilot instructions](.github/copilot-instructions.md): Airbnb-based JavaScript
+with camelCase names, PEP 8 Python with snake_case names, and no Hungarian
+notation except in C and C++.
+
 ## Tree and mountain rendering experiment
 
 Run `python3 tools/render_trees.py` to create `trees.svg` with three random trees
@@ -16,29 +21,29 @@ Below the trees and mountains is a V-shaped forest of 45 flat-top hexagons:
 four columns descend on the left, followed by five columns ascending on the
 right, with five hexagons per column and one random tree centered in each hex.
 
-`VHexCluster()` returns the forest's hex polygons. Use
-`HorizontalSegments(rgHexes, dY)` with any contiguous cluster represented as a
+`v_hex_cluster()` returns the forest's hex polygons. Use
+`horizontal_segments(hexes, y)` with any contiguous cluster represented as a
 list of hex polygons (each a list of six `(x, y)` vertices, as returned by
-`HexVertices(x, y, radius)`). It returns sorted `((left_x, y), (right_x, y))`
+`hex_vertices(x, y, radius)`). It returns sorted `((left_x, y), (right_x, y))`
 segments, merging shared edges while preserving gaps, including the gap between
 the V's upper arms. Lines outside the cluster return `[]`. Horizontal boundary
 edges are included; isolated vertex touches are omitted.
 
-Create other shapes with `BuildHexCluster(data)`, accepting a Python dictionary
+Create other shapes with `build_hex_cluster(data)`, accepting a Python dictionary
 or JSON text. `hexes` lists integer axial `[q, r]` coordinates; optional `radius`
 defaults to 24 and `origin` defaults to `[0, 0]`. Centers are
 `x = origin_x + 1.5 * radius * q` and
 `y = origin_y + sqrt(3) * radius * (r + q / 2)` (SVG y increases downward).
-The helper returns polygons usable by `HexForest` and `HorizontalSegments`.
+The helper returns polygons usable by `hex_forest` and `horizontal_segments`.
 Empty, duplicate, malformed, or disconnected clusters raise `ValueError`;
 contiguity means shared edges, and holes are allowed.
 
-The rendered cluster is defined by the `g_szClusterJson` string near the top of
+The rendered cluster is defined by the `CLUSTER_JSON` string near the top of
 `tools/render_trees.py`; no separate JSON file is needed. It initially contains
 the original V. To try a compact flower, replace the string with:
 
 ```python
-g_szClusterJson = """
+CLUSTER_JSON = """
 {"hexes": [[0, 0], [1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]], "radius": 24}
 """
 ```
@@ -251,7 +256,7 @@ each export's size and time.
 | `doc/equilateral-chamfered-cube.{json,svg}` | Projection geometry (reference data for the editor) and a diagram of the unfolded net. |
 
 Module blocks appear in dependency order. Blocks marked `data-dom="true"` use
-the browser DOM and are skipped by `LoadModules`; all other blocks must be
+the browser DOM and are skipped by `loadModules`; all other blocks must be
 DOM-free. Renderer contract tests load that module separately with canvas doubles;
 browser smoke checks verify actual rendering and interaction. SVG tests also use
 Python's standard-library XML parser when available; the browser checks parse

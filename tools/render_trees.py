@@ -8,7 +8,7 @@ from pathlib import Path
 import random
 
 
-g_szClusterJson = """
+CLUSTER_JSON = """
 {
   "hexes": [
     [0, 0], [0, 1], [0, 2], [0, 3], [0, 4],
@@ -26,219 +26,219 @@ g_szClusterJson = """
 """
 
 
-def Tree(nX):
-    dWidth = random.uniform(38, 50)
-    dHeight = random.uniform(45, 60)
-    dY = 150 - dHeight
-    nLobes = random.randint(9, 13)
-    rgPoints = []
-    for n in range(nLobes):
-        dAngle = math.tau * n / nLobes
-        dRadius = random.uniform(0.85, 1.0)
-        rgPoints.append((dWidth * dRadius * math.cos(dAngle),
-                         dHeight * dRadius * math.sin(dAngle)))
-    szPath = f'M {rgPoints[0][0]:.2f},{rgPoints[0][1]:.2f}'
-    for n in range(nLobes):
-        dAngle = math.tau * (n + 0.5) / nLobes
-        dBulge = random.uniform(1.15, 1.4)
-        dX, dEndY = rgPoints[(n + 1) % nLobes]
-        szPath += (f' Q {dWidth * dBulge * math.cos(dAngle):.2f},'
-                   f'{dHeight * dBulge * math.sin(dAngle):.2f}'
-                   f' {dX:.2f},{dEndY:.2f}')
+def tree(center_x):
+    width = random.uniform(38, 50)
+    height = random.uniform(45, 60)
+    y = 150 - height
+    lobes = random.randint(9, 13)
+    points = []
+    for n in range(lobes):
+        angle = math.tau * n / lobes
+        radius = random.uniform(0.85, 1.0)
+        points.append((width * radius * math.cos(angle),
+                         height * radius * math.sin(angle)))
+    path = f'M {points[0][0]:.2f},{points[0][1]:.2f}'
+    for n in range(lobes):
+        angle = math.tau * (n + 0.5) / lobes
+        bulge = random.uniform(1.15, 1.4)
+        x, end_y = points[(n + 1) % lobes]
+        path += (f' Q {width * bulge * math.cos(angle):.2f},'
+                   f'{height * bulge * math.sin(angle):.2f}'
+                   f' {x:.2f},{end_y:.2f}')
     return (
-        f'<g transform="translate({nX},0)">'
+        f'<g transform="translate({center_x},0)">'
         '<path d="M -6,185 L -4,130 L 4,130 L 6,185 Z" '
         'fill="#936442" stroke="#493c2b" stroke-width="2"/>'
-        f'<path transform="translate(0,{dY:.2f})" d="{szPath} Z" '
+        f'<path transform="translate(0,{y:.2f})" d="{path} Z" '
         'fill="#91b765" stroke="#395331" stroke-width="2" '
         'stroke-linejoin="round"/>'
         '</g>'
     )
 
 
-def Mountain(nX):
-    dWidth = random.uniform(100, 125)
-    dBaseY = 365
-    rgAnchors = [
-        (-dWidth / 2, dBaseY),
-        (-random.uniform(18, 35), dBaseY - random.uniform(85, 125)),
-        (random.uniform(-8, 8), dBaseY - random.uniform(35, 55)),
-        (random.uniform(18, 35), dBaseY - random.uniform(85, 125)),
-        (dWidth / 2, dBaseY),
+def mountain(center_x):
+    width = random.uniform(100, 125)
+    base_y = 365
+    anchors = [
+        (-width / 2, base_y),
+        (-random.uniform(18, 35), base_y - random.uniform(85, 125)),
+        (random.uniform(-8, 8), base_y - random.uniform(35, 55)),
+        (random.uniform(18, 35), base_y - random.uniform(85, 125)),
+        (width / 2, base_y),
     ]
-    rgPoints = [rgAnchors[0]]
-    for (dStartX, dStartY), (dEndX, dEndY) in zip(rgAnchors, rgAnchors[1:]):
-        nPoints = random.randint(2, 3)
-        for n in range(1, nPoints + 1):
-            dTX = (n + random.uniform(-0.25, 0.25)) / (nPoints + 1)
-            dTY = (n + random.uniform(-0.25, 0.25)) / (nPoints + 1)
-            rgPoints.append((dStartX + (dEndX - dStartX) * dTX,
-                             dStartY + (dEndY - dStartY) * dTY))
-        rgPoints.append((dEndX, dEndY))
-    szPath = 'M ' + ' L '.join(f'{dX:.2f},{dY:.2f}' for dX, dY in rgPoints)
+    points = [anchors[0]]
+    for (start_x, start_y), (end_x, end_y) in zip(anchors, anchors[1:]):
+        point_count = random.randint(2, 3)
+        for n in range(1, point_count + 1):
+            tx = (n + random.uniform(-0.25, 0.25)) / (point_count + 1)
+            ty = (n + random.uniform(-0.25, 0.25)) / (point_count + 1)
+            points.append((start_x + (end_x - start_x) * tx,
+                             start_y + (end_y - start_y) * ty))
+        points.append((end_x, end_y))
+    path = 'M ' + ' L '.join(f'{x:.2f},{y:.2f}' for x, y in points)
     return (
-        f'<g transform="translate({nX},0)">'
-        f'<path d="{szPath} Z" fill="#d3d3d3" stroke="none"/>'
-        f'<path d="{szPath}" fill="none" stroke="#000000" stroke-width="2" '
+        f'<g transform="translate({center_x},0)">'
+        f'<path d="{path} Z" fill="#d3d3d3" stroke="none"/>'
+        f'<path d="{path}" fill="none" stroke="#000000" stroke-width="2" '
         'stroke-linejoin="round" stroke-linecap="round"/>'
         '</g>'
     )
 
 
-def HexVertices(dX, dY, dRadius):
-    if not math.isfinite(dRadius) or dRadius <= 0:
+def hex_vertices(x, y, radius):
+    if not math.isfinite(radius) or radius <= 0:
         raise ValueError('Hex radius must be positive and finite')
-    dHalfHeight = math.sqrt(3) * dRadius / 2
+    half_height = math.sqrt(3) * radius / 2
     return [
-        (dX + dRadius, dY),
-        (dX + dRadius / 2, dY + dHalfHeight),
-        (dX - dRadius / 2, dY + dHalfHeight),
-        (dX - dRadius, dY),
-        (dX - dRadius / 2, dY - dHalfHeight),
-        (dX + dRadius / 2, dY - dHalfHeight),
+        (x + radius, y),
+        (x + radius / 2, y + half_height),
+        (x - radius / 2, y + half_height),
+        (x - radius, y),
+        (x - radius / 2, y - half_height),
+        (x + radius / 2, y - half_height),
     ]
 
 
-def BuildHexCluster(Data):
+def build_hex_cluster(data):
     """Build flat-top hex polygons from a dict or JSON text.
 
     Required: hexes, a nonempty list of integer axial [q, r] coordinates.
     Optional: radius (default 24), origin [x, y] (default [0, 0]).
     Duplicate cells and clusters not connected through shared edges are rejected.
     """
-    if isinstance(Data, str):
-        Data = json.loads(Data)
-    if not isinstance(Data, dict) or set(Data) - {'hexes', 'radius', 'origin'}:
+    if isinstance(data, str):
+        data = json.loads(data)
+    if not isinstance(data, dict) or set(data) - {'hexes', 'radius', 'origin'}:
         raise ValueError('Cluster must be an object with hexes, radius, and/or origin')
-    rgCells = Data.get('hexes')
-    if not isinstance(rgCells, (list, tuple)) or not rgCells:
+    axial_cells = data.get('hexes')
+    if not isinstance(axial_cells, (list, tuple)) or not axial_cells:
         raise ValueError('Cluster hexes must be a nonempty list of [q, r] coordinates')
-    rgCoordinates = []
-    for Cell in rgCells:
-        if (not isinstance(Cell, (list, tuple)) or len(Cell) != 2
-                or any(type(nValue) is not int for nValue in Cell)):
+    coordinates = []
+    for cell in axial_cells:
+        if (not isinstance(cell, (list, tuple)) or len(cell) != 2
+                or any(type(value) is not int for value in cell)):
             raise ValueError('Each hex coordinate must contain two integers [q, r]')
-        rgCoordinates.append(tuple(Cell))
-    Cells = set(rgCoordinates)
-    if len(Cells) != len(rgCoordinates):
+        coordinates.append(tuple(cell))
+    cells = set(coordinates)
+    if len(cells) != len(coordinates):
         raise ValueError('Cluster contains duplicate hex coordinates')
-    Reached = {rgCoordinates[0]}
-    rgPending = [rgCoordinates[0]]
-    while rgPending:
-        nQ, nR = rgPending.pop()
-        for nDQ, nDR in ((1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)):
-            Neighbor = (nQ + nDQ, nR + nDR)
-            if Neighbor in Cells and Neighbor not in Reached:
-                Reached.add(Neighbor)
-                rgPending.append(Neighbor)
-    if Reached != Cells:
+    reached = {coordinates[0]}
+    pending = [coordinates[0]]
+    while pending:
+        q, r = pending.pop()
+        for dq, dr in ((1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)):
+            neighbor = (q + dq, r + dr)
+            if neighbor in cells and neighbor not in reached:
+                reached.add(neighbor)
+                pending.append(neighbor)
+    if reached != cells:
         raise ValueError('Cluster hexes must be connected through shared edges')
 
-    dRadius = Data.get('radius', 24)
-    if (type(dRadius) not in (int, float)
-            or not math.isfinite(dRadius) or dRadius <= 0):
+    radius = data.get('radius', 24)
+    if (type(radius) not in (int, float)
+            or not math.isfinite(radius) or radius <= 0):
         raise ValueError('Cluster radius must be positive and finite')
-    Origin = Data.get('origin', [0, 0])
-    if (not isinstance(Origin, (list, tuple)) or len(Origin) != 2
-            or any(type(dValue) not in (int, float) or not math.isfinite(dValue)
-                   for dValue in Origin)):
+    origin = data.get('origin', [0, 0])
+    if (not isinstance(origin, (list, tuple)) or len(origin) != 2
+            or any(type(value) not in (int, float) or not math.isfinite(value)
+                   for value in origin)):
         raise ValueError('Cluster origin must contain two finite numbers [x, y]')
-    dOriginX, dOriginY = Origin
-    dHeight = math.sqrt(3) * dRadius
+    origin_x, origin_y = origin
+    height = math.sqrt(3) * radius
     return [
-        HexVertices(dOriginX + 1.5 * dRadius * nQ,
-                    dOriginY + dHeight * (nR + nQ / 2), dRadius)
-        for nQ, nR in rgCoordinates
+        hex_vertices(origin_x + 1.5 * radius * q,
+                    origin_y + height * (r + q / 2), radius)
+        for q, r in coordinates
     ]
 
 
-def VHexCluster():
+def v_hex_cluster():
     """Return 45 flat-top hex polygons: four descending columns, then five ascending."""
-    rgCells = []
-    for nColumn in range(9):
-        nStartRow = nColumn if nColumn < 4 else 12 - 2 * nColumn
-        for nRow in range(nStartRow, nStartRow + 5):
-            rgCells.append((nColumn, nRow))
-    return BuildHexCluster({
-        'hexes': rgCells,
+    axial_cells = []
+    for column in range(9):
+        start_row = column if column < 4 else 12 - 2 * column
+        for row in range(start_row, start_row + 5):
+            axial_cells.append((column, row))
+    return build_hex_cluster({
+        'hexes': axial_cells,
         'origin': [81, 420 + math.sqrt(3) * 24 / 2],
     })
 
 
-def HorizontalSegments(rgHexes, dY):
-    """Intersect hex polygons with y=dY; return sorted ((left, y), (right, y)) pairs.
+def horizontal_segments(hexes, y):
+    """Intersect hex polygons at y; return sorted ((left, y), (right, y)) pairs.
 
     Shared edges and overlapping intervals are merged; gaps remain separate.
     Horizontal boundary edges are included, but isolated vertex touches are not.
     """
-    if not math.isfinite(dY):
+    if not math.isfinite(y):
         raise ValueError('Horizontal line y must be finite')
-    rgIntervals = []
-    for rgVertices in rgHexes:
-        rgXs = []
-        for (dX1, dY1), (dX2, dY2) in zip(
-                rgVertices, rgVertices[1:] + rgVertices[:1]):
-            if min(dY1, dY2) <= dY <= max(dY1, dY2):
-                if dY1 == dY2:
-                    rgXs.extend((dX1, dX2))
+    intervals = []
+    for vertices in hexes:
+        xs = []
+        for (x1, y1), (x2, y2) in zip(
+                vertices, vertices[1:] + vertices[:1]):
+            if min(y1, y2) <= y <= max(y1, y2):
+                if y1 == y2:
+                    xs.extend((x1, x2))
                 else:
-                    rgXs.append(dX1 + (dX2 - dX1) * (dY - dY1) / (dY2 - dY1))
-        if rgXs and min(rgXs) < max(rgXs):
-            rgIntervals.append((min(rgXs), max(rgXs)))
-    rgMerged = []
-    for dLeft, dRight in sorted(rgIntervals):
-        if rgMerged and (dLeft <= rgMerged[-1][1] or math.isclose(
-                dLeft, rgMerged[-1][1], rel_tol=0, abs_tol=1e-9)):
-            rgMerged[-1] = (rgMerged[-1][0], max(rgMerged[-1][1], dRight))
+                    xs.append(x1 + (x2 - x1) * (y - y1) / (y2 - y1))
+        if xs and min(xs) < max(xs):
+            intervals.append((min(xs), max(xs)))
+    merged = []
+    for left_coordinate, right_coordinate in sorted(intervals):
+        if merged and (left_coordinate <= merged[-1][1] or math.isclose(
+                left_coordinate, merged[-1][1], rel_tol=0, abs_tol=1e-9)):
+            merged[-1] = (merged[-1][0], max(merged[-1][1], right_coordinate))
         else:
-            rgMerged.append((dLeft, dRight))
-    return [((dLeft, dY), (dRight, dY)) for dLeft, dRight in rgMerged]
+            merged.append((left_coordinate, right_coordinate))
+    return [((left_coordinate, y), (right_coordinate, y)) for left_coordinate, right_coordinate in merged]
 
 
-def HexForest(rgHexes):
-    rgSvg = ['<g id="hex-cluster">']
-    for rgVertices in rgHexes:
-        dX = sum(dX for dX, dY in rgVertices) / len(rgVertices)
-        dY = sum(dY for dX, dY in rgVertices) / len(rgVertices)
-        dScale = (max(dX for dX, dY in rgVertices)
-                  - min(dX for dX, dY in rgVertices)) / 240
-        szPoints = ' '.join(f'{dX:.2f},{dY:.2f}' for dX, dY in rgVertices)
-        rgSvg.append(
-            f'<g><polygon points="{szPoints}" fill="#f5f5f5" '
+def hex_forest(hexes):
+    svg = ['<g id="hex-cluster">']
+    for vertices in hexes:
+        x = sum(x for x, y in vertices) / len(vertices)
+        y = sum(y for x, y in vertices) / len(vertices)
+        scale = (max(x for x, y in vertices)
+                  - min(x for x, y in vertices)) / 240
+        point_coordinates = ' '.join(f'{x:.2f},{y:.2f}' for x, y in vertices)
+        svg.append(
+            f'<g><polygon points="{point_coordinates}" fill="#f5f5f5" '
             'stroke="#777777" stroke-width="1"/>'
-            f'<g transform="translate({dX:.2f},{dY:.2f}) scale({dScale:g}) '
-            f'translate(0,-100)">{Tree(0)}</g></g>')
-    rgSvg.append('</g>')
-    return '\n'.join(rgSvg)
+            f'<g transform="translate({x:.2f},{y:.2f}) scale({scale:g}) '
+            f'translate(0,-100)">{tree(0)}</g></g>')
+    svg.append('</g>')
+    return '\n'.join(svg)
 
 
-def Main():
-    Parser = argparse.ArgumentParser(description=__doc__)
-    Parser.add_argument('output', nargs='?', default='trees.svg')
-    Args = Parser.parse_args()
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('output', nargs='?', default='trees.svg')
+    args = parser.parse_args()
     try:
-        rgHexes = BuildHexCluster(g_szClusterJson)
-    except ValueError as Error:
-        Parser.error(f'Invalid embedded cluster JSON: {Error}')
-    dMinX = min(dX for Hex in rgHexes for dX, dY in Hex)
-    dMaxX = max(dX for Hex in rgHexes for dX, dY in Hex)
-    dMinY = min(dY for Hex in rgHexes for dX, dY in Hex)
-    dMaxY = max(dY for Hex in rgHexes for dX, dY in Hex)
-    dWidth = max(450, dMaxX - dMinX + 50)
-    dHeight = max(900, dMaxY - dMinY + 420 + 20)
-    dLeftMargin = (dWidth - (dMaxX - dMinX)) / 2
-    rgHexes = [[(dX - dMinX + dLeftMargin, dY - dMinY + 420) for dX, dY in Hex]
-               for Hex in rgHexes]
-    szSvg = ('<svg xmlns="http://www.w3.org/2000/svg" '
-             f'width="{dWidth:g}" height="{dHeight:g}" '
-             f'viewBox="0 0 {dWidth:g} {dHeight:g}">\n'
-             + '\n'.join(Tree(nX) for nX in (75, 225, 375))
-             + '\n' + '\n'.join(Mountain(nX) for nX in (75, 225, 375))
-             + '\n' + HexForest(rgHexes)
+        hexes = build_hex_cluster(CLUSTER_JSON)
+    except ValueError as error:
+        parser.error(f'Invalid embedded cluster JSON: {error}')
+    min_x = min(x for hexagon in hexes for x, y in hexagon)
+    max_x = max(x for hexagon in hexes for x, y in hexagon)
+    min_y = min(y for hexagon in hexes for x, y in hexagon)
+    max_y = max(y for hexagon in hexes for x, y in hexagon)
+    width = max(450, max_x - min_x + 50)
+    height = max(900, max_y - min_y + 420 + 20)
+    left_margin = (width - (max_x - min_x)) / 2
+    hexes = [[(x - min_x + left_margin, y - min_y + 420) for x, y in hexagon]
+               for hexagon in hexes]
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" '
+             f'width="{width:g}" height="{height:g}" '
+             f'viewBox="0 0 {width:g} {height:g}">\n'
+             + '\n'.join(tree(center_x) for center_x in (75, 225, 375))
+             + '\n' + '\n'.join(mountain(center_x) for center_x in (75, 225, 375))
+             + '\n' + hex_forest(hexes)
              + '\n</svg>\n')
-    Path(Args.output).write_text(szSvg, encoding='utf-8')
-    print(f'Wrote {Args.output}')
+    Path(args.output).write_text(svg, encoding='utf-8')
+    print(f'Wrote {args.output}')
 
 
 if __name__ == '__main__':
-    Main()
+    main()
