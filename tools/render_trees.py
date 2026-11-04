@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render random trees, mountains, and a hex forest: python3 tools/render_trees.py [output.svg]."""
+"""Render random trees, mountains, and a hex terrain cluster."""
 
 import argparse
 import json
@@ -8,20 +8,24 @@ from pathlib import Path
 import random
 
 
+TREE_MIN_LOBES = 4
+TREE_MAX_LOBES = 7
+
+
 CLUSTER_JSON = """
 {
   "hexes": [
     [0, 0], [0, 1], [0, 2], [0, 3], [0, 4],
-    [1, 1], [1, 2], [1, 3], [1, 4], [1, 5],
-    [2, 2], [2, 3], [2, 4], [2, 5], [2, 6],
-    [3, 3], [3, 4], [3, 5], [3, 6], [3, 7],
-    [4, 4], [4, 5], [4, 6], [4, 7], [4, 8],
-    [5, 2], [5, 3], [5, 4], [5, 5], [5, 6],
-    [6, 0], [6, 1], [6, 2], [6, 3], [6, 4],
-    [7, -2], [7, -1], [7, 0], [7, 1], [7, 2],
-    [8, -4], [8, -3], [8, -2], [8, -1], [8, 0]
+    [1, 0], [1, 1], [1, 2], [1, 3], [1, 4],
+    [2, 0], [2, 1], [2, 2], [2, 3], [2, 4],
+    [3, 2], [3, 3], [3, 4], [3, 5], 
+    [4, 2], [4, 3], [4, 4], [4, 5],
+    [5, 1], [5, 2], [5, 3], [5, 4], 
+    [6, -2], [6, -1], [6, 0], [6, 1], [6, 2], [6, 3],
+    [7, -3], [7, -2], [7, -1], [7, 0], [7, 1], [7, 2],
+    [8, -4], [8, -3], [8, -2], [8, -1], [8, 0], [8, 1]
   ],
-  "radius": 24
+  "radius": 48
 }
 """
 
@@ -30,7 +34,7 @@ def tree(center_x):
     width = random.uniform(38, 50)
     height = random.uniform(45, 60)
     y = 150 - height
-    lobes = random.randint(9, 13)
+    lobes = random.randint(TREE_MIN_LOBES, TREE_MAX_LOBES)
     points = []
     for n in range(lobes):
         angle = math.tau * n / lobes
@@ -195,19 +199,27 @@ def horizontal_segments(hexes, y):
     return [((left_coordinate, y), (right_coordinate, y)) for left_coordinate, right_coordinate in merged]
 
 
-def hex_forest(hexes):
+def hex_terrain(hexes, terrain='trees'):
+    render_symbol, center_y = {
+        'trees': (tree, 100),
+        'mountains': (mountain, 305),
+    }[terrain]
     svg = ['<g id="hex-cluster">']
     for vertices in hexes:
         x = sum(x for x, y in vertices) / len(vertices)
         y = sum(y for x, y in vertices) / len(vertices)
         scale = (max(x for x, y in vertices)
                   - min(x for x, y in vertices)) / 240
-        point_coordinates = ' '.join(f'{x:.2f},{y:.2f}' for x, y in vertices)
+        point_coordinates = ' '.join(f'{x:.4f},{y:.4f}' for x, y in vertices)
         svg.append(
             f'<g><polygon points="{point_coordinates}" fill="#f5f5f5" '
-            'stroke="#777777" stroke-width="1"/>'
-            f'<g transform="translate({x:.2f},{y:.2f}) scale({scale:g}) '
-            f'translate(0,-100)">{tree(0)}</g></g>')
+            'stroke="#777777" stroke-width="1"/>')
+        svg.append(
+            f'<g transform="translate({x:.4f},{y:.4f}) scale({scale:g}) '
+            f'translate(0,-{center_y})">')
+        svg.append(f'{render_symbol(0)}')
+        svg.append('</g>')
+        svg.append('</g>')
     svg.append('</g>')
     return '\n'.join(svg)
 
@@ -215,6 +227,9 @@ def hex_forest(hexes):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', nargs='?', default='trees.svg')
+    parser.add_argument(
+        '--terrain', choices=('trees', 'mountains'), default='trees',
+        help='Terrain used to fill the hexes (default: trees)')
     args = parser.parse_args()
     try:
         hexes = build_hex_cluster(CLUSTER_JSON)
@@ -227,14 +242,14 @@ def main():
     width = max(450, max_x - min_x + 50)
     height = max(900, max_y - min_y + 420 + 20)
     left_margin = (width - (max_x - min_x)) / 2
-    hexes = [[(x - min_x + left_margin, y - min_y + 420) for x, y in hexagon]
+    top_margin = 20
+    hexes = [[(x - min_x + left_margin, y - min_y + top_margin) for x, y in hexagon]
                for hexagon in hexes]
+    svg_terrain = hex_terrain(hexes, args.terrain)
     svg = ('<svg xmlns="http://www.w3.org/2000/svg" '
              f'width="{width:g}" height="{height:g}" '
              f'viewBox="0 0 {width:g} {height:g}">\n'
-             + '\n'.join(tree(center_x) for center_x in (75, 225, 375))
-             + '\n' + '\n'.join(mountain(center_x) for center_x in (75, 225, 375))
-             + '\n' + hex_forest(hexes)
+             + '\n' + svg_terrain
              + '\n</svg>\n')
     Path(args.output).write_text(svg, encoding='utf-8')
     print(f'Wrote {args.output}')
