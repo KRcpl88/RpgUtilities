@@ -216,7 +216,7 @@ def horizontal_segments(hexes, y):
             merged[-1] = (merged[-1][0], max(merged[-1][1], right_coordinate))
         else:
             merged.append((left_coordinate, right_coordinate))
-    return [((left_coordinate, y), (right_coordinate, y)) for left_coordinate, right_coordinate in merged]
+    return [(left_coordinate, right_coordinate) for left_coordinate, right_coordinate in merged]
 
 
 def hex_terrain(hexes, terrain='trees'):
