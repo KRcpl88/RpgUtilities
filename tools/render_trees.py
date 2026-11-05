@@ -57,7 +57,7 @@ def tree(center_x):
         'fill="#91b765" stroke="#395331" stroke-width="2" '
         'stroke-linejoin="round"/>'
         '</g>'
-    ), 25
+    ), 22
 
 #returns svg, terrain_width
 def mountain(center_x):
@@ -219,25 +219,72 @@ def horizontal_segments(hexes, y):
     return [(left_coordinate, right_coordinate) for left_coordinate, right_coordinate in merged]
 
 
+def segment_intersection(first_segments, second_segments):
+    """Return sorted, merged intersections of two collections of intervals.
+
+    Inputs are (left, right) pairs and are not modified. Endpoint-only
+    intersections are excluded. Nonfinite or reversed edges raise ValueError.
+    """
+    def merge_segments(segments):
+        intervals = []
+        for left, right in segments:
+            if not math.isfinite(left) or not math.isfinite(right):
+                raise ValueError('Segment edges must be finite')
+            if left > right:
+                raise ValueError('Segment left edge must not exceed right edge')
+            if left < right:
+                intervals.append((left, right))
+        merged = []
+        for left, right in sorted(intervals):
+            if merged and left <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], right))
+            else:
+                merged.append((left, right))
+        return merged
+
+    first = merge_segments(first_segments)
+    second = merge_segments(second_segments)
+    intersections = []
+    first_index = second_index = 0
+    while first_index < len(first) and second_index < len(second):
+        first_left, first_right = first[first_index]
+        second_left, second_right = second[second_index]
+        left = max(first_left, second_left)
+        right = min(first_right, second_right)
+        if left < right:
+            intersections.append((left, right))
+        if first_right <= second_right:
+            first_index += 1
+        if second_right <= first_right:
+            second_index += 1
+    return intersections
+
+
 def hex_terrain(hexes, terrain='trees'):
-    render_symbol, row_height, first_row_height, center_y, x_margin = {
-        'trees': (tree, 25, 50, 150, 20),
-        'mountains': (mountain, 100, 200, 305, 20)
+    render_symbol, row_height, first_row_height, center_y, x_margin, bottom_margin, terrrain_height = {
+        'trees': (tree, 25, 1, 30, 10, 0, 60 ),
+        'mountains': (mountain, 100, 1, 20, 10, 70, 70)
     }[terrain]
     min_y, max_y, min_x, max_x = cluster_bounds(hexes)
     svg = ['<g id="hex-cluster">']
+  
     scale = (max(x for x, y in hexes[0])
             - min(x for x, y in hexes[0])) / 240
     
     y = min_y + first_row_height
-    while y <= max_y:
-        for segment in horizontal_segments(hexes, y):
+    while y <= max_y - bottom_margin:
+    #while y <= min_y + first_row_height + 1:
+
+        min_segments = segment_intersection(horizontal_segments(hexes, y), horizontal_segments(hexes, y + terrrain_height))   
+        for segment in min_segments:
+
             x=segment[0] + x_margin
             while x <= segment[1] - x_margin:
                 terrain_symbol, terrain_width = render_symbol(0)
                 if terrain_width + x <= segment[1]:
+                    baseline = y  + random.uniform(-row_height/4, row_height/4)
                     svg.append(
-                        f'<g transform="translate({(x + terrain_width/2):.4f},{y:.4f}) scale({scale:g}) '
+                        f'<g transform="translate({(x + terrain_width/2):.4f},{baseline:.4f}) scale({scale:g}) '
                         f'translate(0,-{center_y})">')
                     svg.append(f'{terrain_symbol}')
                     svg.append('</g>')                    
