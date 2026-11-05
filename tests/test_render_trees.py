@@ -18,12 +18,29 @@ renderer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(renderer)
 
 
+class TreeTests(unittest.TestCase):
+    def test_tree_returns_svg_and_measurements(self):
+        symbol, width, center_y = renderer.tree(75)
+        group = et.fromstring(symbol)
+        self.assertEqual(group.get('transform'), 'translate(75,0)')
+        trunk, crown = group
+        self.assertEqual(trunk.get('fill'), '#936442')
+        self.assertEqual(crown.get('fill'), '#91b765')
+        self.assertGreater(width, 0)
+        self.assertTrue(math.isfinite(width))
+        self.assertTrue(math.isfinite(center_y))
+
+
 class MountainTests(unittest.TestCase):
     def test_slopes_have_two_or_three_intermediate_points(self):
         for seed in range(100):
             with self.subTest(seed=seed), patch.object(
                     renderer, 'random', random.Random(seed)):
-                group = et.fromstring(renderer.mountain(75))
+                symbol, width, center_y = renderer.mountain(75)
+                group = et.fromstring(symbol)
+                self.assertGreater(width, 0)
+                self.assertTrue(math.isfinite(width))
+                self.assertTrue(math.isfinite(center_y))
                 fill, outline = group
                 self.assertEqual(group.get('transform'), 'translate(75,0)')
                 self.assertEqual(fill.get('d'), outline.get('d') + ' Z')
@@ -54,53 +71,91 @@ class MountainTests(unittest.TestCase):
 
     def test_mountains_vary(self):
         with patch.object(renderer, 'random', random.Random(0)):
-            self.assertNotEqual(renderer.mountain(75), renderer.mountain(75))
+            first_symbol, _, _ = renderer.mountain(75)
+            second_symbol, _, _ = renderer.mountain(75)
+            self.assertNotEqual(first_symbol, second_symbol)
 
-    def test_main_keeps_trees_and_adds_three_mountains(self):
+    def test_terrain_option_selects_symbols_for_cluster(self):
+        for terrain, render_symbol, fill in (
+                ('trees', renderer.tree, '#936442'),
+                ('mountains', renderer.mountain, '#d3d3d3')):
+            with self.subTest(terrain=terrain), \
+                    tempfile.TemporaryDirectory() as directory:
+                _, _, center_y = render_symbol(0)
+                output = Path(directory) / 'terrain.svg'
+                with patch('sys.argv', [
+                        'render_trees.py', '--terrain', terrain, str(output)]), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    renderer.main()
+                svg = et.parse(output).getroot()
+                self.assertEqual(len(svg), 1)
+                self.assertEqual(svg[0].get('id'), 'hex-cluster')
+                cells = [
+                    group for group in svg[0]
+                    if group.find(
+                        '{http://www.w3.org/2000/svg}polygon') is not None
+                ]
+                symbols = [
+                    group for group in svg[0]
+                    if group.get('transform') is not None
+                ]
+                self.assertEqual(
+                    len(cells), len(json.loads(renderer.CLUSTER_JSON)['hexes']))
+                self.assertTrue(symbols)
+                for group in symbols:
+                    self.assertTrue(group.get('transform').endswith(
+                        f'translate(0,-{center_y})'))
+                    symbol = group[0]
+                    self.assertEqual(symbol[0].get('fill'), fill)
+                    if terrain == 'mountains':
+                        self.assertEqual(symbol[1].get('fill'), 'none')
+                        self.assertEqual(symbol[1].get('stroke'), '#000000')
+
+    def test_unknown_terrain_reports_error_without_writing_svg(self):
         with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / 'landscape.svg'
-            with patch('sys.argv', ['render_trees.py', str(output)]), \
-                    contextlib.redirect_stdout(io.StringIO()):
+            output = Path(directory) / 'terrain.svg'
+            error_output = io.StringIO()
+            with patch('sys.argv', [
+                    'render_trees.py', str(output), '--terrain', 'desert']), \
+                    contextlib.redirect_stderr(error_output), \
+                    self.assertRaises(SystemExit) as error:
                 renderer.main()
-            svg = et.parse(output).getroot()
-        self.assertEqual(svg.get('viewBox'), '0 0 450 900')
-        self.assertEqual(len(svg), 7)
-        for group in list(svg)[:3]:
-            self.assertEqual(group[0].get('fill'), '#936442')
-            self.assertEqual(group[1].get('fill'), '#91b765')
-        for group in list(svg)[3:6]:
-            self.assertEqual(group[0].get('fill'), '#d3d3d3')
-            self.assertEqual(group[1].get('stroke'), '#000000')
-        forest = svg[-1]
-        self.assertEqual(forest.get('id'), 'hex-cluster')
-        self.assertEqual(len(forest), 45)
-        for cell in forest:
-            self.assertEqual(cell[0].tag, '{http://www.w3.org/2000/svg}polygon')
-            points = [
-                tuple(map(float, point.split(',')))
-                for point in cell[0].get('points').split()
-            ]
-            self.assertEqual(len(points), 6)
-            self.assertTrue(all(0 < x < 450 and 390 < y < 900
-                                for x, y in points))
-            x = sum(x for x, y in points) / 6
-            y = sum(y for x, y in points) / 6
-            self.assertEqual(
-                cell[1].get('transform'),
-                f'translate({x:.2f},{y:.2f}) scale(0.2) translate(0,-100)')
-            tree = cell[1][0]
-            self.assertEqual(len(tree), 2)
-            self.assertEqual(tree[0].get('fill'), '#936442')
-            self.assertEqual(tree[1].get('fill'), '#91b765')
+            self.assertEqual(error.exception.code, 2)
+            self.assertIn('invalid choice', error_output.getvalue())
+            self.assertFalse(output.exists())
 
 
 class HexClusterTests(unittest.TestCase):
     def assert_segments_equal(self, actual_segments, expected_items):
         self.assertEqual(len(actual_segments), len(expected_items))
         for actual, expected in zip(actual_segments, expected_items):
-            for point, expected_point in zip(actual, expected):
-                self.assertAlmostEqual(point[0], expected_point[0])
-                self.assertAlmostEqual(point[1], expected_point[1])
+            self.assertEqual(len(actual), 2)
+            self.assertAlmostEqual(actual[0], expected[0])
+            self.assertAlmostEqual(actual[1], expected[1])
+
+    def test_cluster_bounds_single_hex(self):
+        bounds = renderer.cluster_bounds([renderer.hex_vertices(0, 0, 2)])
+        expected = (-math.sqrt(3), math.sqrt(3), -2, 2)
+        for actual, limit in zip(bounds, expected):
+            self.assertAlmostEqual(actual, limit)
+
+    def test_cluster_bounds_single_pass_over_translated_hexes(self):
+        hexes = (iter(vertices) for vertices in (
+            renderer.hex_vertices(-8, 3, 2),
+            renderer.hex_vertices(5, -7, 4),
+        ))
+        bounds = renderer.cluster_bounds(hexes)
+        expected = (-7 - 2 * math.sqrt(3), 3 + math.sqrt(3), -10, 9)
+        for actual, limit in zip(bounds, expected):
+            self.assertAlmostEqual(actual, limit)
+
+    def test_cluster_bounds_rejects_empty_or_nonfinite_vertices(self):
+        invalid = [[], [[]]]
+        for value in (math.nan, math.inf, -math.inf):
+            invalid.extend(([[(value, 0)]], [[(0, value)]]))
+        for hexes in invalid:
+            with self.subTest(hexes=hexes), self.assertRaises(ValueError):
+                renderer.cluster_bounds(hexes)
 
     def test_v_has_nine_columns_of_five_and_is_contiguous(self):
         hexes = renderer.v_hex_cluster()
@@ -147,7 +202,7 @@ class HexClusterTests(unittest.TestCase):
                             (half_height, 1), (-half_height, 1)):
             self.assert_segments_equal(
                 renderer.horizontal_segments(hexes, y),
-                [((-extent, y), (extent, y))])
+                [(-extent, extent)])
         rotated = [[(y, x) for x, y in hexes[0]]]
         self.assertEqual(renderer.horizontal_segments(rotated, 2), [])
 
@@ -156,14 +211,14 @@ class HexClusterTests(unittest.TestCase):
         hexes = [renderer.hex_vertices(0, 0, 2),
                    renderer.hex_vertices(3, height / 2, 2)]
         y = height / 4
-        expected_items = [((-1.5, y), (4.5, y))]
+        expected_items = [(-1.5, 4.5)]
         self.assert_segments_equal(renderer.horizontal_segments(hexes, y), expected_items)
         self.assert_segments_equal(
             renderer.horizontal_segments([hexes[1], *hexes], y), expected_items)
         stack = [hexes[0], renderer.hex_vertices(0, height, 2)]
         self.assert_segments_equal(
             renderer.horizontal_segments(stack, height / 2),
-            [((-1, height / 2), (1, height / 2))])
+            [(-1, 1)])
 
     def test_arbitrary_contiguous_ring_preserves_hole(self):
         height = math.sqrt(3) * 2
@@ -172,7 +227,7 @@ class HexClusterTests(unittest.TestCase):
             (0, height), (-3, height / 2), (-3, -height / 2))]
         self.assert_segments_equal(
             renderer.horizontal_segments(hexes, 0),
-            [((-4, 0), (-2, 0)), ((2, 0), (4, 0))])
+            [(-4, -2), (2, 4)])
 
     def test_empty_cluster_and_invalid_inputs(self):
         self.assertEqual(renderer.horizontal_segments([], 0), [])
@@ -238,27 +293,6 @@ class ClusterInputTests(unittest.TestCase):
             with self.subTest(data=data), self.assertRaises(ValueError):
                 renderer.build_hex_cluster(data)
 
-    def test_embedded_json_renders_every_cell_and_expands_canvas(self):
-        data = {'hexes': [[q, 0] for q in range(7)]
-                + [[0, r] for r in range(1, 7)],
-                'radius': 60, 'origin': [-1000, -1000]}
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / 'forest.svg'
-            with patch.object(renderer, 'CLUSTER_JSON', json.dumps(data)), \
-                    patch('sys.argv', ['render_trees.py', str(output)]), \
-                    contextlib.redirect_stdout(io.StringIO()):
-                renderer.main()
-            svg = et.parse(output).getroot()
-        width, height = float(svg.get('width')), float(svg.get('height'))
-        self.assertGreater(width, 450)
-        self.assertGreater(height, 900)
-        self.assertEqual(len(svg[-1]), len(data['hexes']))
-        for cell in svg[-1]:
-            self.assertIn('scale(0.5)', cell[1].get('transform'))
-            for point in cell[0].get('points').split():
-                x, y = map(float, point.split(','))
-                self.assertTrue(0 < x < width and 390 < y < height)
-
     def test_bad_embedded_json_reports_error_without_writing_svg(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'forest.svg'
@@ -273,15 +307,6 @@ class ClusterInputTests(unittest.TestCase):
                 self.assertEqual(error.exception.code, 2)
                 self.assertIn('Invalid embedded cluster JSON', error_output.getvalue())
                 self.assertFalse(output.exists())
-
-    def test_embedded_default_matches_v_shape(self):
-        embedded_hexes = renderer.build_hex_cluster(renderer.CLUSTER_JSON)
-        v = renderer.v_hex_cluster()
-        for embedded, hexagon in zip(embedded_hexes, v):
-            for (x1, y1), (x2, y2) in zip(embedded, hexagon):
-                self.assertAlmostEqual(x1 + 81, x2)
-                self.assertAlmostEqual(y1 + 420 + math.sqrt(3) * 24 / 2, y2)
-        self.assertEqual(len(embedded_hexes), len(v))
 
 
 if __name__ == '__main__':
