@@ -20,11 +20,14 @@ library; optionally pass an output path, such as
 Below the trees and mountains is a V-shaped forest of 45 flat-top hexagons:
 four columns descend on the left, followed by five columns ascending on the
 right, with five hexagons per column and one random tree centered in each hex.
+Use `--terrain mountains` to fill those hexes with mountains instead, for example
+`python3 tools/render_trees.py --terrain mountains mountains.svg`.
+`--terrain trees` is the default; the standalone tree and mountain rows are unchanged.
 
 `v_hex_cluster()` returns the forest's hex polygons. Use
 `horizontal_segments(hexes, y)` with any contiguous cluster represented as a
 list of hex polygons (each a list of six `(x, y)` vertices, as returned by
-`hex_vertices(x, y, radius)`). It returns sorted `((left_x, y), (right_x, y))`
+`hex_vertices(x, y, radius)`). It returns sorted `(left_x, right_x)`
 segments, merging shared edges while preserving gaps, including the gap between
 the V's upper arms. Lines outside the cluster return `[]`. Horizontal boundary
 edges are included; isolated vertex touches are omitted.
