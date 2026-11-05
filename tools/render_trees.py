@@ -57,7 +57,7 @@ def tree(center_x):
         'fill="#91b765" stroke="#395331" stroke-width="2" '
         'stroke-linejoin="round"/>'
         '</g>'
-    )
+    ), 100, 100
 
 
 def mountain(center_x):
@@ -86,7 +86,7 @@ def mountain(center_x):
         f'<path d="{path}" fill="none" stroke="#000000" stroke-width="2" '
         'stroke-linejoin="round" stroke-linecap="round"/>'
         '</g>'
-    )
+    ), 305, 305
 
 
 def hex_vertices(x, y, radius):
@@ -101,7 +101,6 @@ def hex_vertices(x, y, radius):
         (x - radius / 2, y - half_height),
         (x + radius / 2, y - half_height),
     ]
-
 
 def build_hex_cluster(data):
     """Build flat-top hex polygons from a dict or JSON text.
@@ -169,6 +168,27 @@ def v_hex_cluster():
     })
 
 
+def cluster_bounds(hexes):
+    """Return (top, bottom, left, right) in one pass over hex vertices.
+
+    SVG y increases downward, so top is minimum y and bottom is maximum y.
+    Empty clusters and nonfinite coordinates raise ValueError.
+    """
+    top = left = math.inf
+    bottom = right = -math.inf
+    for vertices in hexes:
+        for x, y in vertices:
+            if not math.isfinite(x) or not math.isfinite(y):
+                raise ValueError('Hex vertices must contain finite coordinates')
+            top = min(top, y)
+            bottom = max(bottom, y)
+            left = min(left, x)
+            right = max(right, x)
+    if top == math.inf:
+        raise ValueError('Hex cluster must contain at least one vertex')
+    return top, bottom, left, right
+
+
 def horizontal_segments(hexes, y):
     """Intersect hex polygons at y; return sorted ((left, y), (right, y)) pairs.
 
@@ -200,25 +220,44 @@ def horizontal_segments(hexes, y):
 
 
 def hex_terrain(hexes, terrain='trees'):
-    render_symbol, center_y = {
-        'trees': (tree, 100),
-        'mountains': (mountain, 305),
+    render_symbol, row_height = {
+        'trees': (tree, 20),
+        'mountains': (mountain, 100)
     }[terrain]
+    min_y, max_y, min_x, max_x = cluster_bounds(hexes)
     svg = ['<g id="hex-cluster">']
+    scale = (max(x for x, y in hexes[0])
+            - min(x for x, y in hexes[0])) / 240
+    
+    y = max_y - row_height
+    while y >= min_y:
+        for segment in horizontal_segments(hexes, y):
+            x=segment[0]
+            while x <= segment[1]:
+                terrain_symbol, terrain_width, center_y = render_symbol(0)
+                if terrain_width + x <= segment[1]:
+                    svg.append(
+                        f'<g transform="translate({x:.4f},{y:.4f}) scale({scale:g}) '
+                        f'translate(0,-{center_y})">')
+                    svg.append(f'{terrain_symbol}')
+                    svg.append('</g>')                    
+                x += terrain_width
+        y -= row_height
+
     for vertices in hexes:
         x = sum(x for x, y in vertices) / len(vertices)
         y = sum(y for x, y in vertices) / len(vertices)
-        scale = (max(x for x, y in vertices)
-                  - min(x for x, y in vertices)) / 240
+
         point_coordinates = ' '.join(f'{x:.4f},{y:.4f}' for x, y in vertices)
         svg.append(
             f'<g><polygon points="{point_coordinates}" fill="#f5f5f5" '
             'stroke="#777777" stroke-width="1"/>')
-        svg.append(
-            f'<g transform="translate({x:.4f},{y:.4f}) scale({scale:g}) '
-            f'translate(0,-{center_y})">')
-        svg.append(f'{render_symbol(0)}')
-        svg.append('</g>')
+        #terrain_symbol, center_y = render_symbol(0)
+        #svg.append(
+        #    f'<g transform="translate({x:.4f},{y:.4f}) scale({scale:g}) '
+        #    f'translate(0,-{center_y})">')
+        #svg.append(f'{terrain_symbol}')
+        #svg.append('</g>')
         svg.append('</g>')
     svg.append('</g>')
     return '\n'.join(svg)
@@ -235,10 +274,7 @@ def main():
         hexes = build_hex_cluster(CLUSTER_JSON)
     except ValueError as error:
         parser.error(f'Invalid embedded cluster JSON: {error}')
-    min_x = min(x for hexagon in hexes for x, y in hexagon)
-    max_x = max(x for hexagon in hexes for x, y in hexagon)
-    min_y = min(y for hexagon in hexes for x, y in hexagon)
-    max_y = max(y for hexagon in hexes for x, y in hexagon)
+    min_y, max_y, min_x, max_x = cluster_bounds(hexes)
     width = max(450, max_x - min_x + 50)
     height = max(900, max_y - min_y + 420 + 20)
     left_margin = (width - (max_x - min_x)) / 2
