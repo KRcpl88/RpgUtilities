@@ -29,7 +29,7 @@ CLUSTER_JSON = """
 }
 """
 
-
+#returns svg, terrain_width
 def tree(center_x):
     width = random.uniform(38, 50)
     height = random.uniform(45, 60)
@@ -57,9 +57,9 @@ def tree(center_x):
         'fill="#91b765" stroke="#395331" stroke-width="2" '
         'stroke-linejoin="round"/>'
         '</g>'
-    ), 100, 100
+    ), 25
 
-
+#returns svg, terrain_width
 def mountain(center_x):
     width = random.uniform(100, 125)
     base_y = 365
@@ -86,7 +86,7 @@ def mountain(center_x):
         f'<path d="{path}" fill="none" stroke="#000000" stroke-width="2" '
         'stroke-linejoin="round" stroke-linecap="round"/>'
         '</g>'
-    ), 305, 305
+    ), 100
 
 
 def hex_vertices(x, y, radius):
@@ -220,29 +220,29 @@ def horizontal_segments(hexes, y):
 
 
 def hex_terrain(hexes, terrain='trees'):
-    render_symbol, row_height = {
-        'trees': (tree, 20),
-        'mountains': (mountain, 100)
+    render_symbol, row_height, first_row_height, center_y, x_margin = {
+        'trees': (tree, 25, 50, 150, 20),
+        'mountains': (mountain, 100, 200, 305, 20)
     }[terrain]
     min_y, max_y, min_x, max_x = cluster_bounds(hexes)
     svg = ['<g id="hex-cluster">']
     scale = (max(x for x, y in hexes[0])
             - min(x for x, y in hexes[0])) / 240
     
-    y = max_y - row_height
-    while y >= min_y:
+    y = min_y + first_row_height
+    while y <= max_y:
         for segment in horizontal_segments(hexes, y):
-            x=segment[0]
-            while x <= segment[1]:
-                terrain_symbol, terrain_width, center_y = render_symbol(0)
+            x=segment[0] + x_margin
+            while x <= segment[1] - x_margin:
+                terrain_symbol, terrain_width = render_symbol(0)
                 if terrain_width + x <= segment[1]:
                     svg.append(
-                        f'<g transform="translate({x:.4f},{y:.4f}) scale({scale:g}) '
+                        f'<g transform="translate({(x + terrain_width/2):.4f},{y:.4f}) scale({scale:g}) '
                         f'translate(0,-{center_y})">')
                     svg.append(f'{terrain_symbol}')
                     svg.append('</g>')                    
                 x += terrain_width
-        y -= row_height
+        y += row_height
 
     for vertices in hexes:
         x = sum(x for x, y in vertices) / len(vertices)
@@ -250,7 +250,7 @@ def hex_terrain(hexes, terrain='trees'):
 
         point_coordinates = ' '.join(f'{x:.4f},{y:.4f}' for x, y in vertices)
         svg.append(
-            f'<g><polygon points="{point_coordinates}" fill="#f5f5f5" '
+            f'<g><polygon points="{point_coordinates}" fill="none" '
             'stroke="#777777" stroke-width="1"/>')
         #terrain_symbol, center_y = render_symbol(0)
         #svg.append(
