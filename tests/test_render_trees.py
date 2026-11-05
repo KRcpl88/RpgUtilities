@@ -75,8 +75,8 @@ class MountainTests(unittest.TestCase):
 
     def test_terrain_option_selects_symbols_for_cluster(self):
         for terrain, center_y, fill in (
-                ('trees', 150, '#936442'),
-                ('mountains', 305, '#d3d3d3')):
+                ('trees', 30, '#936442'),
+                ('mountains', 20, '#d3d3d3')):
             with self.subTest(terrain=terrain), \
                     tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / 'terrain.svg'
@@ -120,6 +120,52 @@ class MountainTests(unittest.TestCase):
             self.assertEqual(error.exception.code, 2)
             self.assertIn('invalid choice', error_output.getvalue())
             self.assertFalse(output.exists())
+
+
+class SegmentIntersectionTests(unittest.TestCase):
+    def test_example_and_swapped_inputs(self):
+        first = [(0, 2), (4, 8)]
+        second = [(1, 5), (6, 9)]
+        expected = [(1, 2), (4, 5), (6, 8)]
+        self.assertEqual(renderer.segment_intersection(first, second), expected)
+        self.assertEqual(renderer.segment_intersection(second, first), expected)
+
+    def test_unsorted_overlapping_inputs_are_merged_without_mutation(self):
+        first = [(4, 8), (0, 3), (2, 6), (0, 3)]
+        second = [(7, 9), (1, 5), (5, 7)]
+        original_first = first.copy()
+        original_second = second.copy()
+        self.assertEqual(
+            renderer.segment_intersection(first, second), [(1, 8)])
+        self.assertEqual(first, original_first)
+        self.assertEqual(second, original_second)
+
+    def test_empty_disjoint_and_endpoint_only_intersections(self):
+        for first, second in (
+                ([], [(0, 2)]),
+                ([(0, 2)], []),
+                ([(0, 2)], [(3, 4)]),
+                ([(0, 2)], [(2, 4)]),
+                ([(1, 1)], [(0, 2)])):
+            with self.subTest(first=first, second=second):
+                self.assertEqual(
+                    renderer.segment_intersection(first, second), [])
+
+    def test_contained_negative_and_fractional_intervals(self):
+        self.assertEqual(
+            renderer.segment_intersection(
+                [(-5, 5)], [(-4.5, -2), (0.5, 2.5)]),
+            [(-4.5, -2), (0.5, 2.5)])
+
+    def test_reversed_and_nonfinite_edges_are_rejected(self):
+        invalid = [(2, 1)]
+        for value in (math.nan, math.inf, -math.inf):
+            invalid.extend(((value, 2), (0, value)))
+        for segment in invalid:
+            for first, second in (([segment], []), ([], [segment])):
+                with self.subTest(first=first, second=second), \
+                        self.assertRaises(ValueError):
+                    renderer.segment_intersection(first, second)
 
 
 class HexClusterTests(unittest.TestCase):
