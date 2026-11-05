@@ -20,7 +20,7 @@ spec.loader.exec_module(renderer)
 
 class TreeTests(unittest.TestCase):
     def test_tree_returns_svg_and_measurements(self):
-        symbol, width, center_y = renderer.tree(75)
+        symbol, width = renderer.tree(75)
         group = et.fromstring(symbol)
         self.assertEqual(group.get('transform'), 'translate(75,0)')
         trunk, crown = group
@@ -28,7 +28,6 @@ class TreeTests(unittest.TestCase):
         self.assertEqual(crown.get('fill'), '#91b765')
         self.assertGreater(width, 0)
         self.assertTrue(math.isfinite(width))
-        self.assertTrue(math.isfinite(center_y))
 
 
 class MountainTests(unittest.TestCase):
@@ -36,11 +35,10 @@ class MountainTests(unittest.TestCase):
         for seed in range(100):
             with self.subTest(seed=seed), patch.object(
                     renderer, 'random', random.Random(seed)):
-                symbol, width, center_y = renderer.mountain(75)
+                symbol, width = renderer.mountain(75)
                 group = et.fromstring(symbol)
                 self.assertGreater(width, 0)
                 self.assertTrue(math.isfinite(width))
-                self.assertTrue(math.isfinite(center_y))
                 fill, outline = group
                 self.assertEqual(group.get('transform'), 'translate(75,0)')
                 self.assertEqual(fill.get('d'), outline.get('d') + ' Z')
@@ -71,17 +69,16 @@ class MountainTests(unittest.TestCase):
 
     def test_mountains_vary(self):
         with patch.object(renderer, 'random', random.Random(0)):
-            first_symbol, _, _ = renderer.mountain(75)
-            second_symbol, _, _ = renderer.mountain(75)
+            first_symbol, _ = renderer.mountain(75)
+            second_symbol, _ = renderer.mountain(75)
             self.assertNotEqual(first_symbol, second_symbol)
 
     def test_terrain_option_selects_symbols_for_cluster(self):
-        for terrain, render_symbol, fill in (
-                ('trees', renderer.tree, '#936442'),
-                ('mountains', renderer.mountain, '#d3d3d3')):
+        for terrain, center_y, fill in (
+                ('trees', 150, '#936442'),
+                ('mountains', 305, '#d3d3d3')):
             with self.subTest(terrain=terrain), \
                     tempfile.TemporaryDirectory() as directory:
-                _, _, center_y = render_symbol(0)
                 output = Path(directory) / 'terrain.svg'
                 with patch('sys.argv', [
                         'render_trees.py', '--terrain', terrain, str(output)]), \
