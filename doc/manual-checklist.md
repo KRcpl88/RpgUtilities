@@ -72,7 +72,7 @@ Use this checklist to test a release by hand in a current Chromium, Firefox or S
 - [ ] A single-panel map exports only its chosen panel (scope cannot change). Equator and poles follow their checkbox in global, single-panel and local exports.
 - [ ] **Download SVG** downloads `<name>-<Panel>.svg` (or `<name>.svg` locally). The map stays unsaved (`*`) and undo history is unchanged. The status bar reports the size and time.
 - [ ] Open the SVG in the browser: the panel is north-up and clipped, outside areas are transparent, and the content matches the editor:
-  - [ ] terrain colours, terrain patterns (hills, peaks, trees with trunks on southern forest edges, dunes, fields…) clipped to their regions;
+  - [ ] all enabled terrain colours drawn before complete terrain patterns (hills, peaks, lobed trees, dunes, fields…); motifs overlap adjacent terrain without region cropping, stay clipped to the outer map boundary, and draw north to south; single-line tree trunks only near forest boundaries and clearings;
   - [ ] smoothed shorelines only between land and water;
   - [ ] roads, trails, tapered rivers, landmark symbols (and names if enabled), labels with halos;
   - [ ] an equatorial panel export includes the neighbour's edge-hex tips with their own terrain.

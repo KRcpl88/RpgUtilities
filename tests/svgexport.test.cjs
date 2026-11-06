@@ -205,7 +205,7 @@ test('SVG land and water fills share the exact shoreline, including mixed terrai
   }
 });
 
-test('SVG shoreline colour adjustments and embellishment clips follow the existing layer switches', () => {
+test('SVG shoreline colour adjustments and unclipped embellishments follow the layer switches', () => {
   const doc = shoreMap('island');
   const on = svgExport.write(doc), off = svgExport.write(doc, { layers: { shoreline: false } });
   assert.match(on, /<path id="region-\d+"[^>]+d="[^"]*C/);
@@ -213,7 +213,8 @@ test('SVG shoreline colour adjustments and embellishment clips follow the existi
   const noColours = svgExport.write(doc, { layers: { terrain: false, embellishment: false } });
   assert.doesNotMatch(noColours, /id="layer-terrain"|id="region-/);
   assert.match(noColours, /<g id="layer-shoreline" fill="none"[\s\S]*?<path d="[^"]*C/);
-  assert.match(on, /<clipPath id="clip-region-\d+"><use href="#region-\d+"\/>/);
+  assert.doesNotMatch(on, /id="clip-region-|clip-path="url\(#clip-region-/);
+  assert.match(on, /clip-path="url\(#map-clip\)"/);
   const wider = svgExport.write(doc, { width: 2400 });
   assert.equal(on.replace(/width="\d+" height="\d+"/, ''), wider.replace(/width="\d+" height="\d+"/, ''));
 });
@@ -262,7 +263,7 @@ test('every export layer can be excluded independently without altering other la
     if (key !== 'label') assert.ok(text.includes('id="layer-label"'));
     if (key !== 'terrain') assert.ok(text.includes('id="layer-terrain"'));
     if (key === 'landmark') assert.ok(!text.includes('<symbol'));
-    if (key === 'terrain') assert.ok(text.includes('id="region-'), 'embellishments still clip to regions');
+    if (key === 'terrain') assert.ok(!text.includes('id="region-'), 'embellishments no longer need region paths');
     if (key === 'embellishment') assert.ok(!text.includes('<clipPath id="clip-region-'));
   }
   const noTerrain = svgExport.write(doc, { layers: { terrain: false, embellishment: false } });

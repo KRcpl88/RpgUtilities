@@ -2334,7 +2334,7 @@
     mountainPeak: ['tile', 1, 1, 1, '#3d3229', null, null],
     desert: ['scatter', 0.3, 0.2, 0.9, '#9c7a3a', null, null],
     sandDunes: ['scatter', 0.36, 0.22, 1, '#8f6a2c', null, null],
-    forest: ['scatter', 0.24, 0.2, 1, '#2b4824', '#4a3320', null],
+    forest: ['scatter', 0.265, 0.3, 1, '#395331', '#493c2b', '#91b765'],
     marsh: ['scatter', 0.22, 0.18, 0.9, '#3f5f2a', '#3d6f8a', null],
     mangrove: ['scatter', 0.24, 0.2, 0.95, '#2f4a2a', '#3d6f8a', null],
     tundra: ['scatter', 0.24, 0.16, 0.9, '#5d6f76', null, null],
@@ -5310,17 +5310,14 @@
 
   // SVG terrain patterns (plan §8) in normalized export units: hex heights, y north/up.
   // Motifs are anchored to lattices in the exported panel's frame, so patterns continue
-  // across same-terrain tiles; SvgExport clips each region's motifs to that region.
+  // across same-terrain tiles; SvgExport layers complete motifs over the ground.
   const VARIANTS = 4;
   const JITTER = 0.3;
   const HEX_AREA = Math.sqrt(3) / 2;
-  const TRUNK_SPACING = 0.08;
-  const TRUNK_HEIGHT = 0.07;
-  const SOUTH_FACING = -0.3;
-  // Forest crowns keep this clearance from an exposed south edge so trunks show beneath them;
-  // a row of crowns spaced along the edge replaces those removed.
-  const CROWN_CLEARANCE = 0.165;
-  const FRINGE_SPACING = 0.2;
+  // render_trees.py scales a 240-unit-wide reference hex to the map's hex width.
+  const TREE_SCALE = 1 / (120 * Math.sqrt(3));
+  const TRUNK_HEIGHT = 55 * TREE_SCALE;
+  const TRUNK_BOUNDARY_DISTANCE = TRUNK_HEIGHT;
   const motifCache = new Map();
 
   function segmentDistance(point, a, b) {
@@ -5414,8 +5411,21 @@
       return [...shapes, dune(0, 0, 0.3 + 0.05 * r(), 0.09 + 0.02 * r())];
     },
     forest(r) {
-      const radius = 0.105 + 0.02 * r(), phase = 2 * Math.PI * r();
-      return [shape('body', ring(0, 0, radius, 20, (angle) => 1 + 0.08 * Math.sin(5 * angle + phase)), true)];
+      const width = (38 + 12 * r()) * TREE_SCALE, height = (45 + 15 * r()) * TREE_SCALE;
+      const centerY = 35 * TREE_SCALE + height, lobes = 4 + Math.floor(4 * r());
+      const anchors = ring(0, 0, 1, lobes, () => 0.85 + 0.15 * r())
+        .map(([x, y]) => [x * width, y * height]);
+      const crown = [];
+      for (let lobeIndex = 0; lobeIndex < lobes; lobeIndex++) {
+        const angle = 2 * Math.PI * (lobeIndex + 0.5) / lobes, bulge = 1.15 + 0.25 * r();
+        crown.push(...quadratic(anchors[lobeIndex],
+          [width * bulge * Math.cos(angle), height * bulge * Math.sin(angle)],
+          anchors[(lobeIndex + 1) % lobes]).slice(0, -1));
+      }
+      return [
+        shape('accent', [[0, 0], [0, TRUNK_HEIGHT]]),
+        shape('body', crown.map(([x, y]) => [x, centerY - y]), true),
+      ];
     },
     marsh(r, variant) {
       if (variant < 2) {
@@ -5560,7 +5570,7 @@
   }
 
   // Embellishments of Regions.Build output, indexed like its regions (null: no pattern).
-  // Forest regions also get trunks along internal edges whose south side is not forest.
+  // Tree anchors are their feet, so north-to-south order also layers their trunks correctly.
   function build(data) {
     const seed = panelSeed(data.panelId);
     const cells = data.regions.map(() => []);
@@ -5572,9 +5582,9 @@
       }
       const instances = (type.embellish.layoutKind === 'tile' ? tileInstances : latticeInstances)(data, cells[regionIndex], type, seed);
       instances.sort((a, b) => b.point[1] - a.point[1] || a.point[0] - b.point[0]);
-      return { key: type.key, terrainId: type.id, instances, trunks: [] };
+      return { key: type.key, terrainId: type.id, instances };
     });
-    const forestId = terrain.byKey('forest').id, southEdges = new Map(), southByRegion = new Map();
+    const forestId = terrain.byKey('forest').id, forestEdges = new Map();
     for (const edge of data.edges) {
       const cells = edge.cellIndices.map((cellIndex) => data.cells[cellIndex]);
       if (cells.length !== 2 || (cells[0].terrainId === forestId) === (cells[1].terrainId === forestId)) {
@@ -5582,75 +5592,30 @@
       }
       const forest = cells[0].terrainId === forestId ? cells[0] : cells[1];
       const a = data.points[edge.indexA], b = data.points[edge.indexB];
-      const polygon = cellPolygon(data, forest);
-      let normal = util.unit([b[1] - a[1], a[0] - b[0]]);
-      if (util.dot(normal, util.subtract(util.center(polygon), a)) > 0) {
-        normal = util.scale(normal, -1);
-      }
-      if (normal[1] > SOUTH_FACING) {
-        continue;
-      }
-      const maxX = Math.max(a[0], b[0]) - 0.02;
-      for (let k = Math.ceil((Math.min(a[0], b[0]) + 0.02) / TRUNK_SPACING); k * TRUNK_SPACING <= maxX; k++) {
-        const x = k * TRUNK_SPACING, y = a[1] + (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0]);
-        results[forest.regionIndex].trunks.push([[x, y], [x, y + TRUNK_HEIGHT]]);
-      }
-      // Bucket each exposed edge in every 0.5-hex cell its clearance band can reach.
-      const south = { a, b, normal, regionIndex: forest.regionIndex, polygon };
-      (southByRegion.get(forest.regionIndex) || southByRegion.set(forest.regionIndex, []).get(forest.regionIndex)).push(south);
-      for (let columnIndex = Math.floor((Math.min(a[0], b[0]) - CROWN_CLEARANCE) * 2); columnIndex <= Math.floor((Math.max(a[0], b[0]) + CROWN_CLEARANCE) * 2); columnIndex++) {
-        for (let rowIndex = Math.floor((Math.min(a[1], b[1]) - CROWN_CLEARANCE) * 2); rowIndex <= Math.floor((Math.max(a[1], b[1]) + CROWN_CLEARANCE) * 2); rowIndex++) {
+      const boundary = { a, b, regionIndex: forest.regionIndex };
+      // Bucket only real forest/open-terrain edges, not shared forest edges or export borders.
+      for (let columnIndex = Math.floor((Math.min(a[0], b[0]) - TRUNK_BOUNDARY_DISTANCE) * 2); columnIndex <= Math.floor((Math.max(a[0], b[0]) + TRUNK_BOUNDARY_DISTANCE) * 2); columnIndex++) {
+        for (let rowIndex = Math.floor((Math.min(a[1], b[1]) - TRUNK_BOUNDARY_DISTANCE) * 2); rowIndex <= Math.floor((Math.max(a[1], b[1]) + TRUNK_BOUNDARY_DISTANCE) * 2); rowIndex++) {
           const key = `${columnIndex},${rowIndex}`;
-          (southEdges.get(key) || southEdges.set(key, []).get(key)).push(south);
+          (forestEdges.get(key) || forestEdges.set(key, []).get(key)).push(boundary);
         }
       }
     }
     results.forEach((result, regionIndex) => {
-      if (!southByRegion.has(regionIndex)) {
+      if (!result || result.key !== 'forest') {
         return;
       }
-      const clear = (point) => (southEdges.get(`${Math.floor(point[0] * 2)},${Math.floor(point[1] * 2)}`) || [])
-        .every((south) => south.regionIndex !== regionIndex || segmentDistance(point, south.a, south.b) >= CROWN_CLEARANCE - 1e-9);
-      // Crowns inside the clearance band are replaced by one tidy row along the exposed edges.
-      result.instances = result.instances.filter((instance) => clear(instance.point));
-      const fringe = [], near = new Map();
-      const bucket = (point) => [Math.floor(point[0] / FRINGE_SPACING), Math.floor(point[1] / FRINGE_SPACING)];
-      const spaced = (point) => {
-        const [columnIndex, rowIndex] = bucket(point);
-        for (let dx = -1; dx <= 1; dx++) {
-          for (let dy = -1; dy <= 1; dy++) {
-            for (const other of near.get(`${columnIndex + dx},${rowIndex + dy}`) || []) {
-              if (Math.hypot(other[0] - point[0], other[1] - point[1]) < FRINGE_SPACING * 0.75) {
-                return false;
-              }
-            }
-          }
-        }
-        return true;
-      };
-      for (const south of southByRegion.get(regionIndex)) {
-        const a = south.a, b = south.b, maxX = Math.max(a[0], b[0]);
-        for (let k = Math.ceil(Math.min(a[0], b[0]) / FRINGE_SPACING); k * FRINGE_SPACING <= maxX; k++) {
-          const x = k * FRINGE_SPACING, y = a[1] + (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0]);
-          const r = util.createRng(util.hashIntegers(seed, forestId, k, Math.round(y * 4096), 3));
-          const tangent = util.unit(util.subtract(b, a));
-          const point = util.subtract(util.add([x, y], util.scale(tangent, (r() - 0.5) * 0.04)), util.scale(south.normal, CROWN_CLEARANCE + 0.03 * r()));
-          if (util.pointInConvex(point, south.polygon, 0) && clear(point) && spaced(point)) {
-            const key = bucket(point).join(',');
-            (near.get(key) || near.set(key, []).get(key)).push(point);
-            fringe.push({ variant: Math.floor(r() * VARIANTS), point, scale: 1 });
-          }
-        }
+      for (const instance of result.instances) {
+        const point = instance.point;
+        instance.hasTrunk = (forestEdges.get(`${Math.floor(point[0] * 2)},${Math.floor(point[1] * 2)}`) || [])
+          .some((edge) => edge.regionIndex === regionIndex && segmentDistance(point, edge.a, edge.b) <= TRUNK_BOUNDARY_DISTANCE);
       }
-      result.instances.push(...fringe);
-      result.instances.sort((a, b) => b.point[1] - a.point[1] || a.point[0] - b.point[0]);
-      result.trunks.sort((a, b) => a[0][0] - b[0][0] || a[0][1] - b[0][1]);
     });
     return results;
   }
 
   rpgMap.Embellish = Object.freeze({
-    VARIANTS, JITTER, HEX_AREA, TRUNK_SPACING, TRUNK_HEIGHT, SOUTH_FACING, CROWN_CLEARANCE, FRINGE_SPACING,
+    VARIANTS, JITTER, HEX_AREA, TREE_SCALE, TRUNK_HEIGHT, TRUNK_BOUNDARY_DISTANCE,
     motifs, panelSeed, build,
   });
 })(globalThis);
@@ -5895,27 +5860,31 @@
       `<clipPath id="map-clip"><path d="${pathData(outlineShape, hexToSvg)}"/></clipPath>`,
     ];
     const embellishments = (layers.embellishment ? embellish.build(regionsData) : [])
-      .map((item) => item && (item.instances.length || item.trunks.length) ? item : null);
-    if (layers.terrain || layers.embellishment) {
+      .map((item) => item && item.instances.length ? item : null);
+    if (layers.terrain) {
       regionsData.regions.forEach((region, index) => {
         const path = region.loops.map((points) => pathData({ points: points, isClosed: true }, hexToSvg, shorelines)).join('');
         lines.push(`<path id="region-${index}" fill-rule="evenodd" clip-rule="evenodd" d="${path}"/>`);
       });
     }
     const usedVariants = new Map();
-    embellishments.forEach((item, index) => {
+    embellishments.forEach((item) => {
       if (item) {
-        lines.push(`<clipPath id="clip-region-${index}"><use href="#region-${index}"/></clipPath>`);
         const variants = usedVariants.get(item.terrainId) || usedVariants.set(item.terrainId, new Set()).get(item.terrainId);
-        item.instances.forEach((instance) => variants.add(instance.variant));
+        item.instances.forEach((instance) => variants.add(`${instance.variant}${instance.hasTrunk ? '-trunk' : ''}`));
       }
     });
     for (const type of terrain.TERRAINS.filter((item) => usedVariants.has(item.id))) {
       const spec = type.embellish;
       const body = layers.terrain ? spec.body || type.color : UNCOLOURED_BODY;
       embellish.motifs(type.key).forEach((shapes, variant) => {
-        if (usedVariants.get(type.id).has(variant)) {
-          lines.push(`<g id="emb-${type.key}-${variant}">${shapes.map((shape) => motifPath(shape, spec, body)).join('')}</g>`);
+        for (const suffix of ['', '-trunk']) {
+          if (!usedVariants.get(type.id).has(`${variant}${suffix}`)) {
+            continue;
+          }
+          const visibleShapes = type.key === 'forest' && !suffix ? shapes.slice(1) : shapes;
+          const strokeWidth = type.key === 'forest' ? ` stroke-width="${motifNumber(2 * embellish.TREE_SCALE * HEX_UNITS)}"` : '';
+          lines.push(`<g id="emb-${type.key}-${variant}${suffix}"${strokeWidth}>${visibleShapes.map((shape) => motifPath(shape, spec, body)).join('')}</g>`);
         }
       });
     }
@@ -5928,32 +5897,35 @@
     lines.push('</defs>', '<g clip-path="url(#map-clip)">');
     if (layers.terrain) {
       lines.push('<g id="layer-terrain">');
-      regionsData.regions.forEach((region, index) =>
-        lines.push(`<use href="#region-${index}" fill="${terrain.byId(region.terrainId).color}"/>`));
+      regionsData.regions.forEach((region, index) => {
+        const type = terrain.byId(region.terrainId);
+        const ground = type.key === 'forest' ? terrain.byKey('plain') : type;
+        lines.push(`<use href="#region-${index}" fill="${ground.color}"/>`);
+      });
       lines.push('</g>');
     }
     if (layers.embellishment) {
       lines.push('<g id="layer-embellishment" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round">');
-      embellishments.forEach((item, index) => {
-        if (!item) {
-          return;
+      const instances = embellishments.flatMap((item) => item
+        ? item.instances.map((instance) => ({ item, instance })) : []);
+      instances.sort((a, b) => b.instance.point[1] - a.instance.point[1] || a.instance.point[0] - b.instance.point[0]);
+      let activeKey = null;
+      for (const { item, instance } of instances) {
+        if (item.key !== activeKey) {
+          if (activeKey !== null) {
+            lines.push('</g>');
+          }
+          lines.push(`<g data-terrain="${item.key}">`);
+          activeKey = item.key;
         }
-        lines.push(`<g data-terrain="${item.key}" clip-path="url(#clip-region-${index})">`);
-        if (item.trunks.length) {
-          const trunks = item.trunks.map(([basePoint, topPoint]) => {
-            const base = projection.applyTransform(hexToSvg, basePoint), top = projection.applyTransform(hexToSvg, topPoint);
-            return `M${motifNumber(base[0])} ${motifNumber(base[1])}V${motifNumber(top[1])}`;
-          }).join('');
-          lines.push(`<path class="trunks" fill="none" stroke="${terrain.byId(item.terrainId).embellish.accent}" stroke-width="1.4" d="${trunks}"/>`);
-        }
-        for (const instance of item.instances) {
-          const point = projection.applyTransform(hexToSvg, instance.point).map(motifNumber);
-          const href = `href="#emb-${item.key}-${instance.variant}"`;
-          lines.push(instance.scale === 1 ? `<use ${href} x="${point[0]}" y="${point[1]}"/>`
-            : `<use ${href} transform="matrix(${util.formatNumber(instance.scale, 4)} 0 0 ${util.formatNumber(instance.scale, 4)} ${point[0]} ${point[1]})"/>`);
-        }
+        const point = projection.applyTransform(hexToSvg, instance.point).map(motifNumber);
+        const href = `href="#emb-${item.key}-${instance.variant}${instance.hasTrunk ? '-trunk' : ''}"`;
+        lines.push(instance.scale === 1 ? `<use ${href} x="${point[0]}" y="${point[1]}"/>`
+          : `<use ${href} transform="matrix(${util.formatNumber(instance.scale, 4)} 0 0 ${util.formatNumber(instance.scale, 4)} ${point[0]} ${point[1]})"/>`);
+      }
+      if (activeKey !== null) {
         lines.push('</g>');
-      });
+      }
       lines.push('</g>');
     }
     if (layers.shoreline) {
@@ -7578,7 +7550,7 @@
       element('h2', { id: 'export-map-title', textContent: 'Export SVG' }),
       field('export-panel', 'Scope', panel), field('export-width', 'Width (pixels; height keeps aspect ratio)', widthInput),
       element('fieldset', {}, [element('legend', { textContent: 'Include layers' }), ...layerRows]),
-      element('p', { className: 'tool-help', textContent: 'Exports north-up, clipped to this panel or the whole local map. Transparent where terrain colours are omitted. Embellishments draw terrain patterns in their own regions; with terrain colours off, filled motifs are white.' }),
+      element('p', { className: 'tool-help', textContent: 'Exports north-up, clipped to this panel or the whole local map. Transparent where terrain colours are omitted. Embellishments draw over the ground without cropping at terrain boundaries; with terrain colours off, filled motifs are white.' }),
       preview, errorText,
       element('div', { className: 'property-actions' }, [
         element('button', { id: 'export-download', type: 'submit', className: 'tool-button', textContent: 'Download SVG' }),
