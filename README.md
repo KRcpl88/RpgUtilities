@@ -213,7 +213,7 @@ one point per hex edge, displaced from its midpoint along the centre-to-face ray
 by up to 30% of a hex's full width. The smooth curve passes directly between these
 points without interpolating hex corners; short clipped edges vary less.
 When terrain colours are enabled, both adjacent fills follow that
-same curve; embellishments are clipped to the adjusted regions. Turning
+same curve; embellishments remain complete above the ground fills. Turning
 Shorelines off restores the original hex-edge fills. Canvas rendering and saved
 terrain are unchanged.
 
@@ -225,10 +225,16 @@ does **not** save the editable map, clear its unsaved indicator, or change undo
 history; use Save for `.map.txt`.
 
 Terrain embellishments draw a pattern for every terrain except plain and open
-water: hill curves, mountain peaks, dunes, tree crowns with trunks along a
-forest's southern edge, marsh grass, field patchworks, and so on. Patterns
-continue across neighbouring tiles of the same terrain and are clipped to their
-own terrain region. With terrain colours off, filled motifs (crowns, islands,
+water: hill curves, mountain peaks, dunes, lobed trees styled after
+`tools/render_trees.py`, marsh grass, field patchworks, and so on. Trees overlap
+from north to south; each visible trunk is a single line beneath its crown.
+Trunks are omitted in dense forest interiors and included only near forest
+boundaries or clearings. With terrain colours enabled, forest ground uses the
+plains colour beneath the unchanged tree crowns. All enabled ground colours
+are drawn first, then complete motifs in north-to-south order across terrain
+regions. Patterns continue across neighbouring tiles and may overlap adjacent
+terrain without being cropped; only the outer map boundary clips them.
+With terrain colours off, filled motifs (crowns, islands,
 fields) are white.
 
 ### Large maps and performance

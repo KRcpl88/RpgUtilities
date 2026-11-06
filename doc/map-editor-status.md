@@ -1,8 +1,21 @@
 # Global Map Editor: Plan Status
 
-Last updated: 2026-10-29 (after milestone 12; the plan is complete). See [`map-editor-plan.md`](map-editor-plan.md) for the full plan and [`../prompt.md`](../prompt.md) for the specification.
+Last updated: 2026-11-06 (post-plan SVG forest rendering; the plan is complete). See [`map-editor-plan.md`](map-editor-plan.md) for the full plan and [`../prompt.md`](../prompt.md) for the specification.
 
 ## Summary
+
+Post-plan addition (2026-11-06): SVG forest trees use the lobed elliptical
+crowns, proportions, colours and fine outlines from `tools/render_trees.py`.
+Each tree is anchored at its feet and drawn north to south, with its single-line
+trunk immediately before its crown. Trunks are included only within one trunk
+height of an internal forest/non-forest boundary (including holes and gaps);
+shared forest edges and export borders do not create trunks. The former
+separate edge-trunk layer, crown clearance band and fringe row are removed.
+With SVG terrain colours enabled, forest regions use the plains ground colour;
+tree crown colours and the editor's forest palette colour are unchanged.
+SVG export draws all enabled ground colours first, then complete terrain motifs
+in a shared north-to-south order across regions. Motifs may overlap neighbouring
+terrain without being cropped; only the outer map boundary clips them.
 
 Post-plan additions (2026-10-29): New offers a third `panel` map kind, selecting
 one complete panel with M/L/XL tiles and no wrapping or neighbours. The model
@@ -90,14 +103,14 @@ Post-plan additions (2026-10-30): local maps across panel seams, and crop/rescal
     - Regions contain `{ terrainId, tileIndices, loops }`; loops repeat their first point, with outer loops CCW and holes CW. Interior edges cancel. Spatial buckets merge vertices within `TOLERANCE = 1e-8` hex; malformed boundaries throw.
     - Each cell also records its `regionIndex` index.
     - `tracePaths(edges, points)` returns `{ points, isClosed }` chains/loops. Shorelines include only shared water/land edges, never exterior cuts or land/land and water/water boundaries. `smoothPath(path, passes = 2)` applies endpoint-preserving Chaikin smoothing (0–3 passes).
-  - `Embellish` (DOM-free, §11.58–61): `build(Regions.build(...))` → per-region `null | { key, terrainId, instances: [{ variant, point, scale }], trunks: [[base, top]…] }` in hex units (y up), sorted north to south; `motifs(key)` → 4 cached frozen variants of `{ role: body | ink | accent | dot, points, isClosed }` shapes; `panelSeed`; constants `VARIANTS`, `JITTER`, `HEX_AREA`, `TRUNK_SPACING`, `TRUNK_HEIGHT`, `SOUTH_FACING`, `CROWN_CLEARANCE`, `FRINGE_SPACING`.
+  - `Embellish` (DOM-free, §11.58–61): `build(Regions.build(...))` → per-region `null | { key, terrainId, instances: [{ variant, point, scale, hasTrunk? }] }` in hex units (y up), sorted north to south; `motifs(key)` → 4 cached frozen variants of `{ role: body | ink | accent | dot, points, isClosed }` shapes; `panelSeed`; constants `VARIANTS`, `JITTER`, `HEX_AREA`, `TREE_SCALE`, `TRUNK_HEIGHT`, `TRUNK_BOUNDARY_DISTANCE`.
     - Scatter lattices (staggered rows, jittered, kept inside their cell) and field brick rows are anchored in the panel/local frame, so patterns continue across same-terrain tiles; mountain peaks are one motif per tile at its visible centroid, shrunk for partial tiles. Randomness is `hashIntegers(panel seed, terrain, i, j)` only.
-    - Forest: trunks every 0.08 hex along internal forest/non-forest edges whose outward normal points south (y ≤ −0.3), never on export borders; crowns within 0.165 hex of such an edge are replaced by a fringe row along it (0.2 hex spacing).
+    - Forest: four deterministic variants of the reference renderer's 4–7-lobed quadratic crowns, sampled into polylines, above single-line trunks; feet on a jittered 0.265 × 0.3 hex lattice. `hasTrunk` is true only within 55/(120√3) hex of an internal forest/non-forest boundary. Spatial buckets avoid scanning every boundary for every tree; no clearance band or fringe row moves crowns.
   - `SvgExport` (DOM-free, §11.54–57, §11.59): `write(doc, { panelId?, width?, layers? })` → deterministic self-contained SVG; `dimensions(doc, panel?, width?)` → `{ width, height, spanWidth, spanHeight, bounds }`; `fileName(doc, panel?)`; XML `escape`; `LAYER_DEFINITIONS`, `DEFAULT_WIDTH` (1600) and `HEX_UNITS` (48).
     - `estimate(doc, panel?, embellish = true)` → `{ tileCount, embellishedCount, bytes }`: an upper-bound size of 4 KB + 4 B per tile + `EMBELLISHED_TILE_BYTES` (1,100) per embellished tile (§11.64).
     - A selected global panel is north-up and clipped; local maps export whole. The viewBox has 48 units per hex, independent of physical scale, and output height follows width/aspect ratio.
     - Terrain uses even-odd region paths/use; shorelines are smoothed, the optional hex grid has unique edges. Roads/trails and tapered rivers reuse shared curves/styles. Glyph symbols/use and haloed labels retain partial-tile anchors, seam transforms, category/rotation/offset units. Landmark names are optional.
-    - The `embellishment` layer sits between terrain and shoreline: one `<g data-terrain>` per region clipped by `clip-region-N` (`<use>` of its even-odd region path); used motif variants are defined once as `emb-<key>-<n>` and placed with `<use>` (scaled for partial peaks); forest trunks are one path per region. Filled motifs use the descriptor body or terrain colour, or white with colours off.
+    - The `embellishment` layer sits between terrain and shoreline, above all ground fills. Instances from all regions are sorted north to south and emitted in consecutive `<g data-terrain>` runs without region clips; only `map-clip` applies. Used motif variants are defined once as `emb-<key>-<n>` and placed with `<use>` (scaled for partial peaks). Forest variants with trunks have a `-trunk` suffix and contain the trunk before the crown, preserving per-tree depth order. Filled motifs use the descriptor body or terrain colour, or white with colours off.
     - `layers` boolean keys: `terrain`, `embellishment`, `shoreline`, `grid`, `road`, `trail`, `river`, `landmark`, `landmarkNames`, `label`; all default on except grid/names. Disabled groups are omitted. No external files or mutation of the model/history. XML-invalid text and invalid settings throw explicitly.
   - `Renderer` (`data-dom="true"`): `create(canvas)`, `draw(r, state)` → `{ raster, hexPixels }`, `drawMinimap(r, miniCanvas, state)`.
     - Tiles are drawn per placement through frame → world → screen, clipped to the panel polygon, and batched by terrain colour in chunks of 512.

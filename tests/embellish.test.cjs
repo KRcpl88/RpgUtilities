@@ -30,8 +30,7 @@ function segmentDistance(point, a, b) {
   return util.pointDistance(point, util.add(a, util.scale(direction, t)));
 }
 
-// Internal forest/non-forest edges whose outward normal points south, as [a, b, forestCell].
-function exposedSouthEdges(data) {
+function exposedForestEdges(data) {
   const results = [];
   for (const edge of data.edges) {
     if (edge.cellIndices.length !== 2) {
@@ -41,12 +40,8 @@ function exposedSouthEdges(data) {
     if (forest[0] === forest[1]) {
       continue;
     }
-    const forestId = edge.cellIndices[forest[0] ? 0 : 1], a = data.points[edge.indexA], b = data.points[edge.indexB];
-    const toCentre = util.center(polygon(data, data.cells[forestId]))[1] - (a[1] + b[1]) / 2;
-    const normalY = Math.abs(b[0] - a[0]) / util.pointDistance(a, b);
-    if (toCentre > 0 && normalY >= -embellish.SOUTH_FACING) {
-      results.push([a, b, forestId]);
-    }
+    const forestId = edge.cellIndices[forest[0] ? 0 : 1];
+    results.push([data.points[edge.indexA], data.points[edge.indexB], forestId]);
   }
   return results;
 }
@@ -72,7 +67,8 @@ test('terrain descriptors match the plan: every patterned terrain has four froze
       for (const shape of motif) {
         assert.ok(['body', 'ink', 'accent', 'dot'].includes(shape.role));
         assert.ok(shape.points.length >= 2);
-        assert.ok(shape.points.flat().every((value) => Number.isFinite(value) && Math.abs(value) < 0.5), type.key);
+        const limit = type.key === 'forest' ? 0.8 : 0.5;
+        assert.ok(shape.points.flat().every((value) => Number.isFinite(value) && Math.abs(value) < limit), type.key);
       }
     }
   }
@@ -144,57 +140,65 @@ test('mountain peaks draw one motif per tile, shrinking only for partial tiles',
   assert.ok(globalShapes.some((instance) => instance.scale < 1 && instance.scale >= 0.3));
 });
 
-test('forest trunks mark only south-facing internal edges, with crowns kept clear above them', () => {
-  const doc = localMap();
-  const tileIndex = model.localTileIndex(doc, 4, 4);
-  model.setTerrain(doc, tileIndex, id('forest'));
-  let data = regions.build(doc);
-  let forest = embellish.build(data)[cellOf(data, tileIndex).regionIndex];
-  const centre = util.center(polygon(data, cellOf(data, tileIndex)));
-  assert.ok(forest.trunks.length >= 9);
-  for (const [basePoint, topPoint] of forest.trunks) {
-    assert.ok(basePoint[1] < centre[1], 'trunks stand on the southern edges');
-    assert.deepEqual(util.subtract(topPoint, basePoint).map((value) => Math.round(value * 1e9) / 1e9), [0, embellish.TRUNK_HEIGHT]);
-    assert.ok(exposedSouthEdges(data).some(([a, b]) => segmentDistance(basePoint, a, b) < 1e-9));
+test('forest motifs match the reference proportions, lobed crowns and single-line trunks', () => {
+  const spec = terrain.byKey('forest').embellish;
+  assert.equal(spec.body, '#91b765');
+  assert.equal(spec.ink, '#395331');
+  assert.equal(spec.accent, '#493c2b');
+  for (const [trunk, crown] of embellish.motifs('forest')) {
+    assert.equal(trunk.role, 'accent');
+    assert.equal(trunk.isClosed, false);
+    assert.deepEqual(trunk.points, [[0, 0], [0, 55 * embellish.TREE_SCALE]]);
+    assert.equal(crown.role, 'body');
+    assert.equal(crown.isClosed, true);
+    const lobes = crown.points.length / 8;
+    assert.ok(Number.isInteger(lobes) && lobes >= 4 && lobes <= 7);
+    assert.ok(crown.points.every((point) => point[1] > 0));
+    const width = Math.max(...crown.points.map(([x]) => x)) - Math.min(...crown.points.map(([x]) => x));
+    const height = Math.max(...crown.points.map(([, y]) => y)) - Math.min(...crown.points.map(([, y]) => y));
+    assert.ok(width > 0.3 && width < 0.55);
+    assert.ok(height > 0.35 && height < 0.65);
   }
-
-  const south = model.neighbors(doc, tileIndex).find((otherIndex) => {
-    const other = util.center(polygon(data, cellOf(data, otherIndex)));
-    return Math.abs(other[0] - centre[0]) < 1e-9 && other[1] < centre[1];
-  });
-  model.setTerrain(doc, south, id('forest'));
-  data = regions.build(doc);
-  forest = embellish.build(data)[cellOf(data, tileIndex).regionIndex];
-  const shared = data.edges.find((edge) => edge.cellIndices.length === 2
-    && edge.cellIndices.map((cellIndex) => data.cells[cellIndex].tileIndex).sort().join() === [tileIndex, south].sort().join());
-  assert.ok(forest.trunks.every(([basePoint]) => segmentDistance(basePoint, data.points[shared.indexA], data.points[shared.indexB]) > 1e-6));
-
-  const whole = localMap(6, 5, 'forest'), wholeData = regions.build(whole);
-  assert.deepEqual(embellish.build(wholeData)[0].trunks, [], 'the export border never gets trunks');
 });
 
-test('forest crowns respect the clearance band and a fringe row keeps the treeline full', () => {
+test('forest trunks occur only near boundaries and gaps without changing crown positions or depth order', () => {
   const random = util.createRng(77);
   const doc = localMap(16, 12);
   for (let tileIndex = 0; tileIndex < doc.tileCount; tileIndex++) {
     model.setTerrain(doc, tileIndex, random() < 0.6 ? id('forest') : id('plain'));
   }
-  const data = regions.build(doc), exposed = exposedSouthEdges(data), result = embellish.build(data);
+  const data = regions.build(doc), exposed = exposedForestEdges(data), result = embellish.build(data);
   assert.ok(exposed.length > 20);
-  let fringe = 0;
+  let trunkCount = 0, crownOnlyCount = 0;
   result.forEach((item, regionIndex) => {
     if (!item || item.key !== 'forest') {
       return;
     }
     const edges = exposed.filter(([, , cellIndex]) => data.cells[cellIndex].regionIndex === regionIndex);
-    for (const instance of item.instances) {
+    for (const [instanceIndex, instance] of item.instances.entries()) {
       const nearest = Math.min(Infinity, ...edges.map(([a, b]) => segmentDistance(instance.point, a, b)));
-      assert.ok(nearest >= embellish.CROWN_CLEARANCE - 1e-9);
-      fringe += nearest < embellish.CROWN_CLEARANCE + 0.04 ? 1 : 0;
+      assert.equal(instance.hasTrunk, nearest <= embellish.TRUNK_BOUNDARY_DISTANCE);
+      trunkCount += instance.hasTrunk ? 1 : 0;
+      crownOnlyCount += instance.hasTrunk ? 0 : 1;
+      if (instanceIndex) {
+        const previous = item.instances[instanceIndex - 1].point;
+        assert.ok(previous[1] > instance.point[1] || (previous[1] === instance.point[1] && previous[0] <= instance.point[0]));
+      }
       assert.ok(data.cells.some((cell) => cell.regionIndex === regionIndex && util.pointInConvex(instance.point, polygon(data, cell), 1e-9)));
     }
   });
-  assert.ok(fringe >= exposed.length, 'each exposed edge gets at least one fringe crown on average');
+  assert.ok(trunkCount > 0 && crownOnlyCount > 0);
+
+  const whole = localMap(12, 12, 'forest');
+  const wholeResult = embellish.build(regions.build(whole))[0];
+  assert.ok(wholeResult.instances.every((instance) => !instance.hasTrunk), 'export borders and shared forest edges do not create trunks');
+  const gap = model.localTileIndex(whole, 6, 6);
+  model.setTerrain(whole, gap, id('plain'));
+  const gapData = regions.build(whole);
+  const gapResult = embellish.build(gapData).find((item) => item && item.key === 'forest');
+  assert.ok(gapResult.instances.some((instance) => instance.hasTrunk), 'an enclosed clearing gets trunks');
+  const retained = wholeResult.instances.filter((instance) => !util.pointInConvex(instance.point, polygon(gapData, cellOf(gapData, gap)), 0));
+  assert.deepEqual(gapResult.instances.map(({ point, variant }) => [point, variant]), retained.map(({ point, variant }) => [point, variant]));
 });
 
 test('SVG embellishment layer references defined motifs, honours colours-off and scales only by width', () => {
@@ -205,14 +209,25 @@ test('SVG embellishment layer references defined motifs, honours colours-off and
   const text = svgExport.write(doc, { width: 900 });
   const terrainId = text.indexOf('id="layer-terrain"'), layer = text.indexOf('id="layer-embellishment"');
   assert.ok(terrainId > 0 && layer > terrainId && text.indexOf('id="layer-shoreline"') > layer);
-  const defined = [...text.matchAll(/<g id="(emb-[a-zA-Z]+-\d)"/g)].map((match) => match[1]);
+  const defined = [...text.matchAll(/<g id="(emb-[a-zA-Z]+-\d(?:-trunk)?)"/g)].map((match) => match[1]);
   const used = [...text.matchAll(/<use href="#(emb-[^"]+)"/g)].map((match) => match[1]);
   assert.ok(used.length > 100);
   assert.deepEqual([...new Set(used)].sort(), [...defined].sort(), 'only used variants are defined');
   const keys = new Set([...text.matchAll(/data-terrain="([a-zA-Z]+)"/g)].map((match) => match[1]));
   assert.deepEqual([...keys].sort(), terrain.TERRAINS.filter((type) => type.embellish).map((type) => type.key).sort());
-  assert.match(text, /class="trunks"/);
-  assert.ok(text.includes(`fill="${terrain.byKey('forest').color}"`));
+  const forestDefinitions = [...text.matchAll(/<g id="emb-forest-(\d)(-trunk)?"[^>]*>(.*?)<\/g>/g)];
+  assert.ok(forestDefinitions.some(([, , suffix]) => suffix));
+  for (const [, , suffix, content] of forestDefinitions) {
+    const paths = [...content.matchAll(/<path[^>]+>/g)].map(([path]) => path);
+    assert.equal(paths.length, suffix ? 2 : 1);
+    if (suffix) {
+      assert.match(paths[0], /fill="none"/);
+      assert.match(paths[0], /stroke="#493c2b"/);
+      assert.match(paths[0], /d="M0 0L0 -12\.7"/);
+    }
+    assert.match(paths.at(-1), /fill="#91b765"/);
+  }
+  assert.ok(!text.includes(`fill="${terrain.byKey('forest').color}"`));
   assert.doesNotMatch(text, /(?:NaN|Infinity|undefined)/);
 
   const plain = svgExport.write(doc, { width: 900, layers: { terrain: false } });
@@ -224,6 +239,86 @@ test('SVG embellishment layer references defined motifs, honours colours-off and
   const wide = svgExport.write(doc, { width: 2400 });
   const strip = (text) => text.replace(/^<svg [^>]*>/m, (tag) => tag.replace(/ (?:width|height)="[^"]*"/g, ''));
   assert.equal(strip(wide), strip(text));
+});
+
+test('SVG forest ground matches plains only with terrain colours enabled, leaving crowns unchanged', () => {
+  const doc = localMap(4, 4, 'forest');
+  const plainColor = terrain.byKey('plain').color;
+  const forestColor = terrain.byKey('forest').color;
+  const crownColor = terrain.byKey('forest').embellish.body;
+  const text = svgExport.write(doc);
+  const ground = text.match(/<g id="layer-terrain">(.*?)<\/g>/s)[1];
+  assert.match(ground, new RegExp(`fill="${plainColor}"`));
+  assert.ok(!ground.includes(forestColor));
+  const crowns = [...text.matchAll(/<g id="emb-forest-\d[^"]*"[^>]*>(.*?)<\/g>/g)];
+  assert.ok(crowns.length > 0);
+  assert.ok(crowns.every(([, content]) => content.includes(`fill="${crownColor}"`)));
+
+  const groundOnly = svgExport.write(doc, { layers: { embellishment: false } });
+  assert.match(groundOnly, new RegExp(`fill="${plainColor}"`));
+  assert.ok(!groundOnly.includes('id="layer-embellishment"'));
+
+  const noColours = svgExport.write(doc, { layers: { terrain: false } });
+  assert.ok(!noColours.includes('id="layer-terrain"'));
+  assert.ok(!noColours.includes(`fill="${plainColor}"`));
+  assert.ok(!noColours.includes(`fill="${forestColor}"`));
+  assert.match(noColours, /fill="#ffffff"/, 'colours-off crowns keep their existing white fill');
+  assert.equal(terrain.byKey('forest').color, forestColor, 'the editor palette remains unchanged');
+});
+
+test('SVG trees draw each trunk immediately before its crown in north-to-south order', () => {
+  const doc = localMap(7, 7, 'forest');
+  model.setTerrain(doc, model.localTileIndex(doc, 3, 3), id('plain'));
+  const data = regions.build(doc);
+  const forest = embellish.build(data).find((item) => item && item.key === 'forest');
+  const text = svgExport.write(doc);
+  const group = text.match(/<g data-terrain="forest"[^>]*>(.*?)<\/g>/s)[1];
+  const uses = [...group.matchAll(/<use href="#emb-forest-(\d)(-trunk)?" x="([^"]+)" y="([^"]+)"\/>/g)];
+  assert.equal(uses.length, forest.instances.length);
+  uses.forEach(([, variant, suffix, , y], instanceIndex) => {
+    assert.equal(Number(variant), forest.instances[instanceIndex].variant);
+    assert.equal(Boolean(suffix), forest.instances[instanceIndex].hasTrunk);
+    if (instanceIndex) {
+      assert.ok(Number(uses[instanceIndex - 1][4]) <= Number(y));
+    }
+  });
+  assert.doesNotMatch(group, /<path/, 'no separate all-trunks layer may bypass tree depth order');
+});
+
+test('SVG draws complete terrain motifs over all backgrounds in global depth order', () => {
+  const doc = localMap(8, 8);
+  for (let tileIndex = 0; tileIndex < doc.tileCount; tileIndex++) {
+    model.setTerrain(doc, tileIndex, id(tileIndex % 3 === 0 ? 'forest' : 'hills'));
+  }
+  const data = regions.build(doc);
+  const expected = embellish.build(data).flatMap((item) => item
+    ? item.instances.map((instance) => ({ key: item.key, ...instance })) : [])
+    .sort((a, b) => b.point[1] - a.point[1] || a.point[0] - b.point[0]);
+  assert.ok(data.regions.filter((region) => region.terrainId === id('forest')).length > 1);
+  for (const terrainEnabled of [true, false]) {
+    const text = svgExport.write(doc, { layers: { terrain: terrainEnabled } });
+    const layerStart = text.indexOf('id="layer-embellishment"');
+    const layerEnd = text.indexOf('id="layer-shoreline"');
+    const layer = text.slice(layerStart, layerEnd);
+    assert.doesNotMatch(layer, /clip-path|clip-region/);
+    assert.match(text, /<g clip-path="url\(#map-clip\)">/);
+    if (terrainEnabled) {
+      assert.ok(text.indexOf('id="layer-terrain"') < layerStart);
+      assert.doesNotMatch(layer, /href="#region-/);
+    } else {
+      assert.ok(!text.includes('id="layer-terrain"'));
+    }
+    const uses = [...layer.matchAll(/<use href="#emb-([a-zA-Z]+)-(\d)(-trunk)?" x="([^"]+)" y="([^"]+)"\/>/g)];
+    assert.equal(uses.length, expected.length);
+    uses.forEach(([, key, variant, suffix, x, y], instanceIndex) => {
+      const instance = expected[instanceIndex];
+      assert.equal(key, instance.key);
+      assert.equal(Number(variant), instance.variant);
+      assert.equal(Boolean(suffix), Boolean(instance.hasTrunk));
+      assert.ok(Math.abs(Number(x) - (instance.point[0] - data.bounds[0]) * 48) <= 0.0051);
+      assert.ok(Math.abs(Number(y) - (data.bounds[3] - instance.point[1]) * 48) <= 0.0051);
+    });
+  }
 });
 
 test('every local scale and all global panels export embellishments without invalid numbers', () => {
