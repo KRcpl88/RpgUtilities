@@ -90,7 +90,7 @@ def mountain(center_x):
         f'<path d="{path}" fill="none" stroke="#000000" stroke-width="2" '
         'stroke-linejoin="round" stroke-linecap="round"/>'
         '</g>'
-    ), 100
+    ), width / xscale
 
 
 def hex_vertices(x, y, radius):
@@ -267,7 +267,7 @@ def segment_intersection(first_segments, second_segments):
 def hex_terrain(hexes, terrain='trees'):
     render_symbol, row_height, first_row_height, center_y, x_margin, bottom_margin, terrrain_height = {
         'trees': (tree, 25, 1, 30, 10, 0, 60 ),
-        'mountains': (mountain, 100, 1, 20, 10, 70, 70)
+        'mountains': (mountain, 20, 1, 20, 10, 0, 30)
     }[terrain]
     min_y, max_y, min_x, max_x = cluster_bounds(hexes)
     svg = ['<g id="hex-cluster">']
