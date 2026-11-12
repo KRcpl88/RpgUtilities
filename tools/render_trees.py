@@ -61,18 +61,22 @@ def tree(center_x):
 
 #returns svg, terrain_width
 def mountain(center_x):
-    width = random.uniform(100, 125)
+    xscale = 2
+    yscale = 1.5
+    width = random.uniform(100 * xscale, 125 * yscale)
     base_y = 365
     anchors = [
         (-width / 2, base_y),
-        (-random.uniform(18, 35), base_y - random.uniform(85, 125)),
-        (random.uniform(-8, 8), base_y - random.uniform(35, 55)),
-        (random.uniform(18, 35), base_y - random.uniform(85, 125)),
+        (-random.uniform(40* xscale, 45* xscale), base_y - random.uniform(5 * yscale, 10 * yscale)),        
+        (-random.uniform(9* xscale, 18* xscale), base_y - random.uniform(35 * yscale, 50 * yscale)),
+        (random.uniform(-8* xscale, 8* xscale), base_y - random.uniform(25 * yscale, 34 * yscale)),
+        (random.uniform(9* xscale, 18* xscale), base_y - random.uniform(35 * yscale, 50 * yscale)),
+        (random.uniform(40* xscale, 45* xscale), base_y - random.uniform(5 * yscale, 10 * yscale)),  
         (width / 2, base_y),
     ]
     points = [anchors[0]]
     for (start_x, start_y), (end_x, end_y) in zip(anchors, anchors[1:]):
-        point_count = random.randint(2, 3)
+        point_count = 1 # random.randint(2, 3)
         for n in range(1, point_count + 1):
             tx = (n + random.uniform(-0.25, 0.25)) / (point_count + 1)
             ty = (n + random.uniform(-0.25, 0.25)) / (point_count + 1)
@@ -314,7 +318,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', nargs='?', default='trees.svg')
     parser.add_argument(
-        '--terrain', choices=('trees', 'mountains'), default='trees',
+        '--terrain', choices=('trees', 'mountains'), default='mountains',
         help='Terrain used to fill the hexes (default: trees)')
     args = parser.parse_args()
     try:
