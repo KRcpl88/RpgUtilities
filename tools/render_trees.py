@@ -60,13 +60,12 @@ def tree(center_x):
     ), width * random.uniform(1.5, 1.7)
 
 #returns svg, terrain_width
-def mountain(center_x):
+def mountain(center_x, width):
     xscale = 2
     yscale = 2
-    num_peaks = 2
-    if .66 < random.uniform(0,1):
+    num_peaks = 1 if (width < (100 * xscale)) else 2  
+    if num_peaks > 1:
         # 2 peaks
-        width = random.uniform(100 * xscale, 125 * yscale)
         base_y = 50
         anchors = [
             (-width / 2, base_y),
@@ -79,30 +78,29 @@ def mountain(center_x):
             (width / 2, base_y),
         ]
         anchors = [
-            (-width / 2, base_y),
-            (-random.uniform(12* xscale, 16* xscale), base_y - random.uniform(35 * yscale, 50 * yscale)),
-            (random.uniform(-7* xscale, -1), base_y - random.uniform(28 * yscale, 32 * yscale)),
-            (random.uniform(1, 7* xscale), base_y - random.uniform(28 * yscale, 32 * yscale)),
-            (random.uniform(12* xscale, 16* xscale), base_y - random.uniform(35 * yscale, 50 * yscale)),
-            (width / 2, base_y),
+            (-width * 0.50, base_y),
+            (-width * 0.34 + random.uniform(-4 * xscale, 4 * xscale), base_y - random.uniform(10 * yscale, 15 * yscale)),        
+            (-width * 0.15 + random.uniform(-3* xscale, 3* xscale), base_y - random.uniform(40 * yscale, 45 * yscale)),
+            (random.uniform(-3* xscale, 3* xscale), base_y - random.uniform(20 * yscale, 30 * yscale)),
+            (width * 0.15 + random.uniform(-3* xscale, 3* xscale), base_y - random.uniform(40 * yscale, 45 * yscale)),
+            (width * 0.34 + random.uniform(-4 * xscale, 4 * xscale), base_y - random.uniform(10 * yscale, 15 * yscale)), 
+            (width * 0.50, base_y),
         ]
     else:
         # 1 peak
-        num_peaks = 1
-        width = random.uniform(75 * xscale, 100 * yscale)
         base_y = 50
         anchors = [
-            (-width / 2, base_y),
-            (-random.uniform(30* xscale, 35* xscale), base_y - random.uniform(5 * yscale, 10 * yscale)),        
-            (random.uniform(-6* xscale, 6* xscale), base_y - random.uniform(35 * yscale, 50 * yscale)),
-            (random.uniform(30* xscale, 35* xscale), base_y - random.uniform(5 * yscale, 10 * yscale)),  
-            (width / 2, base_y),
+            (-width * 0.50, base_y),
+            (-width * 0.25 + random.uniform(-5 * xscale, 5 * xscale), base_y - random.uniform(15 * yscale, 20 * yscale)),        
+            (random.uniform(-5* xscale, 5* xscale), base_y - random.uniform(40 * yscale, 45 * yscale)),
+            (width * 0.25 + random.uniform(-5 * xscale, 5 * xscale), base_y - random.uniform(15 * yscale, 20 * yscale)), 
+            (width * 0.50, base_y),
         ]
-        anchors = [
-            (-width / 2, base_y),
-            (random.uniform(-6* xscale, 6* xscale), base_y - random.uniform(35 * yscale, 50 * yscale)),
-            (width / 2, base_y),
-        ]
+        #anchors = [
+        #    (-width / 2, base_y),
+        #    (random.uniform(-6* xscale, 6* xscale), base_y - random.uniform(35 * yscale, 50 * yscale)),
+        #    (width / 2, base_y),
+        #]
 
     points = [anchors[0]]
     for (start_x, start_y), (end_x, end_y) in zip(anchors, anchors[1:]):
@@ -295,9 +293,8 @@ def segment_intersection(first_segments, second_segments):
 
 
 def hex_terrain(hexes, terrain='trees'):
-    render_symbol, row_height, first_row_height, center_y, x_margin, bottom_margin, terrrain_height, first_symbol_offfset_max = {
-        'trees': (tree, 25, 1, 30, 0, 0, 60, 0),
-        'mountains': (mountain, 20, 1, 20, 0, 0, 30, 40)
+    render_symbol, row_height, first_row_height, center_y, x_margin, bottom_margin, terrrain_height, first_symbol_offset_max = {
+        'trees': (tree, 25, 1, 30, 0, 0, 60, 0)
     }[terrain]
     min_y, max_y, min_x, max_x = cluster_bounds(hexes)
     svg = ['<g id="hex-cluster">']
@@ -311,7 +308,7 @@ def hex_terrain(hexes, terrain='trees'):
 
         min_segments = segment_intersection(horizontal_segments(hexes, y), horizontal_segments(hexes, y + terrrain_height))   
         for segment in min_segments:
-            x=segment[0] + x_margin + random.randint(0, first_symbol_offfset_max)
+            x=segment[0] + x_margin + random.randint(0, first_symbol_offset_max)
             while x <= segment[1] - x_margin:
                 terrain_symbol, unscaled_terrain_width = render_symbol(0)
                 terrain_width = unscaled_terrain_width * scale
@@ -355,6 +352,65 @@ def hex_terrain(hexes, terrain='trees'):
     return '\n'.join(svg)
 
 
+def hex_mountains(hexes, terrain='mountains'):
+    render_symbol, row_height, first_row_height, center_y, x_margin, bottom_margin, terrrain_height, first_symbol_offset_max = {
+        'mountains': (mountain, 25, 1, 20, 0, 0, 30, 40)
+    }[terrain]
+    min_y, max_y, min_x, max_x = cluster_bounds(hexes)
+    svg = ['<g id="hex-cluster">']
+  
+    scale = (max(x for x, y in hexes[0])
+            - min(x for x, y in hexes[0])) / 240
+    
+    y = min_y + first_row_height
+    while y <= max_y - bottom_margin:
+    #while y <= min_y + first_row_height + 1:
+
+        min_segments = segment_intersection(horizontal_segments(hexes, y), horizontal_segments(hexes, y + terrrain_height))   
+        for segment in min_segments:
+            x=segment[0] + x_margin + random.randint(0, first_symbol_offset_max)
+            while x <= segment[1] - x_margin:
+                unscaled_remaining_width = (segment[1] - x - x_margin) / scale
+                if (unscaled_remaining_width > 150) and (unscaled_remaining_width < 300):
+                    unscaled_terrain_width = random.uniform(150, unscaled_remaining_width) # make the next mounbtain fit in the remaining width
+                else:
+                    unscaled_terrain_width = random.uniform(150, 300) # 1 peak is anything < 200 width
+                terrain_symbol, unscaled_terrain_width = render_symbol(0, unscaled_terrain_width)
+                terrain_width = unscaled_terrain_width * scale
+                if terrain_width + x <= segment[1]:
+                    baseline = y  + random.uniform(-row_height/4, row_height/4)
+                    svg.append(
+                        f'<g transform="translate({(x + terrain_width/2):.4f},{baseline:.4f}) scale({scale:g}) '
+                        f'translate(0,-{center_y})">')
+
+                    #svg.append(
+                    #    f'<g transform="translate({(x):.4f},{baseline:.4f}) scale({scale:g}) '
+                    #    f'translate(0,-{center_y})">')
+                    
+                    svg.append(f'{terrain_symbol}')
+                    svg.append('</g>')                    
+                x += terrain_width
+            # debug outpt segment length
+            #point_coordinates = ' '.join(f'{x:.4f},{y:.4f}' for x in segment)
+            #svg.append(
+            #    f'<g><polygon points="{point_coordinates}" fill="none" '
+            #    'stroke="red" stroke-width="1"/></g>')
+
+        y += row_height
+
+    for vertices in hexes:
+        x = sum(x for x, y in vertices) / len(vertices)
+        y = sum(y for x, y in vertices) / len(vertices)
+
+        point_coordinates = ' '.join(f'{x:.4f},{y:.4f}' for x, y in vertices)
+        #svg.append(
+        #    f'<g><polygon points="{point_coordinates}" fill="none" '
+        #    'stroke="#777777" stroke-width="1"/>')
+
+        #svg.append('</g>')
+    svg.append('</g>')
+    return '\n'.join(svg)
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', nargs='?', default='trees.svg')
@@ -373,7 +429,12 @@ def main():
     top_margin = 20
     hexes = [[(x - min_x + left_margin, y - min_y + top_margin) for x, y in hexagon]
                for hexagon in hexes]
-    svg_terrain = hex_terrain(hexes, args.terrain)
+    render_method = {
+        'trees': hex_terrain,
+        'mountains': hex_mountains
+    }[args.terrain]
+
+    svg_terrain = render_method(hexes, args.terrain)
     svg = ('<svg xmlns="http://www.w3.org/2000/svg" '
              f'width="{width:g}" height="{height:g}" '
              f'viewBox="0 0 {width:g} {height:g}">\n'
