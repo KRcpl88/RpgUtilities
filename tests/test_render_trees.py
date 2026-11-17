@@ -31,18 +31,19 @@ class TreeTests(unittest.TestCase):
 
 
 class MountainTests(unittest.TestCase):
-    def test_slopes_have_two_or_three_intermediate_points(self):
+    def test_single_and_double_peak_profiles(self):
         for seed in range(100):
+            requested_width = 180 if seed % 2 else 250
             with self.subTest(seed=seed), patch.object(
                     renderer, 'random', random.Random(seed)):
-                symbol, width = renderer.mountain(75)
+                symbol, width = renderer.mountain(75, requested_width)
                 group = et.fromstring(symbol)
                 self.assertGreater(width, 0)
                 self.assertTrue(math.isfinite(width))
                 fill, outline = group
                 self.assertEqual(group.get('transform'), 'translate(75,0)')
                 self.assertEqual(fill.get('d'), outline.get('d') + ' Z')
-                self.assertEqual(fill.get('fill'), '#d3d3d3')
+                self.assertEqual(fill.get('fill'), 'white')
                 self.assertEqual(fill.get('stroke'), 'none')
                 self.assertEqual(outline.get('fill'), 'none')
                 self.assertEqual(outline.get('stroke'), '#000000')
@@ -64,19 +65,25 @@ class MountainTests(unittest.TestCase):
                         directions.append(direction)
                         counts.append(0)
                     counts[-1] += 1
-                self.assertEqual(directions, [-1, 1, -1, 1])
-                self.assertTrue(all(count in (3, 4) for count in counts))
+                if requested_width < 200:
+                    self.assertEqual(directions, [-1, 1])
+                    self.assertTrue(all(4 <= count <= 6 for count in counts))
+                else:
+                    self.assertEqual(directions, [-1, 1, -1, 1])
+                    for count, limits in zip(
+                            counts, ((4, 6), (2, 3), (2, 3), (4, 6))):
+                        self.assertTrue(limits[0] <= count <= limits[1])
 
     def test_mountains_vary(self):
         with patch.object(renderer, 'random', random.Random(0)):
-            first_symbol, _ = renderer.mountain(75)
-            second_symbol, _ = renderer.mountain(75)
+            first_symbol, _ = renderer.mountain(75, 250)
+            second_symbol, _ = renderer.mountain(75, 250)
             self.assertNotEqual(first_symbol, second_symbol)
 
     def test_terrain_option_selects_symbols_for_cluster(self):
         for terrain, center_y, fill in (
                 ('trees', 30, '#936442'),
-                ('mountains', 20, '#d3d3d3')):
+                ('mountains', 20, 'white')):
             with self.subTest(terrain=terrain), \
                     tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / 'terrain.svg'
@@ -120,6 +127,142 @@ class MountainTests(unittest.TestCase):
             self.assertEqual(error.exception.code, 2)
             self.assertIn('invalid choice', error_output.getvalue())
             self.assertFalse(output.exists())
+
+
+class MountainPlacementTests(unittest.TestCase):
+    @staticmethod
+    def placement(center_x, top, scale=1):
+        return {
+            'center_x': center_x,
+            'top': top,
+            'width': 160,
+            'scale': scale,
+            'bottom': top + 90 * scale,
+            'points': [(-80, 100), (0, 10), (80, 100)],
+        }
+
+    @staticmethod
+    def point_inside(point, polygon):
+        sides = [
+            (end_x - start_x) * (point[1] - start_y)
+            - (end_y - start_y) * (point[0] - start_x)
+            for (start_x, start_y), (end_x, end_y)
+            in zip(polygon, polygon[1:] + polygon[:1])
+        ]
+        return all(side >= -1e-7 for side in sides) or all(
+            side <= 1e-7 for side in sides)
+
+    def assert_units_inside(self, units, hexes):
+        for unit in units:
+            points = [
+                (unit['center_x'] + x * unit['scale'],
+                 unit['top'] + (y - 10) * unit['scale'])
+                for x, y in unit['points']
+            ]
+            for (start_x, start_y), (end_x, end_y) in zip(
+                    points, points[1:] + points[:1]):
+                for step in range(6):
+                    fraction = step / 5
+                    point = (start_x + (end_x - start_x) * fraction,
+                             start_y + (end_y - start_y) * fraction)
+                    self.assertTrue(
+                        any(self.point_inside(point, hexagon)
+                            for hexagon in hexes),
+                        f'Mountain outline outside terrain at {point}')
+            for step in range(1, 10):
+                local_y = 10 + step * 9
+                for left, right in renderer.horizontal_segments(
+                        [unit['points']], local_y):
+                    for fraction in (0.25, 0.5, 0.75):
+                        point = (
+                            unit['center_x']
+                            + (left + (right - left) * fraction) * unit['scale'],
+                            unit['top'] + (local_y - 10) * unit['scale'])
+                        self.assertTrue(
+                            any(self.point_inside(point, hexagon)
+                                for hexagon in hexes),
+                            f'Mountain fill outside terrain at {point}')
+
+    def test_interior_unit_keeps_its_position_and_scale(self):
+        hexes = [[(0, 0), (240, 0), (240, 200), (0, 200)]]
+        original = self.placement(120, 40)
+        fitted = renderer._fit_mountain(original, hexes, 0.125)
+        self.assertEqual(fitted, original)
+
+    def test_bottom_unit_is_moved_and_shrunk_to_fit(self):
+        hexes = [[(0, 0), (240, 0), (240, 200), (0, 200)]]
+        fitted = renderer._fit_mountain(
+            self.placement(120, 140), hexes, 0.125, corner=(120, 180))
+        self.assertIsNotNone(fitted)
+        self.assertLess(fitted['scale'], 1)
+        self.assertLessEqual(fitted['bottom'], 200)
+        self.assertGreater(fitted['bottom'], 180)
+        local_x = (120 - fitted['center_x']) / fitted['scale']
+        local_y = 10 + (180 - fitted['top']) / fitted['scale']
+        self.assertTrue(any(
+            left < local_x < right for left, right
+            in renderer.horizontal_segments([fitted['points']], local_y)))
+        self.assert_units_inside([fitted], hexes)
+
+    def test_units_that_cannot_fit_are_omitted(self):
+        hexes = [[(0, 0), (240, 0), (240, 200), (0, 200)]]
+        for original in (self.placement(1000, 40), self.placement(120, 300)):
+            with self.subTest(original=original):
+                self.assertIsNone(
+                    renderer._fit_mountain(original, hexes, 0.125))
+        ring = renderer.build_hex_cluster({
+            'hexes': [[1, 0], [1, -1], [0, -1],
+                      [-1, 0], [-1, 1], [0, 1]],
+            'radius': 48,
+        })
+        self.assertIsNone(renderer._fit_mountain(
+            self.placement(0, -18, 0.4), ring, 0.05))
+
+    def test_fitting_checks_both_sides_of_horizontal_region_edges(self):
+        hexes = [
+            [(0, 0), (100, 0), (100, 100), (0, 100)],
+            [(100, 40), (200, 40), (200, 100), (100, 100)],
+        ]
+        original = self.placement(80, 0)
+        fitted = renderer._fit_mountain(original, hexes, 0.125)
+        self.assertIsNotNone(fitted)
+        self.assertNotEqual(fitted, original)
+        self.assert_units_inside([fitted], hexes)
+
+    def test_cluster_boundaries_bottom_edges_and_holes_are_respected(self):
+        ring = {'hexes': [[1, 0], [1, -1], [0, -1],
+                          [-1, 0], [-1, 1], [0, 1]], 'radius': 48}
+        for data in ({'hexes': [[0, 0]], 'radius': 48},
+                     json.loads(renderer.CLUSTER_JSON), ring):
+            hexes = renderer.build_hex_cluster(data)
+            with self.subTest(data=data), patch.object(
+                    renderer, 'random', random.Random(7)):
+                units = renderer._mountain_layout(hexes)
+                self.assertTrue(units)
+                self.assert_units_inside(units, hexes)
+
+    def test_no_clipping_and_uniform_strokes_in_bottom_y_order(self):
+        hexes = renderer.build_hex_cluster(renderer.CLUSTER_JSON)
+        with patch.object(renderer, 'random', random.Random(7)):
+            group = et.fromstring(renderer.hex_mountains(hexes))
+        for element in group.iter():
+            self.assertNotEqual(element.tag, 'clipPath')
+            self.assertIsNone(element.get('clip-path'))
+        bottoms = []
+        scales = set()
+        for unit in group:
+            if unit.get('transform') is None:
+                continue
+            center_x, origin_y, scale, offset_x, offset_y = map(
+                float, re.findall(r'-?\d+(?:\.\d+)?', unit.get('transform')))
+            bottoms.append(origin_y + (100 + offset_y) * scale)
+            scales.add(scale)
+            outline = unit[0][1]
+            self.assertAlmostEqual(
+                float(outline.get('stroke-width')) * scale, 0.8)
+        self.assertGreater(len(scales), 1)
+        for first, second in zip(bottoms, bottoms[1:]):
+            self.assertLessEqual(first, second + 1e-7)
 
 
 class SegmentIntersectionTests(unittest.TestCase):
