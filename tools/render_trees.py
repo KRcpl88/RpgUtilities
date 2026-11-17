@@ -60,7 +60,8 @@ def tree(center_x):
     ), width * random.uniform(1.5, 1.7)
 
 #returns svg, terrain_width
-def mountain(center_x, width):
+def _mountain_points(width):
+    """Build the shared silhouette used for rendering and corner coverage."""
     xscale = 1
     yscale = 1
     num_peaks = 1 if (width < (200 * xscale)) else 2  
@@ -101,6 +102,10 @@ def mountain(center_x, width):
             points.append((start_x + (end_x - start_x) * tx,
                              start_y + (end_y - start_y) * ty))
         points.append((end_x, end_y))
+    return points
+
+
+def _mountain_svg(center_x, points):
     path = 'M ' + ' L '.join(f'{x:.2f},{y:.2f}' for x, y in points)
     return (
         f'<g transform="translate({center_x},0)">'
@@ -108,7 +113,12 @@ def mountain(center_x, width):
         f'<path d="{path}" fill="none" stroke="#000000" stroke-width="2" '
         'stroke-linejoin="round" stroke-linecap="round"/>'
         '</g>'
-    ), width
+    )
+
+
+def mountain(center_x, width):
+    """Return a mountain SVG group and its unscaled width."""
+    return _mountain_svg(center_x, _mountain_points(width)), width
 
 
 def hex_vertices(x, y, radius):
@@ -342,60 +352,181 @@ def hex_terrain(hexes, terrain='trees'):
     return '\n'.join(svg)
 
 
-def hex_mountains(hexes, terrain='mountains'):
-    """Render fixed overlapping columns, staggered and painted back to front."""
-    render_symbol = {'mountains': mountain}[terrain]
-    min_y, max_y, min_x, max_x = cluster_bounds(hexes)
-    svg = ['<g id="hex-cluster">']
+def _mountain_layout(hexes):
+    """Lay out local staggered grids, repairing exposed corners at transitions."""
+    min_y, max_y, _, _ = cluster_bounds(hexes)
     scale = (max(x for x, y in hexes[0])
             - min(x for x, y in hexes[0])) / 240
     overlap = 100
     stagger = 45
-    symbol_height = 90
-    center_y = 20
-    columns = []
-    left = min_x
-    while left < max_x:
-        width = random.uniform(150, 300)
-        columns.append((left, width))
-        left += (width - overlap) * scale
+    placements = []
+    previous_patterns = []
 
-    # Reserve columns even in gaps so separate arms share the same grid.
-    vertex_heights = sorted({y for vertices in hexes for x, y in vertices})
-    row_index = 0
-    top = min_y
-    while top + symbol_height * scale <= max_y:
-        bottom = top + symbol_height * scale
-        segments = horizontal_segments(hexes, top)
-        sample_heights = [top]
-        sample_heights.extend(
-            height for height in vertex_heights if top < height < bottom)
-        sample_heights.append(bottom)
-        # Sample between vertices too: a hole can close at both boundaries.
-        between_heights = [
-            (start + end) / 2
-            for start, end in zip(sample_heights, sample_heights[1:])
+    def add_mountain(center_x, top, width, local_scale):
+        points = _mountain_points(width)
+        placements.append({
+            'center_x': center_x,
+            'top': top,
+            'width': width,
+            'scale': local_scale,
+            'bottom': top + 90 * local_scale,
+            'points': points,
+        })
+
+    band_index = 0
+    while min_y + band_index * stagger * scale < max_y:
+        top = min_y + band_index * stagger * scale
+        sample_y = min(top + stagger * scale / 2, (top + max_y) / 2)
+        patterns = []
+        for start, end in horizontal_segments(hexes, sample_y):
+            span_width = end - start
+            single_peaks = span_width < 500 * scale
+            maximum_width = 190 if single_peaks else 300
+            pair_width = 2 * maximum_width - overlap
+            subrows = max(1, math.ceil(pair_width * scale / span_width))
+            local_scale = scale / subrows
+            matching = [
+                pattern for left, right, pattern in previous_patterns
+                if left < end and start < right
+            ]
+            columns = []
+            if len(matching) == 1:
+                previous = matching[0]
+                fitting = [
+                    column for column in previous['columns']
+                    if start <= column[1]
+                    and column[1] + column[2] * previous['scale'] <= end
+                ]
+                if len(fitting) >= 2 and previous['scale'] in (
+                        scale, local_scale):
+                    columns = fitting
+                    local_scale = previous['scale']
+                    subrows = round(scale / local_scale)
+                    single_peaks = previous['single_peaks'] and single_peaks
+                    maximum_width = 190 if single_peaks else 300
+            if len(columns) < 2:
+                columns = []
+                column_index = 0
+                left = start
+            else:
+                column_index, left, width = columns[-1]
+                left += (width - overlap) * local_scale
+                column_index += 1
+                first_index, first_left, _ = columns[0]
+                while True:
+                    width = random.uniform(150, maximum_width)
+                    new_left = first_left - (width - overlap) * local_scale
+                    if new_left < start:
+                        break
+                    first_index -= 1
+                    columns.insert(0, (first_index, new_left, width))
+                    first_left = new_left
+            while left + 150 * local_scale <= end:
+                width = random.uniform(150, maximum_width)
+                width = min(width, (end - left) / local_scale)
+                columns.append((column_index, left, width))
+                left += (width - overlap) * local_scale
+                column_index += 1
+            pattern = {
+                'scale': local_scale,
+                'single_peaks': single_peaks,
+                'columns': columns,
+            }
+            patterns.append((start, end, pattern))
+            for subrow in range(subrows):
+                row_index = band_index * subrows + subrow
+                row_top = top + subrow * stagger * local_scale
+                for column_index, left, width in columns:
+                    if column_index % 2 == row_index % 2:
+                        add_mountain(
+                            left + width * local_scale / 2,
+                            row_top, width, local_scale)
+        previous_patterns = patterns
+        band_index += 1
+
+    def covers(placement, corner_x, corner_y):
+        if not placement['top'] < corner_y < placement['bottom']:
+            return False
+        local_x = (corner_x - placement['center_x']) / placement['scale']
+        local_y = 10 + (corner_y - placement['top']) / placement['scale']
+        return any(left < local_x < right for left, right in
+                   horizontal_segments([placement['points']], local_y))
+
+    # A changed grid can expose an old corner. Bridge it with a single peak,
+    # and process that peak too, rather than leaving an isolated terrain unit.
+    pending = sorted(placements, key=lambda placement: placement['bottom'])
+    while pending:
+        placement = pending.pop(0)
+        bottom = placement['bottom']
+        half_width = placement['width'] * placement['scale'] / 2
+        corners = [
+            placement['center_x'] - half_width,
+            placement['center_x'] + half_width,
         ]
-        for height in [*sample_heights[1:], *between_heights]:
-            segments = segment_intersection(
-                segments, horizontal_segments(hexes, height))
-        for column_index, (left, width) in enumerate(columns):
-            if column_index % 2 != row_index % 2:
-                continue
-            right = left + width * scale
-            if not any(start <= left and right <= end
-                       for start, end in segments):
-                continue
-            terrain_symbol, _ = render_symbol(0, width)
-            center_x = (left + right) / 2
-            # Mountain peaks start at y=10 and their bases end at y=100.
-            origin_y = top + 10 * scale
-            svg.append(
-                f'<g transform="translate({center_x:.4f},{origin_y:.4f}) '
-                f'scale({scale:g}) translate(0,-{center_y})">'
-                f'{terrain_symbol}</g>')
-        row_index += 1
-        top = min_y + row_index * stagger * scale
+        visible_segments = horizontal_segments(hexes, bottom)
+        corners = [
+            corner for corner in corners
+            if any(left < corner < right for left, right in visible_segments)
+        ]
+        if not corners or any(
+                covers(other, corner, bottom)
+                for corner in corners for other in placements
+                if other['bottom'] > bottom):
+            continue
+        local_scale = placement['scale']
+        if bottom + stagger * local_scale >= max_y:
+            continue
+        width = random.uniform(150, 190)
+        for _ in range(8):
+            below = horizontal_segments(
+                hexes, bottom + stagger * local_scale / 2)
+            half_width = width * local_scale / 2
+            corner = next((
+                corner for corner in corners
+                if any(left < corner + half_width
+                       and corner - half_width < right for left, right in below)
+            ), None)
+            if corner is not None:
+                add_mountain(
+                    corner, bottom - stagger * local_scale, width, local_scale)
+                pending.append(placements[-1])
+                pending.sort(key=lambda item: item['bottom'])
+                break
+            local_scale /= 2
+    return sorted(placements, key=lambda placement: placement['bottom'])
+
+
+def hex_mountains(hexes, terrain='mountains'):
+    """Render adaptive mountain grids, clipped to the hex cluster."""
+    if terrain != 'mountains':
+        raise ValueError(f'Unsupported mountain terrain: {terrain}')
+    svg = [
+        '<g id="hex-cluster" clip-path="url(#mountain-clip)">',
+        #'<defs><clipPath id="mountain-clip">',
+    ]
+    #for vertices in hexes:
+    #    coordinates = ' '.join(f'{x:.8f},{y:.8f}' for x, y in vertices)
+    #    svg.append(f'<polygon points="{coordinates}"/>')
+    #svg.append('</clipPath></defs>')
+    for placement in _mountain_layout(hexes):
+        center_x = placement['center_x']
+        local_scale = placement['scale']
+        origin_y = placement['top'] + 10 * local_scale
+        terrain_symbol = _mountain_svg(0, placement['points'])
+        svg.append(
+            f'<g transform="translate({center_x:.8f},{origin_y:.8f}) '
+            f'scale({local_scale:.10g}) translate(0,-20)">'
+            f'{terrain_symbol}</g>')
+
+    for vertices in hexes:
+        x = sum(x for x, y in vertices) / len(vertices)
+        y = sum(y for x, y in vertices) / len(vertices)
+
+        point_coordinates = ' '.join(f'{x:.4f},{y:.4f}' for x, y in vertices)
+        svg.append(
+            f'<g><polygon points="{point_coordinates}" fill="none" '
+            'stroke="#777777" stroke-width="1"/>')
+        svg.append('</g>')
 
     svg.append('</g>')
     return '\n'.join(svg)
