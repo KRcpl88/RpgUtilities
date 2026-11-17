@@ -5584,18 +5584,25 @@
       instances.sort((a, b) => b.point[1] - a.point[1] || a.point[0] - b.point[0]);
       return { key: type.key, terrainId: type.id, instances };
     });
+    const treeBounds = motifs('forest').map((shapes) => polygonBounds(shapes.flatMap((item) => item.points)));
+    const forestBounds = [0, 1, 2, 3].map((axis) => (axis < 2 ? Math.min : Math.max)(...treeBounds.map((bounds) => bounds[axis]))
+      + (axis < 2 ? -TREE_SCALE : TREE_SCALE));
     const forestId = terrain.byKey('forest').id, forestEdges = new Map();
     for (const edge of data.edges) {
       const cells = edge.cellIndices.map((cellIndex) => data.cells[cellIndex]);
-      if (cells.length !== 2 || (cells[0].terrainId === forestId) === (cells[1].terrainId === forestId)) {
+      const forest = cells.find((cell) => cell.terrainId === forestId);
+      if (!forest || (cells.length === 2 && cells.every((cell) => cell.terrainId === forestId))) {
         continue;
       }
-      const forest = cells[0].terrainId === forestId ? cells[0] : cells[1];
       const a = data.points[edge.indexA], b = data.points[edge.indexB];
-      const boundary = { a, b, regionIndex: forest.regionIndex };
-      // Bucket only real forest/open-terrain edges, not shared forest edges or export borders.
-      for (let columnIndex = Math.floor((Math.min(a[0], b[0]) - TRUNK_BOUNDARY_DISTANCE) * 2); columnIndex <= Math.floor((Math.max(a[0], b[0]) + TRUNK_BOUNDARY_DISTANCE) * 2); columnIndex++) {
-        for (let rowIndex = Math.floor((Math.min(a[1], b[1]) - TRUNK_BOUNDARY_DISTANCE) * 2); rowIndex <= Math.floor((Math.max(a[1], b[1]) + TRUNK_BOUNDARY_DISTANCE) * 2); rowIndex++) {
+      const boundary = { a, b, regionIndex: forest.regionIndex, isExposed: cells.length === 2 };
+      // Include export borders for placement, but expose trunks only beside open terrain.
+      const firstColumn = Math.floor((Math.min(a[0], b[0]) - Math.max(forestBounds[2], TRUNK_BOUNDARY_DISTANCE)) * 2);
+      const lastColumn = Math.floor((Math.max(a[0], b[0]) - Math.min(forestBounds[0], -TRUNK_BOUNDARY_DISTANCE)) * 2);
+      const firstRow = Math.floor((Math.min(a[1], b[1]) - Math.max(forestBounds[3], TRUNK_BOUNDARY_DISTANCE)) * 2);
+      const lastRow = Math.floor((Math.max(a[1], b[1]) - Math.min(forestBounds[1], -TRUNK_BOUNDARY_DISTANCE)) * 2);
+      for (let columnIndex = firstColumn; columnIndex <= lastColumn; columnIndex++) {
+        for (let rowIndex = firstRow; rowIndex <= lastRow; rowIndex++) {
           const key = `${columnIndex},${rowIndex}`;
           (forestEdges.get(key) || forestEdges.set(key, []).get(key)).push(boundary);
         }
@@ -5605,11 +5612,22 @@
       if (!result || result.key !== 'forest') {
         return;
       }
-      for (const instance of result.instances) {
+      result.instances = result.instances.filter((instance) => {
         const point = instance.point;
-        instance.hasTrunk = (forestEdges.get(`${Math.floor(point[0] * 2)},${Math.floor(point[1] * 2)}`) || [])
-          .some((edge) => edge.regionIndex === regionIndex && segmentDistance(point, edge.a, edge.b) <= TRUNK_BOUNDARY_DISTANCE);
-      }
+        const edges = (forestEdges.get(`${Math.floor(point[0] * 2)},${Math.floor(point[1] * 2)}`) || [])
+          .filter((edge) => edge.regionIndex === regionIndex);
+        const bounds = treeBounds[instance.variant].map((value, axis) => value + point[axis % 2]
+          + (axis < 2 ? -TREE_SCALE : TREE_SCALE));
+        const rectangle = [[bounds[0], bounds[1]], [bounds[2], bounds[1]], [bounds[2], bounds[3]], [bounds[0], bounds[3]]];
+        if (edges.some((edge) => {
+          const interval = util.clipSegmentToConvex(edge.a, edge.b, rectangle);
+          return interval && interval[1] - interval[0] > 1e-9;
+        })) {
+          return false;
+        }
+        instance.hasTrunk = edges.some((edge) => edge.isExposed && segmentDistance(point, edge.a, edge.b) <= TRUNK_BOUNDARY_DISTANCE);
+        return true;
+      });
     });
     return results;
   }
@@ -5861,6 +5879,13 @@
     ];
     const embellishments = (layers.embellishment ? embellish.build(regionsData) : [])
       .map((item) => item && item.instances.length ? item : null);
+    embellishments.forEach((item, index) => {
+      if (item && item.key === 'farmland') {
+        const path = regionsData.regions[index].loops
+          .map((points) => pathData({ points, isClosed: true }, hexToSvg, shorelines)).join('');
+        lines.push(`<clipPath id="farmland-clip-${index}"><path clip-rule="evenodd" d="${path}"/></clipPath>`);
+      }
+    });
     if (layers.terrain) {
       regionsData.regions.forEach((region, index) => {
         const path = region.loops.map((points) => pathData({ points: points, isClosed: true }, hexToSvg, shorelines)).join('');
@@ -5906,17 +5931,19 @@
     }
     if (layers.embellishment) {
       lines.push('<g id="layer-embellishment" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round">');
-      const instances = embellishments.flatMap((item) => item
-        ? item.instances.map((instance) => ({ item, instance })) : []);
+      const instances = embellishments.flatMap((item, regionIndex) => item
+        ? item.instances.map((instance) => ({ item, instance, regionIndex })) : []);
       instances.sort((a, b) => b.instance.point[1] - a.instance.point[1] || a.instance.point[0] - b.instance.point[0]);
       let activeKey = null;
-      for (const { item, instance } of instances) {
-        if (item.key !== activeKey) {
+      for (const { item, instance, regionIndex } of instances) {
+        const groupKey = item.key === 'farmland' ? `${item.key}-${regionIndex}` : item.key;
+        if (groupKey !== activeKey) {
           if (activeKey !== null) {
             lines.push('</g>');
           }
-          lines.push(`<g data-terrain="${item.key}">`);
-          activeKey = item.key;
+          const clip = item.key === 'farmland' ? ` clip-path="url(#farmland-clip-${regionIndex})"` : '';
+          lines.push(`<g data-terrain="${item.key}"${clip}>`);
+          activeKey = groupKey;
         }
         const point = projection.applyTransform(hexToSvg, instance.point).map(motifNumber);
         const href = `href="#emb-${item.key}-${instance.variant}${instance.hasTrunk ? '-trunk' : ''}"`;
@@ -7550,7 +7577,7 @@
       element('h2', { id: 'export-map-title', textContent: 'Export SVG' }),
       field('export-panel', 'Scope', panel), field('export-width', 'Width (pixels; height keeps aspect ratio)', widthInput),
       element('fieldset', {}, [element('legend', { textContent: 'Include layers' }), ...layerRows]),
-      element('p', { className: 'tool-help', textContent: 'Exports north-up, clipped to this panel or the whole local map. Transparent where terrain colours are omitted. Embellishments draw over the ground without cropping at terrain boundaries; with terrain colours off, filled motifs are white.' }),
+      element('p', { className: 'tool-help', textContent: 'Exports north-up, clipped to this panel or the whole local map. Transparent where terrain colours are omitted. Trees fit inside forest bounds; farmland is clipped to its region. Other embellishments draw over terrain boundaries. With terrain colours off, filled motifs are white.' }),
       preview, errorText,
       element('div', { className: 'property-actions' }, [
         element('button', { id: 'export-download', type: 'submit', className: 'tool-button', textContent: 'Download SVG' }),
