@@ -864,9 +864,16 @@ Each terrain type will have an optional hex coloring, in addition to custom rend
 - forests are overlapping tree foliage, showing only the crowns and foliage, but along the south edge of the forest the tree trunks are visbile as small, short vertical lines 
 - marsh is a series of horizontal dashes indicating water and collections of 3 shrt vertical lines indicating marsh grass
 mangrove
-- tundra will be shown as a dot and short horizontal dash 
+- tundra will be shown as a dot and sho rt horizontal dash 
 
 
 
  
 
+# mountain staggering
+
+The most recent update to render_trees.py was an improvement in the visual appearance of the mountain terrain rendering, but there are still some improvements that need to be made. First, the overlapped staggering of the mountain terrain units is more important than maintaining consistent columns. First, even in areas of the hex cluster that are only 1 or 2 hexes wide there should be if possible at least two staggered overlapping columns of mountain terrain units. If nedded to make two columns fit even in a section that is only 1 hex wide, apply a uniform scaling factor to shrink the mountain terrain units so they will fit with overlapping of at least 2 overlapping staggered terrain units. As we continue to render terrain accross rows, if the hex cluster sections get wider then we can rescale the mountain terrain units to a normal 1:1 scale. This may disrupt the regular column widths if the overlapping terrain units which is ok, just establish a new regular pattern and continue as needed. Second, it is not necessary tgat the entire hex cluster be rendered using one uniform pattern of column widths. The hex cluster by be subdivided into sub regions as needed to accommodate at least two columns of overlapping mountains in all areas, scaling and resizing as needed. The main goal is that we always need at least one mountain terrain unit overlapping at least one lower corner, except of course where we get to the bottom of the cluster where there aren't any more rows if mountainous terrain to overlap.
+
+Make sure if there is enough width to continue with a regular pattern so that each mountain has a clean overlap of iys corners from the row below, that is the purpose of the grid. But where it is too narrow we need to deviate so we always have an overlap on the corners from the next lower row.  Also in narrow sections if we need to scale the mountains we use single peaks which fit better in smaller areas
+
+Please make these improvements in the mountain rendering algorithm in render_trees.py, and then render the output to an svg and get a screenshot so I can review the results
