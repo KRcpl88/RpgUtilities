@@ -105,12 +105,13 @@ def _mountain_points(width):
     return points
 
 
-def _mountain_svg(center_x, points):
+def _mountain_svg(center_x, points, stroke_width=2):
     path = 'M ' + ' L '.join(f'{x:.2f},{y:.2f}' for x, y in points)
     return (
         f'<g transform="translate({center_x},0)">'
         f'<path d="{path} Z" fill="white" stroke="none"/>'
-        f'<path d="{path}" fill="none" stroke="#000000" stroke-width="2" '
+        f'<path d="{path}" fill="none" stroke="#000000" '
+        f'stroke-width="{stroke_width:.10g}" '
         'stroke-linejoin="round" stroke-linecap="round"/>'
         '</g>'
     )
@@ -352,6 +353,101 @@ def hex_terrain(hexes, terrain='trees'):
     return '\n'.join(svg)
 
 
+def _fit_mountain(placement, hexes, minimum_scale, corner=None):
+    """Fit the full silhouette inside the terrain region, or omit the unit."""
+    points = placement['points']
+    original_scale = placement['scale']
+    center_x = placement['center_x']
+    shift_limit = 90 * original_scale / 4
+    horizontal_limit = placement['width'] * original_scale / 4
+    vertex_heights = {y for vertices in hexes for x, y in vertices}
+    peak_y = min(y for x, y in points)
+
+    def intersect(first, second):
+        return [
+            (max(left, start), min(right, end))
+            for left, right in first for start, end in second
+            if max(left, start) <= min(right, end)
+        ]
+
+    for factor in (1, 0.85, 0.7, 0.55, 0.4):
+        local_scale = original_scale * factor
+        if local_scale < minimum_scale:
+            break
+        top = placement['top'] + 45 * (original_scale - local_scale)
+        peak = top + (peak_y - 10) * local_scale
+        bottom = top + 90 * local_scale
+        shifts = {0, -shift_limit, shift_limit}
+        shifts.update(
+            height - edge for height in vertex_heights
+            for edge in (peak, bottom)
+            if abs(height - edge) <= shift_limit
+        )
+        for shift in sorted(shifts, key=lambda value: (abs(value), value)):
+            shifted_top = top + shift
+            shifted_bottom = bottom + shift
+            if corner is not None and shifted_bottom <= corner[1]:
+                continue
+            heights = {shifted_top + (y - 10) * local_scale for x, y in points}
+            heights.update(
+                height for height in vertex_heights
+                if peak + shift < height < shifted_bottom
+            )
+            heights = sorted(heights)
+            # Horizontal hex edges can change the available span abruptly.
+            samples = heights + [
+                height
+                for start, end in zip(heights, heights[1:])
+                for height in (
+                    math.nextafter(start, end),
+                    (start + end) / 2,
+                    math.nextafter(end, start),
+                )
+            ]
+            centers = [(center_x - horizontal_limit,
+                        center_x + horizontal_limit)]
+            for height in samples:
+                local_y = 10 + (height - shifted_top) / local_scale
+                silhouette = horizontal_segments([points], local_y)
+                silhouette.extend(
+                    (x, x) for x, y in points
+                    if math.isclose(y, local_y, rel_tol=0, abs_tol=1e-8)
+                )
+                spans = horizontal_segments(hexes, height)
+                for left, right in silhouette:
+                    centers = intersect(centers, [
+                        (start - left * local_scale,
+                         end - right * local_scale)
+                        for start, end in spans
+                        if end - start >= (right - left) * local_scale
+                    ])
+                    if not centers:
+                        break
+                if not centers:
+                    break
+            if corner is not None and centers:
+                local_y = 10 + (corner[1] - shifted_top) / local_scale
+                margin = minimum_scale
+                centers = intersect(centers, [
+                    (corner[0] - right * local_scale + margin,
+                     corner[0] - left * local_scale - margin)
+                    for left, right in horizontal_segments([points], local_y)
+                    if (right - left) * local_scale > 2 * margin
+                ])
+            if centers:
+                fitted_x = min(
+                    (min(max(center_x, left), right) for left, right in centers),
+                    key=lambda value: abs(value - center_x))
+                return {
+                    **placement,
+                    'center_x': fitted_x,
+                    'top': shifted_top,
+                    'scale': local_scale,
+                    'bottom': shifted_bottom,
+                }
+    return None
+
+
 def _mountain_layout(hexes):
     """Lay out local staggered grids, repairing exposed corners at transitions."""
     min_y, max_y, _, _ = cluster_bounds(hexes)
@@ -362,16 +458,19 @@ def _mountain_layout(hexes):
     placements = []
     previous_patterns = []
 
-    def add_mountain(center_x, top, width, local_scale):
+    def add_mountain(center_x, top, width, local_scale, corner=None):
         points = _mountain_points(width)
-        placements.append({
+        placement = _fit_mountain({
             'center_x': center_x,
             'top': top,
             'width': width,
             'scale': local_scale,
             'bottom': top + 90 * local_scale,
             'points': points,
-        })
+        }, hexes, scale / 8, corner)
+        if placement is not None:
+            placements.append(placement)
+        return placement
 
     band_index = 0
     while min_y + band_index * stagger * scale < max_y:
@@ -487,32 +586,30 @@ def _mountain_layout(hexes):
                        and corner - half_width < right for left, right in below)
             ), None)
             if corner is not None:
-                add_mountain(
-                    corner, bottom - stagger * local_scale, width, local_scale)
-                pending.append(placements[-1])
-                pending.sort(key=lambda item: item['bottom'])
-                break
+                bridge = add_mountain(
+                    corner, bottom - stagger * local_scale, width, local_scale,
+                    (corner, bottom))
+                if bridge is not None:
+                    pending.append(bridge)
+                    pending.sort(key=lambda item: item['bottom'])
+                    break
             local_scale /= 2
     return sorted(placements, key=lambda placement: placement['bottom'])
 
 
 def hex_mountains(hexes, terrain='mountains'):
-    """Render adaptive mountain grids, clipped to the hex cluster."""
+    """Render fitted mountain silhouettes in increasing bottom-y order."""
     if terrain != 'mountains':
         raise ValueError(f'Unsupported mountain terrain: {terrain}')
-    svg = [
-        '<g id="hex-cluster" clip-path="url(#mountain-clip)">',
-        #'<defs><clipPath id="mountain-clip">',
-    ]
-    #for vertices in hexes:
-    #    coordinates = ' '.join(f'{x:.8f},{y:.8f}' for x, y in vertices)
-    #    svg.append(f'<polygon points="{coordinates}"/>')
-    #svg.append('</clipPath></defs>')
+    scale = (max(x for x, y in hexes[0])
+             - min(x for x, y in hexes[0])) / 240
+    svg = ['<g id="hex-cluster">']
     for placement in _mountain_layout(hexes):
         center_x = placement['center_x']
         local_scale = placement['scale']
         origin_y = placement['top'] + 10 * local_scale
-        terrain_symbol = _mountain_svg(0, placement['points'])
+        terrain_symbol = _mountain_svg(
+            0, placement['points'], stroke_width=2 * scale / local_scale)
         svg.append(
             f'<g transform="translate({center_x:.8f},{origin_y:.8f}) '
             f'scale({local_scale:.10g}) translate(0,-20)">'
