@@ -61,39 +61,29 @@ def tree(center_x):
 
 #returns svg, terrain_width
 def mountain(center_x, width):
-    xscale = 2
-    yscale = 2
-    num_peaks = 1 if (width < (100 * xscale)) else 2  
+    xscale = 1
+    yscale = 1
+    num_peaks = 1 if (width < (200 * xscale)) else 2  
     if num_peaks > 1:
         # 2 peaks
-        base_y = 50
-        anchors = [
-            (-width / 2, base_y),
-            (-random.uniform(40* xscale, 45* xscale), base_y - random.uniform(5 * yscale, 10 * yscale)),        
-            (-random.uniform(12* xscale, 16* xscale), base_y - random.uniform(35 * yscale, 50 * yscale)),
-            (random.uniform(-7* xscale, -1), base_y - random.uniform(28 * yscale, 32 * yscale)),
-            (random.uniform(1, 7* xscale), base_y - random.uniform(28 * yscale, 32 * yscale)),
-            (random.uniform(12* xscale, 16* xscale), base_y - random.uniform(35 * yscale, 50 * yscale)),
-            (random.uniform(40* xscale, 45* xscale), base_y - random.uniform(5 * yscale, 10 * yscale)),  
-            (width / 2, base_y),
-        ]
+        base_y = 100
         anchors = [
             (-width * 0.50, base_y),
-            (-width * 0.34 + random.uniform(-4 * xscale, 4 * xscale), base_y - random.uniform(10 * yscale, 15 * yscale)),        
-            (-width * 0.15 + random.uniform(-3* xscale, 3* xscale), base_y - random.uniform(40 * yscale, 45 * yscale)),
-            (random.uniform(-3* xscale, 3* xscale), base_y - random.uniform(20 * yscale, 30 * yscale)),
-            (width * 0.15 + random.uniform(-3* xscale, 3* xscale), base_y - random.uniform(40 * yscale, 45 * yscale)),
-            (width * 0.34 + random.uniform(-4 * xscale, 4 * xscale), base_y - random.uniform(10 * yscale, 15 * yscale)), 
+            (-width * 0.34 + random.uniform(-8 * xscale, 8 * xscale), base_y - random.uniform(20 * yscale, 30 * yscale)),        
+            (-width * 0.15 + random.uniform(-6* xscale, 6* xscale), base_y - random.uniform(80 * yscale, 90 * yscale)),
+            (random.uniform(-6* xscale, 6* xscale), base_y - random.uniform(40 * yscale, 60 * yscale)),
+            (width * 0.15 + random.uniform(-6* xscale, 6* xscale), base_y - random.uniform(80 * yscale, 90 * yscale)),
+            (width * 0.34 + random.uniform(-8 * xscale, 8 * xscale), base_y - random.uniform(20 * yscale, 30 * yscale)), 
             (width * 0.50, base_y),
         ]
     else:
         # 1 peak
-        base_y = 50
+        base_y = 100
         anchors = [
             (-width * 0.50, base_y),
-            (-width * 0.25 + random.uniform(-5 * xscale, 5 * xscale), base_y - random.uniform(15 * yscale, 20 * yscale)),        
-            (random.uniform(-5* xscale, 5* xscale), base_y - random.uniform(40 * yscale, 45 * yscale)),
-            (width * 0.25 + random.uniform(-5 * xscale, 5 * xscale), base_y - random.uniform(15 * yscale, 20 * yscale)), 
+            (-width * 0.25 + random.uniform(-10 * xscale, 10 * xscale), base_y - random.uniform(30 * yscale, 40 * yscale)),        
+            (random.uniform(-10* xscale, 10* xscale), base_y - random.uniform(80 * yscale, 90 * yscale)),
+            (width * 0.25 + random.uniform(-10 * xscale, 10 * xscale), base_y - random.uniform(30 * yscale, 40 * yscale)), 
             (width * 0.50, base_y),
         ]
         #anchors = [
@@ -353,61 +343,60 @@ def hex_terrain(hexes, terrain='trees'):
 
 
 def hex_mountains(hexes, terrain='mountains'):
-    render_symbol, row_height, first_row_height, center_y, x_margin, bottom_margin, terrrain_height, first_symbol_offset_max = {
-        'mountains': (mountain, 25, 1, 20, 0, 0, 30, 40)
-    }[terrain]
+    """Render fixed overlapping columns, staggered and painted back to front."""
+    render_symbol = {'mountains': mountain}[terrain]
     min_y, max_y, min_x, max_x = cluster_bounds(hexes)
     svg = ['<g id="hex-cluster">']
-  
     scale = (max(x for x, y in hexes[0])
             - min(x for x, y in hexes[0])) / 240
-    
-    y = min_y + first_row_height
-    while y <= max_y - bottom_margin:
-    #while y <= min_y + first_row_height + 1:
+    overlap = 100
+    stagger = 45
+    symbol_height = 90
+    center_y = 20
+    columns = []
+    left = min_x
+    while left < max_x:
+        width = random.uniform(150, 300)
+        columns.append((left, width))
+        left += (width - overlap) * scale
 
-        min_segments = segment_intersection(horizontal_segments(hexes, y), horizontal_segments(hexes, y + terrrain_height))   
-        for segment in min_segments:
-            x=segment[0] + x_margin + random.randint(0, first_symbol_offset_max)
-            while x <= segment[1] - x_margin:
-                unscaled_remaining_width = (segment[1] - x - x_margin) / scale
-                if (unscaled_remaining_width > 150) and (unscaled_remaining_width < 300):
-                    unscaled_terrain_width = random.uniform(150, unscaled_remaining_width) # make the next mounbtain fit in the remaining width
-                else:
-                    unscaled_terrain_width = random.uniform(150, 300) # 1 peak is anything < 200 width
-                terrain_symbol, unscaled_terrain_width = render_symbol(0, unscaled_terrain_width)
-                terrain_width = unscaled_terrain_width * scale
-                if terrain_width + x <= segment[1]:
-                    baseline = y  + random.uniform(-row_height/4, row_height/4)
-                    svg.append(
-                        f'<g transform="translate({(x + terrain_width/2):.4f},{baseline:.4f}) scale({scale:g}) '
-                        f'translate(0,-{center_y})">')
+    # Reserve columns even in gaps so separate arms share the same grid.
+    vertex_heights = sorted({y for vertices in hexes for x, y in vertices})
+    row_index = 0
+    top = min_y
+    while top + symbol_height * scale <= max_y:
+        bottom = top + symbol_height * scale
+        segments = horizontal_segments(hexes, top)
+        sample_heights = [top]
+        sample_heights.extend(
+            height for height in vertex_heights if top < height < bottom)
+        sample_heights.append(bottom)
+        # Sample between vertices too: a hole can close at both boundaries.
+        between_heights = [
+            (start + end) / 2
+            for start, end in zip(sample_heights, sample_heights[1:])
+        ]
+        for height in [*sample_heights[1:], *between_heights]:
+            segments = segment_intersection(
+                segments, horizontal_segments(hexes, height))
+        for column_index, (left, width) in enumerate(columns):
+            if column_index % 2 != row_index % 2:
+                continue
+            right = left + width * scale
+            if not any(start <= left and right <= end
+                       for start, end in segments):
+                continue
+            terrain_symbol, _ = render_symbol(0, width)
+            center_x = (left + right) / 2
+            # Mountain peaks start at y=10 and their bases end at y=100.
+            origin_y = top + 10 * scale
+            svg.append(
+                f'<g transform="translate({center_x:.4f},{origin_y:.4f}) '
+                f'scale({scale:g}) translate(0,-{center_y})">'
+                f'{terrain_symbol}</g>')
+        row_index += 1
+        top = min_y + row_index * stagger * scale
 
-                    #svg.append(
-                    #    f'<g transform="translate({(x):.4f},{baseline:.4f}) scale({scale:g}) '
-                    #    f'translate(0,-{center_y})">')
-                    
-                    svg.append(f'{terrain_symbol}')
-                    svg.append('</g>')                    
-                x += terrain_width
-            # debug outpt segment length
-            #point_coordinates = ' '.join(f'{x:.4f},{y:.4f}' for x in segment)
-            #svg.append(
-            #    f'<g><polygon points="{point_coordinates}" fill="none" '
-            #    'stroke="red" stroke-width="1"/></g>')
-
-        y += row_height
-
-    for vertices in hexes:
-        x = sum(x for x, y in vertices) / len(vertices)
-        y = sum(y for x, y in vertices) / len(vertices)
-
-        point_coordinates = ' '.join(f'{x:.4f},{y:.4f}' for x, y in vertices)
-        #svg.append(
-        #    f'<g><polygon points="{point_coordinates}" fill="none" '
-        #    'stroke="#777777" stroke-width="1"/>')
-
-        #svg.append('</g>')
     svg.append('</g>')
     return '\n'.join(svg)
 
