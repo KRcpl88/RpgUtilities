@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render random trees, mountains, and a hex terrain cluster."""
+"""Render a hex terrain cluster filled with trees, mountains, or hills."""
 
 import argparse
 import json
@@ -10,6 +10,7 @@ import random
 
 TREE_MIN_LOBES = 4
 TREE_MAX_LOBES = 7
+HILL_SCALE = 0.7
 
 
 CLUSTER_JSON = """
@@ -120,6 +121,33 @@ def _mountain_svg(center_x, points, stroke_width=2):
 def mountain(center_x, width):
     """Return a mountain SVG group and its unscaled width."""
     return _mountain_svg(center_x, _mountain_points(width)), width
+
+
+def _hill_points(width):
+    """Build a smooth single summit in the mountain reference coordinates."""
+    peak_x = random.uniform(-10, 10)
+    peak_y = 100 - random.uniform(80, 90)
+    anchors = [(-width / 2, 100), (peak_x, peak_y), (width / 2, 100)]
+    controls = [(peak_x - width * 0.3, peak_y),
+                (peak_x + width * 0.3, peak_y)]
+    points = [anchors[0]]
+    for start, control, end in zip(anchors, controls, anchors[1:]):
+        for step in range(1, 17):
+            fraction = step / 16
+            remaining = 1 - fraction
+            points.append(tuple(
+                remaining ** 2 * start[axis]
+                + 2 * remaining * fraction * control[axis]
+                + fraction ** 2 * end[axis]
+                for axis in (0, 1)))
+    return points
+
+
+def hill(center_x, width):
+    """Return one rounded hill, 30% smaller than a single-peak mountain."""
+    points = [(x * HILL_SCALE, 100 + (y - 100) * HILL_SCALE)
+              for x, y in _hill_points(width)]
+    return _mountain_svg(center_x, points), width * HILL_SCALE
 
 
 def hex_vertices(x, y, radius):
@@ -448,18 +476,23 @@ def _fit_mountain(placement, hexes, minimum_scale, corner=None):
     return None
 
 
-def _mountain_layout(hexes):
+def _mountain_layout(hexes, terrain='mountains'):
     """Lay out local staggered grids, repairing exposed corners at transitions."""
+    if terrain not in ('mountains', 'hills'):
+        raise ValueError(f'Unsupported mountain terrain: {terrain}')
     min_y, max_y, _, _ = cluster_bounds(hexes)
     scale = (max(x for x, y in hexes[0])
             - min(x for x, y in hexes[0])) / 240
+    if terrain == 'hills':
+        scale *= HILL_SCALE
+    make_points = _hill_points if terrain == 'hills' else _mountain_points
     overlap = 100
     stagger = 45
     placements = []
     previous_patterns = []
 
     def add_mountain(center_x, top, width, local_scale, corner=None):
-        points = _mountain_points(width)
+        points = make_points(width)
         placement = _fit_mountain({
             'center_x': center_x,
             'top': top,
@@ -479,7 +512,7 @@ def _mountain_layout(hexes):
         patterns = []
         for start, end in horizontal_segments(hexes, sample_y):
             span_width = end - start
-            single_peaks = span_width < 500 * scale
+            single_peaks = terrain == 'hills' or span_width < 500 * scale
             maximum_width = 190 if single_peaks else 300
             pair_width = 2 * maximum_width - overlap
             subrows = max(1, math.ceil(pair_width * scale / span_width))
@@ -598,13 +631,13 @@ def _mountain_layout(hexes):
 
 
 def hex_mountains(hexes, terrain='mountains'):
-    """Render fitted mountain silhouettes in increasing bottom-y order."""
-    if terrain != 'mountains':
+    """Render fitted mountains or rounded hills in increasing bottom-y order."""
+    if terrain not in ('mountains', 'hills'):
         raise ValueError(f'Unsupported mountain terrain: {terrain}')
     scale = (max(x for x, y in hexes[0])
              - min(x for x, y in hexes[0])) / 240
     svg = ['<g id="hex-cluster">']
-    for placement in _mountain_layout(hexes):
+    for placement in _mountain_layout(hexes, terrain):
         center_x = placement['center_x']
         local_scale = placement['scale']
         origin_y = placement['top'] + 10 * local_scale
@@ -632,8 +665,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', nargs='?', default='trees.svg')
     parser.add_argument(
-        '--terrain', choices=('trees', 'mountains'), default='mountains',
-        help='Terrain used to fill the hexes (default: trees)')
+        '--terrain', choices=('trees', 'mountains', 'hills'),
+        default='mountains',
+        help='Terrain used to fill the hexes (default: mountains)')
     args = parser.parse_args()
     try:
         hexes = build_hex_cluster(CLUSTER_JSON)
@@ -648,7 +682,8 @@ def main():
                for hexagon in hexes]
     render_method = {
         'trees': hex_terrain,
-        'mountains': hex_mountains
+        'mountains': hex_mountains,
+        'hills': hex_mountains,
     }[args.terrain]
 
     svg_terrain = render_method(hexes, args.terrain)

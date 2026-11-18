@@ -83,7 +83,8 @@ class MountainTests(unittest.TestCase):
     def test_terrain_option_selects_symbols_for_cluster(self):
         for terrain, center_y, fill in (
                 ('trees', 30, '#936442'),
-                ('mountains', 20, 'white')):
+                ('mountains', 20, 'white'),
+                ('hills', 20, 'white')):
             with self.subTest(terrain=terrain), \
                     tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / 'terrain.svg'
@@ -111,7 +112,7 @@ class MountainTests(unittest.TestCase):
                         f'translate(0,-{center_y})'))
                     symbol = group[0]
                     self.assertEqual(symbol[0].get('fill'), fill)
-                    if terrain == 'mountains':
+                    if terrain in ('mountains', 'hills'):
                         self.assertEqual(symbol[1].get('fill'), 'none')
                         self.assertEqual(symbol[1].get('stroke'), '#000000')
 
@@ -127,6 +128,59 @@ class MountainTests(unittest.TestCase):
             self.assertEqual(error.exception.code, 2)
             self.assertIn('invalid choice', error_output.getvalue())
             self.assertFalse(output.exists())
+
+
+class HillTests(unittest.TestCase):
+    def test_hills_have_one_rounded_summit_even_with_wide_input(self):
+        for width in (150, 180, 250):
+            with self.subTest(width=width), patch.object(
+                    renderer, 'random', random.Random(7)):
+                symbol, actual_width = renderer.hill(75, width)
+                group = et.fromstring(symbol)
+                fill, outline = group
+                self.assertEqual(group.get('transform'), 'translate(75,0)')
+                self.assertEqual(fill.get('d'), outline.get('d') + ' Z')
+                self.assertEqual(fill.get('fill'), 'white')
+                self.assertEqual(fill.get('stroke'), 'none')
+                self.assertEqual(outline.get('fill'), 'none')
+                self.assertEqual(outline.get('stroke'), '#000000')
+                self.assertNotIn('Z', outline.get('d'))
+                points = [
+                    tuple(map(float, match)) for match in re.findall(
+                        r'(-?\d+\.\d+),(-?\d+\.\d+)', outline.get('d'))
+                ]
+                self.assertAlmostEqual(actual_width / width, 0.7)
+                self.assertAlmostEqual(
+                    points[-1][0] - points[0][0], actual_width)
+                self.assertTrue(all(
+                    first[0] < second[0]
+                    for first, second in zip(points, points[1:])))
+                summit = min(range(len(points)), key=lambda index: points[index][1])
+                self.assertTrue(all(points[index][1] > points[index + 1][1]
+                                    for index in range(summit)))
+                self.assertTrue(all(points[index][1] < points[index + 1][1]
+                                    for index in range(summit, len(points) - 1)))
+                for neighbor in (points[summit - 1], points[summit + 1]):
+                    self.assertLess(
+                        abs((neighbor[1] - points[summit][1])
+                            / (neighbor[0] - points[summit][0])), 0.1)
+
+    def test_hill_dimensions_are_seventy_percent_of_single_mountain(self):
+        with patch.object(renderer.random, 'uniform', side_effect=(
+                lambda start, end: (start + end) / 2)):
+            hill_svg, hill_width = renderer.hill(0, 180)
+            mountain_svg, mountain_width = renderer.mountain(0, 180)
+        heights = []
+        for symbol in (hill_svg, mountain_svg):
+            points = [
+                tuple(map(float, match)) for match in re.findall(
+                    r'(-?\d+\.\d+),(-?\d+\.\d+)',
+                    et.fromstring(symbol)[1].get('d'))
+            ]
+            heights.append(max(y for x, y in points)
+                           - min(y for x, y in points))
+        self.assertAlmostEqual(hill_width / mountain_width, 0.7)
+        self.assertAlmostEqual(heights[0] / heights[1], 0.7)
 
 
 class MountainPlacementTests(unittest.TestCase):
@@ -232,19 +286,30 @@ class MountainPlacementTests(unittest.TestCase):
     def test_cluster_boundaries_bottom_edges_and_holes_are_respected(self):
         ring = {'hexes': [[1, 0], [1, -1], [0, -1],
                           [-1, 0], [-1, 1], [0, 1]], 'radius': 48}
-        for data in ({'hexes': [[0, 0]], 'radius': 48},
-                     json.loads(renderer.CLUSTER_JSON), ring):
-            hexes = renderer.build_hex_cluster(data)
-            with self.subTest(data=data), patch.object(
-                    renderer, 'random', random.Random(7)):
-                units = renderer._mountain_layout(hexes)
-                self.assertTrue(units)
-                self.assert_units_inside(units, hexes)
+        for terrain in ('mountains', 'hills'):
+            for data in ({'hexes': [[0, 0]], 'radius': 48},
+                         json.loads(renderer.CLUSTER_JSON), ring):
+                hexes = renderer.build_hex_cluster(data)
+                with self.subTest(data=data, terrain=terrain), patch.object(
+                        renderer, 'random', random.Random(7)):
+                    units = renderer._mountain_layout(hexes, terrain)
+                    self.assertTrue(units)
+                    self.assert_units_inside(units, hexes)
+                    if terrain == 'hills':
+                        self.assertTrue(all(
+                            unit['width'] <= 190 for unit in units))
+                        self.assertTrue(all(
+                            unit['scale'] <= 96 / 240 * 0.7 for unit in units))
 
     def test_no_clipping_and_uniform_strokes_in_bottom_y_order(self):
+        for terrain in ('mountains', 'hills'):
+            with self.subTest(terrain=terrain):
+                self.assert_ordered_uniform_strokes(terrain)
+
+    def assert_ordered_uniform_strokes(self, terrain):
         hexes = renderer.build_hex_cluster(renderer.CLUSTER_JSON)
         with patch.object(renderer, 'random', random.Random(7)):
-            group = et.fromstring(renderer.hex_mountains(hexes))
+            group = et.fromstring(renderer.hex_mountains(hexes, terrain))
         for element in group.iter():
             self.assertNotEqual(element.tag, 'clipPath')
             self.assertIsNone(element.get('clip-path'))

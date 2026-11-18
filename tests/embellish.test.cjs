@@ -1,8 +1,9 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const { loadModules } = require('./_load.cjs');
-const { Util: util, Lattice: lattice, Coordinates: coordinates, Model: model, Terrain: terrain, View: view, Regions: regions, Embellish: embellish, SvgExport: svgExport } = loadModules();
+const { Util: util, Lattice: lattice, Coordinates: coordinates, Model: model, Terrain: terrain, View: view, Regions: regions, MountainTerrain: mountainTerrain, Embellish: embellish, SvgExport: svgExport } = loadModules();
 
 const PLAIN = ['water', 'lakes', 'firth', 'plain'];
 const id = (key) => terrain.byKey(key).id;
@@ -65,7 +66,7 @@ test('terrain descriptors match the plan: every patterned terrain has four froze
     assert.ok(Object.isFrozen(motifs) && motifs.every((motif) => Object.isFrozen(motif)));
     for (const motif of motifs) {
       for (const shape of motif) {
-        assert.ok(['body', 'ink', 'accent', 'dot'].includes(shape.role));
+        assert.ok(['body', 'fill', 'ink', 'accent', 'dot'].includes(shape.role));
         assert.ok(shape.points.length >= 2);
         const limit = type.key === 'forest' ? 0.8 : 0.5;
         assert.ok(shape.points.flat().every((value) => Number.isFinite(value) && Math.abs(value) < limit), type.key);
@@ -138,6 +139,147 @@ test('mountain peaks draw one motif per tile, shrinking only for partial tiles',
   assert.equal(globalShapes.length, new Set(globalData.cells.map((cell) => cell.tileIndex)).size);
   assert.ok(globalShapes.some((instance) => instance.scale === 1));
   assert.ok(globalShapes.some((instance) => instance.scale < 1 && instance.scale >= 0.3));
+});
+
+test('mountain silhouettes and fitted layouts match the Python reference', () => {
+  const result = spawnSync('python3', ['-c', `
+import json
+import math
+from tools import render_trees as renderer
+
+class RandomStream:
+    def __init__(self):
+        self.state = 7
+
+    def random(self):
+        self.state = (1664525 * self.state + 1013904223) % 2 ** 32
+        return self.state / 2 ** 32
+
+    def uniform(self, start, end):
+        return start + (end - start) * self.random()
+
+    def randint(self, start, end):
+        return start + math.floor((end - start + 1) * self.random())
+
+results = []
+for cells in (
+        [[0, 0]],
+        [[q, r] for q in range(7) for r in range(4)],
+        [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]]):
+    hexes = renderer.build_hex_cluster({'hexes': cells, 'radius': 48})
+    renderer.random = RandomStream()
+    placements = renderer._mountain_layout(hexes)
+    results.append({'hexes': hexes, 'placements': placements})
+print(json.dumps(results))
+`], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  for (const { hexes, placements } of JSON.parse(result.stdout)) {
+    let state = 7;
+    const random = () => {
+      state = (Math.imul(1664525, state) + 1013904223) >>> 0;
+      return state / 2 ** 32;
+    };
+    const actual = mountainTerrain.layout(hexes, random);
+    assert.equal(actual.length, placements.length);
+    actual.forEach((placement, index) => {
+      const expected = placements[index];
+      for (const [key, referenceKey] of [
+        ['centerX', 'center_x'], ['top', 'top'], ['width', 'width'], ['scale', 'scale'], ['bottom', 'bottom'],
+      ]) {
+        assert.ok(Math.abs(placement[key] - expected[referenceKey]) < 1e-8, `${key}: ${placement[key]} vs ${expected[referenceKey]}`);
+      }
+      assert.deepEqual(placement.points, expected.points);
+    });
+  }
+});
+
+test('complete overlapping mountain silhouettes fit terrain edges, clearings and partial panels', () => {
+  const maps = [];
+  for (const kind of ['single', 'joined', 'hole']) {
+    const doc = localMap(7, 7, kind === 'hole' ? 'mountains' : 'plain');
+    const center = model.localTileIndex(doc, 3, 3);
+    model.setTerrain(doc, center, id(kind === 'hole' ? 'plain' : 'mountains'));
+    if (kind === 'joined') {
+      model.neighbors(doc, center).forEach((tileIndex) => model.setTerrain(doc, tileIndex, id('mountains')));
+    }
+    maps.push(regions.build(doc));
+  }
+  const global = model.createGlobalMap({ panelHexes: 4 });
+  global.terrainIds.fill(id('mountains'));
+  maps.push(regions.build(global, coordinates.panelIdByName('Eta')));
+  let doublePeaks = 0;
+  for (const data of maps) {
+    const results = embellish.build(data);
+    assert.deepEqual(embellish.build(data), results);
+    let count = 0;
+    for (const [regionIndex, item] of results.entries()) {
+      if (!item || item.key !== 'mountains') {
+        continue;
+      }
+      const polygons = data.cells.filter((cell) => cell.regionIndex === regionIndex).map((cell) => polygon(data, cell));
+      item.instances.forEach((instance, index) => {
+        count++;
+        if (index) {
+          assert.ok(item.instances[index - 1].point[1] >= instance.point[1]);
+        }
+        const [fill, outline] = instance.shapes;
+        assert.equal(fill.role, 'fill');
+        assert.equal(fill.isClosed, true);
+        assert.equal(outline.role, 'ink');
+        assert.equal(outline.isClosed, false);
+        assert.deepEqual(fill.points, outline.points);
+        const points = outline.points.map((point) => util.add(point, instance.point));
+        let summits = 0;
+        for (let pointIndex = 0; pointIndex < points.length; pointIndex++) {
+          const point = points[pointIndex], end = points[(pointIndex + 1) % points.length];
+          if (pointIndex && pointIndex + 1 < points.length
+            && point[1] > points[pointIndex - 1][1] && point[1] > end[1]) {
+            summits++;
+          }
+          for (let step = 0; step <= 8; step++) {
+            const sample = util.add(point, util.scale(util.subtract(end, point), step / 8));
+            assert.ok(polygons.some((cell) => util.pointInConvex(sample, cell, 1e-8)), 'entire silhouette stays within mountain terrain');
+          }
+        }
+        assert.ok(summits === 1 || summits === 2);
+        doublePeaks += summits === 2 ? 1 : 0;
+      });
+    }
+    assert.ok(count > 0);
+  }
+  assert.ok(doublePeaks > 0, 'wide terrain spans include double peaks');
+});
+
+test('SVG mountains use white bodies, open black outlines and uniform fine strokes in depth order', () => {
+  const doc = localMap(5, 5, 'mountains');
+  const data = regions.build(doc);
+  const mountains = embellish.build(data)[0].instances;
+  for (const terrainEnabled of [true, false]) {
+    const text = svgExport.write(doc, { layers: { terrain: terrainEnabled } });
+    const layer = text.match(/<g id="layer-embellishment"[^>]*>([\s\S]*?)<g id="layer-shoreline"/)?.[1]
+      || text.slice(text.indexOf('<g id="layer-embellishment"'));
+    assert.doesNotMatch(layer, /clip-path|scale\(|<use/);
+    const groups = [...layer.matchAll(/<g transform="translate\(([^ ]+) ([^)]+)\)" stroke-width="([^"]+)">([^]*?)<\/g>/g)];
+    assert.equal(groups.length, mountains.length);
+    const widths = new Set(groups.map((match) => match[3]));
+    assert.equal(widths.size, 1);
+    assert.ok(Math.abs(Number(groups[0][3]) - 2 * embellish.TREE_SCALE * 48) < 1e-6);
+    groups.forEach(([, , y, , content], index) => {
+      const paths = [...content.matchAll(/<path d="([^"]+)" fill="([^"]+)" stroke="([^"]+)"\/>/g)];
+      assert.equal(paths.length, 2);
+      assert.equal(paths[0][1], paths[1][1] + 'Z');
+      assert.equal(paths[0][2], '#ffffff');
+      assert.equal(paths[0][3], 'none');
+      assert.equal(paths[1][2], 'none');
+      assert.equal(paths[1][3], '#000000');
+      assert.ok(Math.abs(Number(y) - (data.bounds[3] - mountains[index].point[1]) * 48) <= 0.0051);
+      if (index) {
+        assert.ok(Number(groups[index - 1][2]) <= Number(y));
+      }
+    });
+    assert.equal(svgExport.write(doc, { layers: { terrain: terrainEnabled } }), text);
+  }
+  assert.doesNotMatch(svgExport.write(doc, { layers: { embellishment: false } }), /data-terrain="mountains"/);
 });
 
 test('forest motifs match the reference proportions, lobed crowns and single-line trunks', () => {

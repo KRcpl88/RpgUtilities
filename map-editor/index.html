@@ -2330,7 +2330,7 @@
   const EMBELLISH_DEFINITIONS = {
     islands: ['scatter', 0.34, 0.28, 0.8, '#253c46', null, '#d8c690'],
     hills: ['scatter', 0.34, 0.22, 1, '#5e592b', null, null],
-    mountains: ['scatter', 0.42, 0.34, 1, '#463a30', null, null],
+    mountains: ['scatter', 0.42, 0.34, 1, '#000000', null, '#ffffff'],
     mountainPeak: ['tile', 1, 1, 1, '#3d3229', null, null],
     desert: ['scatter', 0.3, 0.2, 0.9, '#9c7a3a', null, null],
     sandDunes: ['scatter', 0.36, 0.22, 1, '#8f6a2c', null, null],
@@ -5302,11 +5302,318 @@
 })(globalThis);
 </script>
 
+<script data-module="MountainTerrain">
+(function (root) {
+  'use strict';
+  const rpgMap = root.RpgMap = root.RpgMap || {};
+  const nextBuffer = new DataView(new ArrayBuffer(8));
+
+  function nextToward(value, target) {
+    if (value === 0) {
+      return target > 0 ? Number.MIN_VALUE : -Number.MIN_VALUE;
+    }
+    nextBuffer.setFloat64(0, value);
+    const bits = nextBuffer.getBigUint64(0);
+    nextBuffer.setBigUint64(0, bits + ((target > value) === (value > 0) ? 1n : -1n));
+    return nextBuffer.getFloat64(0);
+  }
+
+  // Port of render_trees.py: reference silhouettes have a baseline at y = 100.
+  function profile(width, random) {
+    const uniform = (start, end) => start + (end - start) * random();
+    const anchors = width < 200 ? [
+      [-width * 0.5, 100],
+      [-width * 0.25 + uniform(-10, 10), 100 - uniform(30, 40)],
+      [uniform(-10, 10), 100 - uniform(80, 90)],
+      [width * 0.25 + uniform(-10, 10), 100 - uniform(30, 40)],
+      [width * 0.5, 100],
+    ] : [
+      [-width * 0.5, 100],
+      [-width * 0.34 + uniform(-8, 8), 100 - uniform(20, 30)],
+      [-width * 0.15 + uniform(-6, 6), 100 - uniform(80, 90)],
+      [uniform(-6, 6), 100 - uniform(40, 60)],
+      [width * 0.15 + uniform(-6, 6), 100 - uniform(80, 90)],
+      [width * 0.34 + uniform(-8, 8), 100 - uniform(20, 30)],
+      [width * 0.5, 100],
+    ];
+    const points = [anchors[0]];
+    for (let anchorIndex = 0; anchorIndex + 1 < anchors.length; anchorIndex++) {
+      const start = anchors[anchorIndex];
+      const end = anchors[anchorIndex + 1];
+      const pointCount = 1 + Math.floor(2 * random());
+      for (let pointIndex = 1; pointIndex <= pointCount; pointIndex++) {
+        const tx = (pointIndex + uniform(-0.25, 0.25)) / (pointCount + 1);
+        const ty = (pointIndex + uniform(-0.25, 0.25)) / (pointCount + 1);
+        points.push([start[0] + (end[0] - start[0]) * tx, start[1] + (end[1] - start[1]) * ty]);
+      }
+      points.push(end);
+    }
+    return points;
+  }
+
+  function horizontalSegments(hexes, height) {
+    const intervals = [];
+    for (const vertices of hexes) {
+      const positions = [];
+      vertices.forEach(([x, y], index) => {
+        const [endX, endY] = vertices[(index + 1) % vertices.length];
+        if (Math.min(y, endY) <= height && height <= Math.max(y, endY)) {
+          if (y === endY) {
+            positions.push(x, endX);
+          } else {
+            positions.push(x + (endX - x) * (height - y) / (endY - y));
+          }
+        }
+      });
+      if (positions.length && Math.max(...positions) > Math.min(...positions)) {
+        intervals.push([Math.min(...positions), Math.max(...positions)]);
+      }
+    }
+    intervals.sort((a, b) => a[0] - b[0]);
+    const merged = [];
+    for (const [left, right] of intervals) {
+      if (merged.length && left <= merged.at(-1)[1] + 1e-9) {
+        merged.at(-1)[1] = Math.max(merged.at(-1)[1], right);
+      } else {
+        merged.push([left, right]);
+      }
+    }
+    return merged;
+  }
+
+  function intersect(first, second) {
+    return first.flatMap(([left, right]) => second
+      .filter(([start, end]) => Math.max(left, start) <= Math.min(right, end))
+      .map(([start, end]) => [Math.max(left, start), Math.min(right, end)]));
+  }
+
+  function fit(placement, hexes, vertexHeights, minimumScale, corner) {
+    const { points, scale: originalScale, centerX } = placement;
+    const shiftLimit = 90 * originalScale / 4;
+    const horizontalLimit = placement.width * originalScale / 4;
+    const peakY = Math.min(...points.map(([, y]) => y));
+    for (const factor of [1, 0.85, 0.7, 0.55, 0.4]) {
+      const scale = originalScale * factor;
+      if (scale < minimumScale) {
+        break;
+      }
+      const top = placement.top + 45 * (originalScale - scale);
+      const peak = top + (peakY - 10) * scale;
+      const bottom = top + 90 * scale;
+      const shifts = new Set([0, -shiftLimit, shiftLimit]);
+      for (const height of vertexHeights) {
+        for (const edge of [peak, bottom]) {
+          if (Math.abs(height - edge) <= shiftLimit) {
+            shifts.add(height - edge);
+          }
+        }
+      }
+      for (const shift of [...shifts].sort((a, b) => Math.abs(a) - Math.abs(b) || a - b)) {
+        const shiftedTop = top + shift;
+        const shiftedBottom = bottom + shift;
+        if (corner && shiftedBottom <= corner[1]) {
+          continue;
+        }
+        const heights = [...new Set([
+          ...points.map(([, y]) => shiftedTop + (y - 10) * scale),
+          ...vertexHeights.filter((height) => peak + shift < height && height < shiftedBottom),
+        ])].sort((a, b) => a - b);
+        const samples = [...heights];
+        for (let index = 0; index + 1 < heights.length; index++) {
+          const start = heights[index];
+          const end = heights[index + 1];
+          samples.push(nextToward(start, end), (start + end) / 2, nextToward(end, start));
+        }
+        let centers = [[centerX - horizontalLimit, centerX + horizontalLimit]];
+        for (const height of samples) {
+          const localY = 10 + (height - shiftedTop) / scale;
+          const silhouette = horizontalSegments([points], localY);
+          silhouette.push(...points.filter(([, y]) => Math.abs(y - localY) <= 1e-8).map(([x]) => [x, x]));
+          const spans = horizontalSegments(hexes, height);
+          for (const [left, right] of silhouette) {
+            centers = intersect(centers, spans
+              .filter(([start, end]) => end - start >= (right - left) * scale)
+              .map(([start, end]) => [start - left * scale, end - right * scale]));
+            if (!centers.length) {
+              break;
+            }
+          }
+          if (!centers.length) {
+            break;
+          }
+        }
+        if (corner && centers.length) {
+          const localY = 10 + (corner[1] - shiftedTop) / scale;
+          centers = intersect(centers, horizontalSegments([points], localY)
+            .filter(([left, right]) => (right - left) * scale > 2 * minimumScale)
+            .map(([left, right]) => [corner[0] - right * scale + minimumScale, corner[0] - left * scale - minimumScale]));
+        }
+        if (centers.length) {
+          const fittedX = centers.map(([left, right]) => Math.min(Math.max(centerX, left), right))
+            .sort((a, b) => Math.abs(a - centerX) - Math.abs(b - centerX))[0];
+          return { ...placement, centerX: fittedX, top: shiftedTop, scale, bottom: shiftedBottom };
+        }
+      }
+    }
+    return null;
+  }
+
+  function layout(hexes, random, scale = (Math.max(...hexes[0].map(([x]) => x)) - Math.min(...hexes[0].map(([x]) => x))) / 240) {
+    const vertexHeights = [...new Set(hexes.flatMap((vertices) => vertices.map(([, y]) => y)))];
+    const minY = vertexHeights.reduce((lowest, height) => Math.min(lowest, height), Infinity);
+    const maxY = vertexHeights.reduce((highest, height) => Math.max(highest, height), -Infinity);
+    const overlap = 100;
+    const stagger = 45;
+    const placements = [];
+    let previousPatterns = [];
+    // Fit against nearby cells only; retain all vertex heights for identical shift choices.
+    const buckets = new Map();
+    const bucketSize = 240 * scale;
+    for (const vertices of hexes) {
+      const positions = vertices.map(([x]) => x);
+      const heights = vertices.map(([, y]) => y);
+      for (let column = Math.floor(Math.min(...positions) / bucketSize); column <= Math.floor(Math.max(...positions) / bucketSize); column++) {
+        for (let row = Math.floor(Math.min(...heights) / bucketSize); row <= Math.floor(Math.max(...heights) / bucketSize); row++) {
+          const key = `${column},${row}`;
+          (buckets.get(key) || buckets.set(key, []).get(key)).push(vertices);
+        }
+      }
+    }
+    const uniform = (start, end) => start + (end - start) * random();
+    const addMountain = (centerX, top, width, localScale, corner) => {
+      const nearby = new Set();
+      const halfSpan = width * localScale * 0.75;
+      for (let column = Math.floor((centerX - halfSpan) / bucketSize); column <= Math.floor((centerX + halfSpan) / bucketSize); column++) {
+        for (let row = Math.floor((top - 22.5 * localScale) / bucketSize); row <= Math.floor((top + 112.5 * localScale) / bucketSize); row++) {
+          for (const vertices of buckets.get(`${column},${row}`) || []) {
+            nearby.add(vertices);
+          }
+        }
+      }
+      const placement = fit({
+        centerX, top, width, scale: localScale, bottom: top + 90 * localScale, points: profile(width, random),
+      }, [...nearby], vertexHeights, scale / 8, corner);
+      if (placement) {
+        placements.push(placement);
+      }
+      return placement;
+    };
+    for (let bandIndex = 0; minY + bandIndex * stagger * scale < maxY; bandIndex++) {
+      const top = minY + bandIndex * stagger * scale;
+      const sampleY = Math.min(top + stagger * scale / 2, (top + maxY) / 2);
+      const patterns = [];
+      for (const [start, end] of horizontalSegments(hexes, sampleY)) {
+        const spanWidth = end - start;
+        let singlePeaks = spanWidth < 500 * scale;
+        let maximumWidth = singlePeaks ? 190 : 300;
+        const pairWidth = 2 * maximumWidth - overlap;
+        let subrows = Math.max(1, Math.ceil(pairWidth * scale / spanWidth));
+        let localScale = scale / subrows;
+        const matching = previousPatterns.filter(([left, right]) => left < end && start < right);
+        let columns = [];
+        if (matching.length === 1) {
+          const previous = matching[0][2];
+          const fitting = previous.columns.filter(([, left, width]) => start <= left && left + width * previous.scale <= end);
+          if (fitting.length >= 2 && (previous.scale === scale || previous.scale === localScale)) {
+            columns = fitting;
+            localScale = previous.scale;
+            subrows = Math.round(scale / localScale);
+            singlePeaks = previous.singlePeaks && singlePeaks;
+            maximumWidth = singlePeaks ? 190 : 300;
+          }
+        }
+        let columnIndex = 0;
+        let left = start;
+        if (columns.length < 2) {
+          columns = [];
+        } else {
+          const [lastIndex, lastLeft, lastWidth] = columns.at(-1);
+          columnIndex = lastIndex + 1;
+          left = lastLeft + (lastWidth - overlap) * localScale;
+          let [firstIndex, firstLeft] = columns[0];
+          while (true) {
+            const width = uniform(150, maximumWidth);
+            const newLeft = firstLeft - (width - overlap) * localScale;
+            if (newLeft < start) {
+              break;
+            }
+            firstIndex--;
+            columns.unshift([firstIndex, newLeft, width]);
+            firstLeft = newLeft;
+          }
+        }
+        while (left + 150 * localScale <= end) {
+          let width = uniform(150, maximumWidth);
+          width = Math.min(width, (end - left) / localScale);
+          columns.push([columnIndex, left, width]);
+          left += (width - overlap) * localScale;
+          columnIndex++;
+        }
+        patterns.push([start, end, { scale: localScale, singlePeaks, columns }]);
+        for (let subrow = 0; subrow < subrows; subrow++) {
+          const rowIndex = bandIndex * subrows + subrow;
+          const rowTop = top + subrow * stagger * localScale;
+          for (const [index, columnLeft, width] of columns) {
+            if (((index % 2) + 2) % 2 === rowIndex % 2) {
+              addMountain(columnLeft + width * localScale / 2, rowTop, width, localScale);
+            }
+          }
+        }
+      }
+      previousPatterns = patterns;
+    }
+    const covers = (placement, cornerX, cornerY) => {
+      if (!(placement.top < cornerY && cornerY < placement.bottom)) {
+        return false;
+      }
+      const localX = (cornerX - placement.centerX) / placement.scale;
+      const localY = 10 + (cornerY - placement.top) / placement.scale;
+      return horizontalSegments([placement.points], localY).some(([left, right]) => left < localX && localX < right);
+    };
+    const pending = [...placements].sort((a, b) => a.bottom - b.bottom);
+    while (pending.length) {
+      const placement = pending.shift();
+      const { bottom } = placement;
+      const halfWidth = placement.width * placement.scale / 2;
+      const visibleSegments = horizontalSegments(hexes, bottom);
+      const corners = [placement.centerX - halfWidth, placement.centerX + halfWidth]
+        .filter((corner) => visibleSegments.some(([left, right]) => left < corner && corner < right));
+      if (!corners.length || corners.some((corner) => placements
+        .some((other) => other.bottom > bottom && covers(other, corner, bottom)))) {
+        continue;
+      }
+      let localScale = placement.scale;
+      if (bottom + stagger * localScale >= maxY) {
+        continue;
+      }
+      const width = uniform(150, 190);
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const below = horizontalSegments(hexes, bottom + stagger * localScale / 2);
+        const halfSpan = width * localScale / 2;
+        const corner = corners.find((position) => below.some(([left, right]) => left < position + halfSpan && position - halfSpan < right));
+        if (corner !== undefined) {
+          const bridge = addMountain(corner, bottom - stagger * localScale, width, localScale, [corner, bottom]);
+          if (bridge) {
+            pending.push(bridge);
+            pending.sort((a, b) => a.bottom - b.bottom);
+            break;
+          }
+        }
+        localScale /= 2;
+      }
+    }
+    return placements.sort((a, b) => a.bottom - b.bottom);
+  }
+
+  rpgMap.MountainTerrain = Object.freeze({ profile, layout });
+})(globalThis);
+</script>
+
 <script data-module="Embellish">
 (function (root) {
   'use strict';
   const rpgMap = root.RpgMap = root.RpgMap || {};
-  const { Util: util, Terrain: terrain, Regions: regions } = rpgMap;
+  const { Util: util, Terrain: terrain, Regions: regions, MountainTerrain: mountainTerrain } = rpgMap;
 
   // SVG terrain patterns (plan §8) in normalized export units: hex heights, y north/up.
   // Motifs are anchored to lattices in the exported panel's frame, so patterns continue
@@ -5327,7 +5634,7 @@
     return Math.hypot(delta[0], delta[1]);
   }
 
-  // Roles: body is filled and inked, ink/accent are strokes, dot is filled with ink.
+  // Roles: body is filled and inked, fill is uninked, ink/accent are strokes, dot is inked.
   function shape(role, points, isClosed = false) {
     return Object.freeze({ role, isClosed, points: Object.freeze(points.map((point) => Object.freeze(point))) });
   }
@@ -5363,14 +5670,6 @@
     return shape('dot', ring(x, y, 0.014, 6), true);
   }
 
-  function peak(x, y, spanWidth, spanHeight, apexOffset) {
-    const apex = [x + apexOffset, y + spanHeight];
-    return [
-      shape('body', [[x - spanWidth / 2, y], apex, [x + spanWidth / 2, y]]),
-      line(apex, [apex[0] + 0.03, y + spanHeight * 0.55], [apex[0] + 0.012, y + spanHeight * 0.3], [apex[0] + 0.035, y + spanHeight * 0.08]),
-    ];
-  }
-
   function dune(x, y, spanWidth, spanHeight) {
     const crest = [x - spanWidth * 0.15, y + spanHeight];
     return shape('body', [[x - spanWidth / 2, y], ...quadratic(crest, [x + spanWidth * 0.18, y + spanHeight], [x + spanWidth / 2, y])]);
@@ -5388,11 +5687,9 @@
       return [...shapes, shape('body', bump(0.02 * r(), 0, 0.24 + 0.05 * r(), 0.08 + 0.025 * r()))];
     },
     mountains(r) {
-      const shapes = [];
-      for (const x of r() < 0.5 ? [-0.08, 0.09] : [0.08]) {
-        shapes.push(...peak(x, 0.05, 0.2, 0.2 + 0.06 * r(), (r() - 0.5) * 0.04));
-      }
-      return [...shapes, ...peak(0, 0, 0.24, 0.25 + 0.07 * r(), (r() - 0.5) * 0.04)];
+      const points = mountainTerrain.profile(150 + 40 * r(), r)
+        .map(([x, y]) => [x * TREE_SCALE, (100 - y) * TREE_SCALE]);
+      return [shape('fill', points, true), line(...points)];
     },
     mountainPeak(r) {
       const apexOffset = (r() - 0.5) * 0.08, apex = [apexOffset, 0.36], left = [-0.38, -0.3], right = [0.38, -0.3];
@@ -5580,7 +5877,21 @@
       if (!type.embellish) {
         return null;
       }
-      const instances = (type.embellish.layoutKind === 'tile' ? tileInstances : latticeInstances)(data, cells[regionIndex], type, seed);
+      let instances;
+      if (type.key === 'mountains') {
+        const hexes = cells[regionIndex].map((cellIndex) => cellPolygon(data, data.cells[cellIndex]).map(([x, y]) => [x, -y]));
+        const regionSeed = region.tileIndices.reduce((value, tileIndex) => util.hashIntegers(value, tileIndex), util.hashIntegers(seed, type.id));
+        const random = util.createRng(regionSeed);
+        instances = mountainTerrain.layout(hexes, random, TREE_SCALE).map((placement) => {
+          const points = placement.points.map(([x, y]) => [x * placement.scale, (100 - y) * placement.scale]);
+          return {
+            variant: 0, point: [placement.centerX, -placement.bottom], scale: 1,
+            shapes: [shape('fill', points, true), line(...points)],
+          };
+        });
+      } else {
+        instances = (type.embellish.layoutKind === 'tile' ? tileInstances : latticeInstances)(data, cells[regionIndex], type, seed);
+      }
       instances.sort((a, b) => b.point[1] - a.point[1] || a.point[0] - b.point[0]);
       return { key: type.key, terrainId: type.id, instances };
     });
@@ -5681,7 +5992,8 @@
   function motifPath(shape, spec, body) {
     const data = shape.points.map((point, index) =>
       `${index ? 'L' : 'M'}${motifNumber(point[0] * HEX_UNITS)} ${motifNumber(-point[1] * HEX_UNITS)}`).join('');
-    const paint = shape.role === 'body' ? `fill="${body}" stroke="${spec.ink}"`
+    const paint = shape.role === 'fill' ? `fill="${body}" stroke="none"`
+      : shape.role === 'body' ? `fill="${body}" stroke="${spec.ink}"`
       : shape.role === 'dot' ? `fill="${spec.ink}"`
         : `fill="none" stroke="${shape.role === 'accent' ? spec.accent : spec.ink}"`;
     return `<path d="${data}${shape.isClosed ? 'Z' : ''}" ${paint}/>`;
@@ -5894,7 +6206,7 @@
     }
     const usedVariants = new Map();
     embellishments.forEach((item) => {
-      if (item) {
+      if (item && item.key !== 'mountains') {
         const variants = usedVariants.get(item.terrainId) || usedVariants.set(item.terrainId, new Set()).get(item.terrainId);
         item.instances.forEach((instance) => variants.add(`${instance.variant}${instance.hasTrunk ? '-trunk' : ''}`));
       }
@@ -5946,6 +6258,13 @@
           activeKey = groupKey;
         }
         const point = projection.applyTransform(hexToSvg, instance.point).map(motifNumber);
+        if (instance.shapes) {
+          const spec = terrain.byId(item.terrainId).embellish;
+          const strokeWidth = numberText(2 * embellish.TREE_SCALE * HEX_UNITS);
+          lines.push(`<g transform="translate(${point.join(' ')})" stroke-width="${strokeWidth}">${instance.shapes
+            .map((shape) => motifPath(shape, spec, spec.body)).join('')}</g>`);
+          continue;
+        }
         const href = `href="#emb-${item.key}-${instance.variant}${instance.hasTrunk ? '-trunk' : ''}"`;
         lines.push(instance.scale === 1 ? `<use ${href} x="${point[0]}" y="${point[1]}"/>`
           : `<use ${href} transform="matrix(${util.formatNumber(instance.scale, 4)} 0 0 ${util.formatNumber(instance.scale, 4)} ${point[0]} ${point[1]})"/>`);
@@ -6055,9 +6374,9 @@
     return lines.join('\n');
   }
 
-  // Upper bound on SVG bytes per embellished tile (tundra, the densest motif, measures
-  // about 1.04 KB per hex); merged regions without motifs cost only a few bytes per tile.
+  // Mountain silhouettes are unique inline paths; other terrains reuse motif definitions.
   const EMBELLISHED_TILE_BYTES = 1100;
+  const MOUNTAIN_TILE_BYTES = 6000;
 
   // Rough size of an export before writing it: { tileCount, embellishedCount, bytes }. Counts
   // the scope's own tiles; features add comparatively little.
@@ -6066,9 +6385,11 @@
     const firstIndex = doc.local ? 0 : doc.topo.panels[panelId].firstTile;
     const tileCount = doc.local ? doc.tileCount : doc.topo.panels[panelId].tileCount;
     const embellished = terrain.TERRAINS.map((type) => !!type.embellish);
-    let embellishedCount = 0, coastal = 0;
+    const mountainId = terrain.byKey('mountains').id;
+    let embellishedCount = 0, mountainCount = 0, coastal = 0;
     for (let tileIndex = firstIndex; tileIndex < firstIndex + tileCount; tileIndex++) {
       embellishedCount += embellished[doc.terrainIds[tileIndex]] ? 1 : 0;
+      mountainCount += doc.terrainIds[tileIndex] === mountainId ? 1 : 0;
       const isWater = terrain.isWater(doc.terrainIds[tileIndex]);
       for (const otherIndex of model.neighbors(doc, tileIndex)) {
         coastal += isWater !== terrain.isWater(doc.terrainIds[otherIndex]) ? 1 : 0;
@@ -6077,7 +6398,8 @@
     // Include both region copies and the stroke. Interior coasts are counted from
     // both tiles; panel-edge neighbours provide a conservative seam allowance.
     return { tileCount, embellishedCount, bytes: 4096 + 4 * tileCount + 640 * coastal
-      + (embellish ? embellishedCount * EMBELLISHED_TILE_BYTES : 0) };
+      + (embellish ? embellishedCount * EMBELLISHED_TILE_BYTES
+        + mountainCount * (MOUNTAIN_TILE_BYTES - EMBELLISHED_TILE_BYTES) : 0) };
   }
 
   function fileName(doc, panelId = doc.local ? 'local' : doc.global.panelId || null) {
