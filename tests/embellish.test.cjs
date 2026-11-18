@@ -197,8 +197,83 @@ test('forest trunks occur only near boundaries and gaps without changing crown p
   const gapData = regions.build(whole);
   const gapResult = embellish.build(gapData).find((item) => item && item.key === 'forest');
   assert.ok(gapResult.instances.some((instance) => instance.hasTrunk), 'an enclosed clearing gets trunks');
-  const retained = wholeResult.instances.filter((instance) => !util.pointInConvex(instance.point, polygon(gapData, cellOf(gapData, gap)), 0));
-  assert.deepEqual(gapResult.instances.map(({ point, variant }) => [point, variant]), retained.map(({ point, variant }) => [point, variant]));
+  const original = new Map(wholeResult.instances.map((instance) => [JSON.stringify(instance.point), instance.variant]));
+  assert.ok(gapResult.instances.length < wholeResult.instances.length);
+  for (const instance of gapResult.instances) {
+    assert.equal(original.get(JSON.stringify(instance.point)), instance.variant, 'retained trees stay on their original lattice');
+  }
+});
+
+test('whole forest motifs stay within forest cells, including northern edges and clearings', () => {
+  for (const kind of ['single', 'joined', 'hole']) {
+    const doc = localMap(7, 7, kind === 'hole' ? 'forest' : 'plain');
+    const center = model.localTileIndex(doc, 3, 3);
+    model.setTerrain(doc, center, id(kind === 'hole' ? 'plain' : 'forest'));
+    if (kind === 'joined') {
+      model.neighbors(doc, center).forEach((tileIndex) => model.setTerrain(doc, tileIndex, id('forest')));
+    }
+    const data = regions.build(doc);
+    const results = embellish.build(data);
+    let treeCount = 0;
+    let crossingCount = 0;
+    for (const [regionIndex, item] of results.entries()) {
+      if (!item || item.key !== 'forest') {
+        continue;
+      }
+      const polygons = data.cells.filter((cell) => cell.regionIndex === regionIndex).map((cell) => polygon(data, cell));
+      for (const instance of item.instances) {
+        treeCount++;
+        const points = embellish.motifs('forest')[instance.variant].flatMap((shape) => shape.points)
+          .map((point) => util.add(instance.point, point));
+        assert.ok(points.every((point) => polygons.some((cell) => util.pointInConvex(point, cell, 1e-8))),
+          `${kind}: tree crowns and trunks cannot enter another terrain or leave the map`);
+        if (!polygons.some((cell) => points.every((point) => util.pointInConvex(point, cell, 1e-8)))) {
+          crossingCount++;
+        }
+      }
+    }
+    assert.ok(treeCount > 0, `${kind}: forest still contains complete trees`);
+    if (kind === 'joined') {
+      assert.ok(crossingCount > 0, 'shared forest edges must not trim trees');
+    }
+  }
+});
+
+test('farmland alone is clipped to connected regions, including holes and colours-off exports', () => {
+  const doc = localMap(8, 8, 'farmland');
+  const hole = model.localTileIndex(doc, 3, 3);
+  model.setTerrain(doc, hole, id('plain'));
+  for (let columnIndex = 0; columnIndex < 2; columnIndex++) {
+    for (let rowIndex = 0; rowIndex < 2; rowIndex++) {
+      model.setTerrain(doc, model.localTileIndex(doc, columnIndex, rowIndex), id('forest'));
+    }
+  }
+  const data = regions.build(doc);
+  const farms = data.regions.flatMap((region, index) => region.terrainId === id('farmland') ? [index] : []);
+  assert.equal(farms.length, 1, 'adjacent fields share one region');
+  assert.equal(data.regions[farms[0]].loops.length, 2, 'the field region includes its clearing');
+  for (const terrainEnabled of [true, false]) {
+    const text = svgExport.write(doc, { layers: { terrain: terrainEnabled } });
+    const clips = [...text.matchAll(/<clipPath id="farmland-clip-(\d+)"><path clip-rule="evenodd" d="([^"]+)"\/><\/clipPath>/g)];
+    assert.deepEqual(clips.map(([, index]) => Number(index)), farms);
+    assert.equal((clips[0][2].match(/M/g) || []).length, 2, 'clip retains both outer and inner loops');
+    const groups = [...text.matchAll(/<g data-terrain="([^"]+)"([^>]*)>/g)];
+    assert.ok(groups.some(([, key]) => key === 'farmland'));
+    assert.ok(groups.some(([, key]) => key === 'forest'));
+    for (const [, key, attributes] of groups) {
+      if (key === 'farmland') {
+        assert.equal(attributes, ` clip-path="url(#farmland-clip-${farms[0]})"`);
+      } else {
+        assert.doesNotMatch(attributes, /clip-path/);
+      }
+    }
+  }
+  assert.doesNotMatch(svgExport.write(doc, { layers: { embellishment: false } }), /farmland-clip-/);
+  const separate = localMap(8, 8);
+  model.setTerrain(separate, model.localTileIndex(separate, 1, 1), id('farmland'));
+  model.setTerrain(separate, model.localTileIndex(separate, 6, 6), id('farmland'));
+  const text = svgExport.write(separate, { layers: { terrain: false } });
+  assert.equal([...text.matchAll(/<clipPath id="farmland-clip-/g)].length, 2, 'disconnected fields have separate clips');
 });
 
 test('SVG embellishment layer references defined motifs, honours colours-off and scales only by width', () => {
