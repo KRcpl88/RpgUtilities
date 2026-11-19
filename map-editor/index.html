@@ -1348,8 +1348,8 @@
 
   // Lattice placement for one panel. Column q is centred at east = originEast + q·w.
   // Non-equatorial panels: q = 0 is the north-south bisector and hex (0, 0) is the
-  // panel centre. Equatorial panels: every scale starts half a column inside the west
-  // edge; panel column i = q − columnShift runs 0 … columnCount−1 west to east.
+  // panel centre. Equatorial panels: columns 0 and columnCount are centred on the
+  // west and east edges; each panel owns its independently clipped half-hexes.
   function panelLattice(panelId, panelHexes = DEFAULT_PANEL_HEXES, ratio = 1) {
     validatePanelHexes(panelHexes);
     assertCondition(ratio === 1 || (Number.isInteger(ratio) && ratio > 0 && ratio % 2 === 0),
@@ -1362,14 +1362,12 @@
     const w = lattice.columnSpacing(d);
     let originEast = 0;
     let columnCount = 0;
-    let columnShift = 0;
     if (panel.isEquatorial) {
       columnCount = panelHexes * ratio;
-      columnShift = ratio === 1 ? 0 : ratio / 2;
-      originEast = -built.equatorialWidth / 2 + (0.5 - columnShift) * w;
+      originEast = -built.equatorialWidth / 2;
     }
     return Object.freeze({
-      panelId, isEquatorial: panel.isEquatorial, panelHexes, ratio, milesPerEdge, d, w, originEast, columnCount, columnShift,
+      panelId, isEquatorial: panel.isEquatorial, panelHexes, ratio, milesPerEdge, d, w, originEast, columnCount,
     });
   }
 
@@ -1388,26 +1386,10 @@
     return (q + KEY_BIAS) * 2 * KEY_BIAS + (j + KEY_BIAS);
   }
 
-  // The clip regions of a panel, in its own frame. Equatorial panels also clip
-  // against their strip neighbours, since tiles there are whole at east/west edges.
+  // The clip region of a panel, in its own frame.
   function buildRegions(built, panelId) {
     const frame = built.frames[panelId];
-    const regions = [{ panelId, toRegion: [1, 0, 0, 1, 0, 0], polygon: frame.polygon }];
-    if (frame.isEquatorial) {
-      const strip = built.equatorialWestToEast;
-      const stripIndex = strip.indexOf(panelId);
-      for (const otherId of [strip[(stripIndex + 5) % 6], strip[(stripIndex + 1) % 6]]) {
-        const seam = projection.findSeam(panelId, otherId);
-        const toRegion = seam.panelA === panelId ? seam.aToB : seam.bToA;
-        const fromRegion = projection.invertTransform(toRegion);
-        regions.push({
-          panelId: otherId,
-          toRegion,
-          polygon: built.frames[otherId].polygon.map((point) => projection.applyTransform(fromRegion, point)),
-        });
-      }
-    }
-    return regions;
+    return [{ panelId, toRegion: [1, 0, 0, 1, 0, 0], polygon: frame.polygon }];
   }
 
   function edgeLines(polygon) {
@@ -1438,11 +1420,9 @@
     };
   }
 
-  // Lattice hexes overlapping the panel (or, for equatorial panels, the strip near
-  // the panel's own columns), with partial tiles clipped into per-region pieces.
+  // Lattice hexes overlapping the panel, with partial tiles clipped to its polygon.
   // Clip (optional, for local spans) narrows the search box and filters centres.
-  function collectPanelTiles(info, regions, hexArea, clip = null) {
-    const panelLatticeInfo = info.lattice;
+  function collectPanelTiles(panelLatticeInfo, regions, hexArea, clip = null) {
     const { d, w } = panelLatticeInfo;
     const radius = lattice.hexRadius(d);
     const box = polygonBounds(regions);
@@ -1456,14 +1436,8 @@
       }
     }
     const panelEdgeLines = edgeLines(regions[0].polygon);
-    let qMin = Math.floor((box.minEast - radius - panelLatticeInfo.originEast) / w) - 1;
-    let qMax = Math.ceil((box.maxEast + radius - panelLatticeInfo.originEast) / w) + 1;
-    if (panelLatticeInfo.isEquatorial && !info.isSinglePanel) {
-      const ownMin = panelLatticeInfo.columnShift;
-      const ownMax = ownMin + panelLatticeInfo.columnCount - 1;
-      qMin = clip ? Math.max(qMin, ownMin) : ownMin;
-      qMax = clip ? Math.min(qMax, ownMax) : ownMax;
-    }
+    const qMin = Math.floor((box.minEast - radius - panelLatticeInfo.originEast) / w) - 1;
+    const qMax = Math.ceil((box.maxEast + radius - panelLatticeInfo.originEast) / w) + 1;
     const jMin = Math.floor((box.minNorth - radius) / d) - 1;
     const jMax = Math.ceil((box.maxNorth + radius) / d) + 1;
     const candidates = [];
@@ -1482,7 +1456,7 @@
           candidates.push({ q, j, center, area: hexArea, pieces: null });
           continue;
         }
-        if (!panelLatticeInfo.isEquatorial && inside <= -radius) {
+        if (inside <= -radius) {
           continue;
         }
         const hex = lattice.hexPolygon(center, d);
@@ -1545,11 +1519,11 @@
         neighborSets[second].add(firstIndex);
       }
     };
-    // Lattice neighbours within a panel, or within the continuous equatorial strip.
+    // Lattice neighbours within a panel.
     for (const tile of topo.tiles) {
       for (let direction = 0; direction < 6; direction++) {
         const [q, j] = lattice.offsetNeighbor(tile.latticeColumn, tile.latticeRow, direction);
-        const otherIndex = locateLattice(topo, tile.panelId, q, j);
+        const otherIndex = tileAt(topo, tile.panelId, q, j);
         if (otherIndex < 0 || otherIndex < tile.index) {
           continue;
         }
@@ -1564,7 +1538,7 @@
         }
       }
     }
-    // Partial-tile pieces meeting across the other seams, compared along the shared edge.
+    // Partial-tile pieces meeting across every seam, compared along the shared edge.
     const piecesByPanel = {};
     for (const tile of topo.tiles) {
       for (const piece of tile.pieces || []) {
@@ -1578,9 +1552,6 @@
     for (const seam of built.seams) {
       if (!topo.panels[seam.panelA] || !topo.panels[seam.panelB]
         || (seamLinked && !seamLinked(seam.panelA, seam.panelB))) {
-        continue;
-      }
-      if (built.panels[seam.panelA].isEquatorial && built.panels[seam.panelB].isEquatorial) {
         continue;
       }
       const sides = [seam.panelA, seam.panelB].map((panelId) => {
@@ -1634,13 +1605,11 @@
     const regionsByPanel = {};
     for (const panelId of panelIds) {
       const panelLatticeInfo = panelLattice(panelId, panelHexes, ratio);
-      const regions = buildRegions(built, panelId).slice(0, singlePanel === null ? undefined : 1);
+      const regions = buildRegions(built, panelId);
       regionsByPanel[panelId] = regions;
-      const candidates = collectPanelTiles({ lattice: panelLatticeInfo, isSinglePanel: singlePanel !== null }, regions, hexArea);
+      const candidates = collectPanelTiles(panelLatticeInfo, regions, hexArea);
       candidates.sort((left, right) => (right.j - left.j) || (left.q - right.q));
-      const qMin = panelLatticeInfo.isEquatorial && singlePanel === null
-        ? panelLatticeInfo.columnShift
-        : candidates.reduce((min, candidate) => Math.min(min, candidate.q), Infinity);
+      const qMin = candidates.reduce((min, candidate) => Math.min(min, candidate.q), Infinity);
       const qMax = candidates.reduce((max, candidate) => Math.max(max, candidate.q), -Infinity);
       const jMax = candidates[0].j;
       const jMin = candidates[candidates.length - 1].j;
@@ -1822,8 +1791,8 @@
 
   // The tiles of a regional local map that crosses panel seams (null when the map lies
   // inside its anchor panel and stays a flat local grid). Local must already be cropped
-  // by UnfoldSpan. Tiles follow the global rules of each panel (whole hexes at equatorial
-  // east/west seams, clipped partial tiles at the others) and are kept when their centre,
+  // by UnfoldSpan. Tiles follow the global rules of each panel (clipped partial tiles
+  // at every seam) and are kept when their centre,
   // unfolded into the anchor frame, falls in a cell of the local W × H block.
   function buildSpan(local) {
     if (local.systemName !== 'regional') {
@@ -1900,7 +1869,7 @@
       regionsByPanel[panelId] = regions;
       const frameOutline = frameOutlines.get(panelId);
       // Keep tiles whose centre lies in a cell of the block and that are visible in it.
-      const candidates = collectPanelTiles({ lattice: panelLatticeInfo, isSinglePanel: false }, regions, hexArea, {
+      const candidates = collectPanelTiles(panelLatticeInfo, regions, hexArea, {
         box: polygonBounds([{ polygon: frameRectangle }]),
         accept: (center) => inBlock(projection.applyTransform(toWorld, center)),
       }).filter((candidate) => (candidate.pieces
@@ -1995,23 +1964,11 @@
     return index === undefined ? -1 : index;
   }
 
-  // Like TileAt, but equatorial columns past the panel's east/west edge resolve
-  // to the neighbouring strip panel (the strip lattice is continuous and wraps).
+  // Look up a tile in its owning panel; clipped pieces never change ownership.
   function locateLattice(topo, panelId, q, j) {
     const info = topo.panels[panelId];
     if (!info && topo.span) {
       return -1;
-    }
-    const panelLatticeInfo = info.lattice;
-    if (panelLatticeInfo.isEquatorial && !topo.singlePanel) {
-      const column = q - panelLatticeInfo.columnShift;
-      // Local spans omit strip neighbours that are absent or not unfolded beside this panel.
-      if (column < 0) {
-        return info.westPanel ? tileAt(topo, info.westPanel, q + panelLatticeInfo.columnCount, j) : -1;
-      }
-      if (column >= panelLatticeInfo.columnCount) {
-        return info.eastPanel ? tileAt(topo, info.eastPanel, q - panelLatticeInfo.columnCount, j) : -1;
-      }
     }
     return tileAt(topo, panelId, q, j);
   }
@@ -2429,7 +2386,7 @@
   // A map document. Mutators validate their input, apply the change, and return a
   // change record { layer, Key, index, Before, After } (or null for a no-op) that
   // History stores and ApplyChange replays in either direction.
-  const FORMAT_VERSION = 2;
+  const FORMAT_VERSION = 3;
   const OVERLAY_TYPES = Object.freeze(['road', 'trail', 'river']);
   const LABEL_CATEGORIES = Object.freeze(['region', 'location', 'city']);
   const LABEL_DEFAULT_SIZES = Object.freeze({ region: 28, location: 14, city: 18 });
@@ -3321,9 +3278,7 @@
 
   const groupCache = new WeakMap();
 
-  // Groups of tiles to draw inside a panel's polygon, each with the transform from the
-  // owning panel's frame to this panel's frame. Equatorial panels also draw the edge
-  // columns of their strip neighbours, whose whole hexes overhang this panel slightly.
+  // Each panel draws only its own tiles, clipped to its polygon.
   function panelTileGroups(topo, panelId) {
     let byPanel = groupCache.get(topo);
     if (!byPanel) {
@@ -3340,27 +3295,6 @@
       toPanel: IDENTITY,
       tileIndices: Int32Array.from({ length: info.tileCount }, (_, index) => info.firstTile + index),
     }];
-    if (info.lattice.isEquatorial && !topo.singlePanel) {
-      const built = projection.build();
-      const halfWidth = built.equatorialWidth / 2;
-      const radius = lattice.hexRadius(topo.d);
-      for (const otherId of [info.westPanel, info.eastPanel]) {
-        if (!otherId || !topo.panels[otherId]) {
-          continue;
-        }
-        const seam = projection.findSeam(otherId, panelId);
-        const toPanel = seam.panelA === otherId ? seam.aToB : seam.bToA;
-        const other = topo.panels[otherId];
-        const tileIndices = [];
-        for (let tileIndex = other.firstTile; tileIndex < other.firstTile + other.tileCount; tileIndex++) {
-          const east = projection.applyTransform(toPanel, topo.tiles[tileIndex].center)[0];
-          if (east + radius > -halfWidth && east - radius < halfWidth) {
-            tileIndices.push(tileIndex);
-          }
-        }
-        groups.push({ owner: otherId, toPanel, tileIndices: Int32Array.from(tileIndices) });
-      }
-    }
     const frozen = Object.freeze(groups.map((group) => Object.freeze(group)));
     byPanel.set(panelId, frozen);
     return frozen;
@@ -3383,12 +3317,8 @@
   }
 
   // The tile that owns a world point, or null. Returns { tileIndex, panelId, framePoint } with
-  // panelId the tile's own panel and framePoint the point in that panel's frame. The point
-  // can lie inside a neighbouring panel's outline: on the east/west seams between
-  // equatorial panels, edge hexes belong wholly to their own panel, so the tip of a hex
-  // that pokes across the seam still belongs to that hex (prompt.md, "Map projection").
-  // Partial tiles on the other seams are clipped to their panel, so there the panel
-  // containing the point owns it. drawPanel is the panel whose outline contains the point.
+  // panelId the containing panel and framePoint the point in that panel's frame.
+  // Every partial tile is clipped to its owning panel.
   function hitTest(topo, layout, world) {
     const hit = placementAt(layout, world);
     if (hit === null) {
@@ -5101,7 +5031,7 @@
 (function (root) {
   'use strict';
   const rpgMap = root.RpgMap = root.RpgMap || {};
-  const { Util: util, Projection: projection, Lattice: lattice, Terrain: terrain, Model: model, View: view } = rpgMap;
+  const { Util: util, Projection: projection, Lattice: lattice, Topology: topology, Terrain: terrain, Model: model, View: view } = rpgMap;
   const { assertCondition } = util;
   const TOLERANCE = 1e-8;
 
@@ -5139,10 +5069,46 @@
     return paths;
   }
 
-  function build(doc, panelId = doc.local ? 'local' : doc.global.panelId || null) {
+  // Only complete, coincident equatorial halves may share a whole-hex motif.
+  function matchingHalf(doc, geometry, tile) {
+    const info = geometry.panels[tile.panelId];
+    if (!info.lattice.isEquatorial || Math.abs(tile.area / geometry.hexArea - 0.5) > 1e-9) {
+      return -1;
+    }
+    const { columnCount } = info.lattice;
+    const west = tile.latticeColumn === 0;
+    if (!west && tile.latticeColumn !== columnCount) {
+      return -1;
+    }
+    const otherId = west ? info.westPanel : info.eastPanel;
+    if (!otherId || !geometry.panels[otherId] || !topology.spanLinked(geometry, tile.panelId, otherId)) {
+      return -1;
+    }
+    const otherIndex = topology.tileAt(geometry, otherId, west ? columnCount : 0, tile.latticeRow);
+    if (otherIndex < 0 || model.getTerrain(doc, tile.index) !== model.getTerrain(doc, otherIndex)) {
+      return -1;
+    }
+    const other = geometry.tiles[otherIndex];
+    const otherCenter = projection.applyTransform(view.panelTransform(otherId, tile.panelId), other.center);
+    if (Math.abs(other.area / geometry.hexArea - 0.5) > 1e-9
+      || util.pointDistance(tile.center, otherCenter) > 1e-9 * geometry.d) {
+      return -1;
+    }
+    if (geometry.span && [tile, other].some((half) => {
+      const outline = geometry.span.placements[half.panelId].frameOutline;
+      return Math.abs(util.polygonArea(util.clipPolygonToConvex(half.pieces[0].polygon, outline))
+        - half.area) > 1e-9 * geometry.hexArea;
+    })) {
+      return -1;
+    }
+    return otherIndex;
+  }
+
+  function build(doc, panelId = doc.local ? 'local' : doc.global.panelId || null, options = {}) {
     const geometry = view.mapGeometry(doc);
     const outline = outlineShape(doc, panelId);
     const toHex = [1 / geometry.d, 0, 0, 1 / geometry.d, 0, 0];
+    const joinedTiles = options.joinEquatorialHalves ? new Set() : null;
     let data;
     if (geometry.span && panelId === 'local') {
       // A local map spanning seams: each panel's part is built in its own unfolded place.
@@ -5151,7 +5117,7 @@
       for (const [partId, placement] of Object.entries(geometry.span.placements)) {
         const partToHex = projection.composeTransforms(placement.frameToWorld, toHex);
         const part = buildPart(doc, geometry, partId, partToHex,
-          placement.frameOutline.map((point) => projection.applyTransform(partToHex, point)));
+          placement.frameOutline.map((point) => projection.applyTransform(partToHex, point)), joinedTiles);
         const points = data.points.length, cells = data.cells.length, regions = data.regions.length;
         for (const edge of part.edges) {
           edge.indexA += points;
@@ -5169,14 +5135,14 @@
         data.shorelines.push(...part.shorelines);
       }
     } else {
-      data = buildPart(doc, geometry, panelId, toHex, outline);
+      data = buildPart(doc, geometry, panelId, toHex, outline, joinedTiles);
     }
     return { panelId, outline, bounds: view.boundsOf(outline), ...data };
   }
 
   // Cells, regions and shorelines of panelId's tiles: panelToHex maps its frame to
   // export units, and clip (export units) bounds the drawing.
-  function buildPart(doc, geometry, panelId, panelToHex, clip) {
+  function buildPart(doc, geometry, panelId, panelToHex, clip, joinedTiles) {
     const points = [], cells = [], edges = [];
     const buckets = new Map(), edgesByVertices = new Map();
     // Adjacent hexes and clipped seam copies can differ in their last float bits.
@@ -5207,12 +5173,25 @@
       const toHex = projection.composeTransforms(group.toPanel, panelToHex);
       for (const tileIndex of group.tileIndices) {
         const tile = geometry.tiles[tileIndex];
+        if (joinedTiles && joinedTiles.has(tileIndex)) {
+          continue;
+        }
+        const partner = joinedTiles ? matchingHalf(doc, geometry, tile) : -1;
+        if (partner >= 0) {
+          joinedTiles.add(partner);
+        }
         const polygons = tile.pieces
           ? tile.pieces.filter((piece) => piece.panelId === panelId).map((piece) => piece.polygon)
           : [lattice.hexPolygon(tile.center, geometry.d)];
+        if (partner >= 0) {
+          const other = geometry.tiles[partner];
+          const toPanel = view.panelTransform(other.panelId, panelId);
+          polygons.push(...other.pieces.map((piece) =>
+            piece.polygon.map((point) => projection.applyTransform(toPanel, point))));
+        }
         for (const polygon of polygons) {
           const mapped = polygon.map((point) => projection.applyTransform(toHex, point));
-          const clipped = util.clipPolygonToConvex(mapped, clip);
+          const clipped = partner >= 0 ? mapped : util.clipPolygonToConvex(mapped, clip);
           if (clipped.length < 3 || Math.abs(util.polygonArea(clipped)) < 1e-12) {
             continue;
           }
@@ -6189,12 +6168,18 @@
       '<defs>',
       `<clipPath id="map-clip"><path d="${pathData(outlineShape, hexToSvg)}"/></clipPath>`,
     ];
-    const embellishments = (layers.embellishment ? embellish.build(regionsData) : [])
+    // Motifs may span matching equatorial halves; terrain fills, grid and ownership
+    // continue to use the independently clipped cells.
+    const embellishmentData = layers.embellishment
+      ? regions.build(doc, panelId, { joinEquatorialHalves: true }) : null;
+    const embellishments = (layers.embellishment ? embellish.build(embellishmentData) : [])
       .map((item) => item && item.instances.length ? item : null);
+    const embellishmentShorelines = layers.shoreline && embellishments.some((item) => item && item.key === 'farmland')
+      ? buildShorelines(embellishmentData) : null;
     embellishments.forEach((item, index) => {
       if (item && item.key === 'farmland') {
-        const path = regionsData.regions[index].loops
-          .map((points) => pathData({ points, isClosed: true }, hexToSvg, shorelines)).join('');
+        const path = embellishmentData.regions[index].loops
+          .map((points) => pathData({ points, isClosed: true }, hexToSvg, embellishmentShorelines)).join('');
         lines.push(`<clipPath id="farmland-clip-${index}"><path clip-rule="evenodd" d="${path}"/></clipPath>`);
       }
     });
@@ -6598,25 +6583,13 @@
     }
   }
 
-  // Where a tile is drawn in a layout: its own placement plus, for equatorial edge
-  // columns, the strip neighbours whose polygons its hex overhangs. Yields world centres.
+  // A tile is drawn only in its owning panel's placement.
   function tileWorldCenters(topo, layout, tileIndex) {
     const tile = topo.tiles[tileIndex];
     const centers = [];
     const own = view.findPlacement(layout, tile.panelId);
     if (own) {
       centers.push(projection.applyTransform(own.frameToWorld, tile.center));
-    }
-    const info = topo.panels[tile.panelId];
-    if (info.lattice.isEquatorial) {
-      for (const otherId of [info.westPanel, info.eastPanel]) {
-        const other = view.findPlacement(layout, otherId);
-        if (other) {
-          const seam = projection.findSeam(tile.panelId, otherId);
-          const toOther = seam.panelA === tile.panelId ? seam.aToB : seam.bToA;
-          centers.push(projection.applyTransform(other.frameToWorld, projection.applyTransform(toOther, tile.center)));
-        }
-      }
     }
     return centers;
   }

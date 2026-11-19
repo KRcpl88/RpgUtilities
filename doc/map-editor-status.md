@@ -1,8 +1,18 @@
 # Global Map Editor: Plan Status
 
-Last updated: 2026-11-06 (post-plan SVG forest rendering; the plan is complete). See [`map-editor-plan.md`](map-editor-plan.md) for the full plan and [`../prompt.md`](../prompt.md) for the specification.
+Last updated: 2026-11-19 (equatorial half-hex alignment; the plan is complete). See [`map-editor-plan.md`](map-editor-plan.md) for the full plan and [`../prompt.md`](../prompt.md) for the specification.
 
 ## Summary
+
+Post-plan addition (2026-11-19): equatorial east/west boundaries pass through
+hex centres at every regional scale. Every panel owns only its clipped pieces;
+matching halves are separate editable tiles joined by ordinary seam adjacency.
+Drawing, hit-testing, resampling and panel imports no longer borrow a neighbour's
+overhanging tips. SVG embellishment geometry joins complete matching-terrain
+halves into a whole hex (once for a spanning local export); fills and grid retain
+their clipped ownership. Other seams and projection geometry are unchanged.
+Files now use `# RPGMAP 3`; older versions are rejected without migration.
+Samples and fixtures use the new format and lattice.
 
 Post-plan addition (2026-11-06): SVG forest trees use the lobed elliptical
 crowns, proportions, colours and fine outlines from `tools/render_trees.py`.
@@ -82,8 +92,8 @@ Post-plan additions (2026-10-30): local maps across panel seams, and crop/rescal
     - Bounds `[minX, minY, maxX, maxY]`: `boundsOf`, `boundsIntersect`, `unionBounds`, `transformBounds`.
     - Layouts (cached): `buildNetLayout()` (18 placements at `frameToNet`) and `buildFocusLayout(panelId)` (neighbours through their seams, the focus panel last with the identity). A placement is `{ panelId, name, frameToWorld, worldToFrame, frameOutline, outline, bounds, center }`. `findPlacement`, `placementAt` (the topmost placement containing a world point).
     - Local geometry (§11.48–49): `mapGeometry(doc)` returns global topology or a cached rendering-only local adapter (one world unit per hex height; one identity placement). `mapLayout(doc)` returns net/local layout; `getFrameOutline` returns the panel polygon/local bounding rectangle. `doc.topo` stays null locally, and model adjacency stays independent. Bounds include full edge hexes, but empty corners do not hit a tile.
-    - `panelTileGroups(topo, panelId)` (cached): the panel's own tiles plus, for equatorial panels, the overhanging edge columns of the west/east strip neighbours with the seam transform. `visibleTiles(topo, group, frameBounds)` culls by tile centre ± hex radius.
-    - `hitTest(topo, layout, world)` → `{ tileIndex, panelId, framePoint, drawPanel }` or null. It is exact, including partial pieces. `panelId`/`framePoint` are the owning tile's panel and frame. A point inside an equatorial panel that falls in the tip of the strip neighbour's edge hex belongs to that neighbour's tile (plan §11.28, `prompt.md` "Map projection").
+    - `panelTileGroups(topo, panelId)` (cached): only the panel's own tiles. `visibleTiles(topo, group, frameBounds)` culls by tile centre ± hex radius.
+    - `hitTest(topo, layout, world)` → `{ tileIndex, panelId, framePoint, drawPanel }` or null. It is exact, including partial pieces. The containing panel owns the hit on every seam.
     - `demoTerrain(topo, seed)`: a deterministic `Uint8Array` world that uses all 17 terrains.
     - Feature geometry (§11.43–45, §11.55): `panelTransform`, `featureCopies`, `featureAnchor`, `overlayCurves` (cached per immutable overlay; cubic segments per drawing panel), `cubicPoint`, `splitCurve` (exact half-parameter de Casteljau split), `flattenCurve` (half-pixel tolerance), `distanceToSegment`, `labelTransform`, `LABEL_UNITS_PER_HEX` (48), `OVERLAY_STYLES` (shared canvas/export styles). Curves and text/glyph copies cross seams through panel transforms, not net-space lines across cut edges. Partial tiles use a visible-piece anchor without changing saved coordinates or ownership.
   - `Edit` (DOM-free, plan §11.32–35, §11.41–42): terrain and feature editing logic.
@@ -97,7 +107,7 @@ Post-plan additions (2026-10-30): local maps across panel seams, and crop/rescal
     - `extendOverlay`, `insertOverlayPoint`, `removeOverlayPoint`, `splitOverlay`, `joinOverlays`: every operation is one command. Removal reroutes around the removed interior tile; split shares the junction; join orients chosen endpoints, fills any gap and keeps the first path's properties.
   - `FileFormat` (DOM-free, plan §6 and §11.38–39; full spec in [`file-format.md`](file-format.md)): `write(doc)` → canonical `*.map.txt` text; `parse(text)` → a new Doc (`revision` 0), or throws an Error with `lineNumber` (0 = whole file) and the message `line N: …`.
     - Sections: `[map]`, `[legend]`, a `[panel <name>]` per panel in Greek order (`columns`, `rows`, `latticeColumn`, `latticeRow`, grid lines north first, `_` = not a tile) or one `[local]`, then `[landmarks]`, `[labels]`, `[overlays]` with universal coordinates. Overlay points may leave out an unchanged panel.
-    - Also exports `MAGIC` (`# RPGMAP 1`), `FILE_EXTENSION` (`.map.txt`), `quote`/`tokenize` (quoted strings with `\"`, `\\`, `\uXXXX`), `coordinateDecimals(hexMiles)` and `fileName(doc)`.
+    - Also exports `MAGIC` (`# RPGMAP 3`), `FILE_EXTENSION` (`.map.txt`), `quote`/`tokenize` (quoted strings with `\"`, `\\`, `\uXXXX`), `coordinateDecimals(hexMiles)` and `fileName(doc)`.
   - `Regions` (DOM-free, §11.52–53): `outlineShape(doc, panel)` and `build(doc, panel?)` produce normalized export geometry (one unit per hex height, y north/up). `build` returns `{ panelId, outline, bounds, points, cells, edges, regions, shorelines }`; local scope defaults to `local`, global scope is required.
     - Cells retain tile ownership, terrain id and vertex/edge references; shared edges have one or two cell indices. Same-terrain cells flood-fill within the selected scope, including overhanging equatorial neighbours and partial pieces.
     - Regions contain `{ terrainId, tileIndices, loops }`; loops repeat their first point, with outer loops CCW and holes CW. Interior edges cancel. Spatial buckets merge vertices within `TOLERANCE = 1e-8` hex; malformed boundaries throw.

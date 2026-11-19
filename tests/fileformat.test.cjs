@@ -77,7 +77,7 @@ test('fixtures parse and are in canonical form', () => {
   assert.equal(fileFormat.write(local), LOCAL_FIXTURE);
 });
 
-test('version 2 files round trip and version 1 and unknown versions are rejected', () => {
+test('version 3 files round trip and older and unknown versions are rejected', () => {
   const docs = [
     model.createGlobalMap({ panelHexes: 4 }),
     model.createPanelMap({ panelHexes: 2, panelId: coordinates.panelIdByName('Alpha'), tileScale: 'M' }),
@@ -86,13 +86,13 @@ test('version 2 files round trip and version 1 and unknown versions are rejected
   ];
   for (const doc of docs) {
     const text = fileFormat.write(doc);
-    assert.ok(text.startsWith('# RPGMAP 2\n'));
-    assert.equal(fileFormat.parse(text).versionNumber, 2);
-    for (const versionNumber of [0, 1, 3, 99]) {
-      const otherVersion = text.replace('# RPGMAP 2', `# RPGMAP ${versionNumber}`);
-      const reWarning = versionNumber < 2
-        ? new RegExp(`Older map file version ${versionNumber} is no longer supported\\. Expected "# RPGMAP 2"`)
-        : new RegExp(`Newer map file version ${versionNumber} is not recognized by this editor\\. Expected "# RPGMAP 2"`);
+    assert.ok(text.startsWith('# RPGMAP 3\n'));
+    assert.equal(fileFormat.parse(text).versionNumber, 3);
+    for (const versionNumber of [0, 1, 2, 4, 99]) {
+      const otherVersion = text.replace('# RPGMAP 3', `# RPGMAP ${versionNumber}`);
+      const reWarning = versionNumber < 3
+        ? new RegExp(`Older map file version ${versionNumber} is no longer supported\\. Expected "# RPGMAP 3"`)
+        : new RegExp(`Newer map file version ${versionNumber} is not recognized by this editor\\. Expected "# RPGMAP 3"`);
       assertFileError(otherVersion, 1, reWarning);
       assertFileError('\n\n' + otherVersion, 3, reWarning);
     }
@@ -195,8 +195,8 @@ test('errors report the offending line', () => {
   assertFileError(withLine(map + 3, () => 'color = red'), map + 3, /Unknown key "color"/);
   assertFileError(withLine(legend, () => '~ lava'), legend, /Unknown terrain "lava"/);
   assertFileError(withLine(legend, () => '. water'), legend + 4, /defined twice/);
-  assertFileError(withLine(alpha + 1, () => 'columns = 3'), alpha + 1, /columns = 4/);
-  assertFileError(withLine(firstRow, (line) => line + '~'), firstRow, /5 characters wide, expected 4/);
+  assertFileError(withLine(alpha + 1, () => 'columns = 3'), alpha + 1, /columns = 5/);
+  assertFileError(withLine(firstRow, (line) => line + '~'), firstRow, /6 characters wide, expected 5/);
   assertFileError(withLine(firstRow + 1, (line) => 'Q' + line.slice(1)), firstRow + 1, /Unknown terrain character "Q" in column 1/);
   const row = GLOBAL_FIXTURE.split('\n')[firstRow - 1];
   const reserved = row.indexOf('_');
@@ -215,7 +215,7 @@ test('errors report the offending line', () => {
   assertFileError(withLine(label, (line) => line.replace('rot=-15', 'tilt=3')), label, /Unknown option "tilt"/);
   assertFileError(withLine(river, (line) => line.replace(/; 0\.0E 216\.0N/, '')), river, /not adjacent/);
   assertFileError(withLine(river, (line) => line.replace(' : ', ' ')), river, /Missing ":"/);
-  assertFileError(withLine(river, (line) => line + ';'), river, /Empty overlay point 5/);
+  assertFileError(withLine(river, (line) => line + ';'), river, /Empty overlay point 6/);
   assertFileError(GLOBAL_FIXTURE + '\n[weather]\n', lineOf(GLOBAL_FIXTURE + '\n[weather]\n', '[weather]'), /Unknown section/);
   assertFileError(LOCAL_FIXTURE.replace(/\[local\][^[]*/, ''), 0, /Missing \[local\]/);
   assertFileError(LOCAL_FIXTURE.replace('size = M', 'size = XXL'), lineOf(LOCAL_FIXTURE, 'size = M'), /Unknown regional size "XXL"/);

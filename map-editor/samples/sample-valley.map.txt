@@ -1,4 +1,4 @@
-# RPGMAP 2
+# RPGMAP 3
 
 [map]
 kind = local

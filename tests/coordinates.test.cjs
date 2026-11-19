@@ -38,9 +38,9 @@ test('equatorial coordinates: north from the equator, east from the centreline',
     const locations = topo.tiles.filter((tile) => tile.panelId === panelId)
       .map((tile) => coordinates.tileToUniversal(topo, tile.index));
     const east = [...new Set(locations.map((location) => Math.round(location.east * 1e6) / 1e6))].sort((componentA, componentB) => componentA - componentB);
-    assert.equal(east.length, 24);
-    assert.ok(Math.abs(east[0] + east[23]) < 1e-6, 'columns are symmetric about the centreline');
-    assert.ok(Math.abs(east[12] - 216 * Math.sqrt(3) / 4) < 1e-6, 'nearest column is half a column east');
+    assert.equal(east.length, 25);
+    assert.ok(Math.abs(east[0] + east[24]) < 1e-6, 'columns are symmetric about the centreline');
+    assert.equal(east[12], 0, 'middle column is on the centreline');
     assert.ok(locations.some((location) => Math.abs(location.north) < 1e-9), 'a hex sits on the equator');
   }
 });

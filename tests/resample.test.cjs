@@ -346,7 +346,7 @@ test('regional rectangles merge into globes, and globe imports clip to a panel o
   }
 });
 
-test('panel imports replace their clipped boundary hexes on the globe, including features in a clipped tip', () => {
+test('panel imports replace only their own clipped boundary halves, including features', () => {
   const source = model.createPanelMap({ panelHexes: 2, panelId: 'Hyz+-', tileScale: 'L' });
   const target = model.createGlobalMap({ panelHexes: 2, tileScale: 'L' });
   source.terrainIds.fill(3);
@@ -359,13 +359,14 @@ test('panel imports replace their clipped boundary hexes on the globe, including
     const targetIndex = resample.tileAtPoint(target, point.panelId, point.point);
     assert.ok(targetIndex >= 0);
     covered.add(targetIndex);
-    const center = resample.tilePoint(target, targetIndex);
-    if (resample.tileAtPoint(source, center.panelId, center.point) < 0) {
+    assert.equal(target.topo.tiles[targetIndex].panelId, source.topo.tiles[tileIndex].panelId);
+    if (source.topo.tiles[tileIndex].isPartial) {
       boundarySource = tileIndex;
       boundaryTarget = targetIndex;
     }
   }
-  assert.ok(boundarySource >= 0, 'isolated panels include tips owned by neighbouring globe tiles');
+  assert.ok(boundarySource >= 0, 'the source includes clipped boundary tiles');
+  assert.equal(covered.size, source.tileCount, 'global and isolated panels use the same clipped grid');
   model.setLandmark(source, boundarySource, { type: 'village', name: 'Edge' });
   model.addLabel(source, { tileIndex: boundarySource, category: 'region', text: 'Edge' });
   model.addOverlay(source, { type: 'trail', tileIndices: [boundarySource] });

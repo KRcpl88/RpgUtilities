@@ -123,14 +123,16 @@ width, height and universal anchor for tile (0, 0), such as `Eta 187.1W 324.0N`.
 Regional anchors snap to their same-scale world lattice; the dialog previews the
 result. Yard-scale anchors remain free.
 
-Equatorial east/west panel boundaries lie between columns at every resolution;
-the first and last owned columns are half a column spacing inside those edges.
-Files use `# RPGMAP 2` after this alignment correction. Version 1 files are rejected,
+Equatorial east/west panel boundaries pass through hex centres at every resolution.
+Each side owns its independently editable half-hex, clipped to its panel, just as
+at other boundaries. SVG terrain embellishments treat matching-terrain halves as
+one whole hex; different terrains remain separate.
+Files use `# RPGMAP 3` after this alignment correction. Older versions are rejected,
 not automatically migrated.
 
 A regional local map (1 mi per hex or larger) that crosses panel seams follows the
-global map's rules at each seam. It uses whole edge hexes at equatorial east/west
-seams and clipped partial tiles at other seams. Its hexes turn to match each panel's
+global map's rules at each seam. It uses clipped partial tiles at every seam.
+Its hexes turn to match each panel's
 grid, so the map looks bent at the seam. It may cross several seams, but it stops
 short of any panel corner where several panels meet: the dialog shows the reduced
 size and the panels crossed. Yard-scale maps always stay one flat grid, as do local

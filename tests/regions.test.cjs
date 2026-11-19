@@ -104,21 +104,22 @@ test('n=24 L export cancels interior edges rather than retaining individual tile
   assert.deepEqual(result.shorelines, []);
 });
 
-test('equatorial export includes the neighbouring owner of each overhanging hex tip', () => {
+test('equatorial exports retain independent terrain on each half of a boundary hex', () => {
   const doc = model.createGlobalMap({ panelHexes: 4 });
   const owner = coordinates.panelIdByName('Gamma'), draw = coordinates.panelIdByName('Beta');
   const tile = doc.topo.tiles.find((item) => item.panelId === owner
-    && item.column === doc.topo.panels[owner].columnCount - 1 && !item.isPartial);
+    && item.column === doc.topo.panels[owner].columnCount - 1
+    && Math.abs(item.area / doc.topo.hexArea - 0.5) < 1e-9);
   model.setTerrain(doc, tile.index, 10);
   const result = regions.build(doc, draw);
   const cell = result.cells.find((item) => item.tileIndex === tile.index);
-  assert.ok(cell, 'the Beta export includes the Gamma-owned tip');
-  assert.equal(cell.terrainId, 10);
-  const area = util.polygonArea(cell.vertexIndices.map((index) => result.points[index]));
-  assert.ok(area > 0 && area < lattice.hexArea(1) / 4);
-  const tipRegion = result.regions.find((region) => region.terrainId === 10);
-  assert.deepEqual(tipRegion.tileIndices, [tile.index]);
-  assert.ok(result.shorelines.every((path) => !path.isClosed), 'no coastline is invented along the panel cut');
+  assert.equal(cell, undefined, 'Beta never draws a Gamma-owned tile');
+  assert.ok(result.cells.every((item) => item.terrainId === 0));
+  const own = regions.build(doc, owner);
+  const ownCell = own.cells.find((item) => item.tileIndex === tile.index);
+  assert.equal(ownCell.terrainId, 10);
+  assert.ok(Math.abs(util.polygonArea(ownCell.vertexIndices.map((index) => own.points[index]))
+    - lattice.hexArea(1) / 2) < 1e-9);
 });
 
 test('random local terrain partitions preserve area and topology without modifying the model', () => {
