@@ -2,6 +2,7 @@
 """Render a hex terrain cluster filled with trees, mountains, or hills."""
 
 import argparse
+from functools import lru_cache
 import json
 import math
 from pathlib import Path
@@ -60,48 +61,28 @@ def tree(center_x):
         '</g>'
     ), width * random.uniform(1.5, 1.7)
 
-#returns svg, terrain_width
 def _mountain_points(width):
     """Build the shared silhouette used for rendering and corner coverage."""
-    xscale = 1
-    yscale = 1
-    num_peaks = 1 if (width < (200 * xscale)) else 2  
-    if num_peaks > 1:
-        # 2 peaks
-        base_y = 100
-        anchors = [
-            (-width * 0.50, base_y),
-            (-width * 0.34 + random.uniform(-8 * xscale, 8 * xscale), base_y - random.uniform(20 * yscale, 30 * yscale)),        
-            (-width * 0.15 + random.uniform(-6* xscale, 6* xscale), base_y - random.uniform(80 * yscale, 90 * yscale)),
-            (random.uniform(-6* xscale, 6* xscale), base_y - random.uniform(40 * yscale, 60 * yscale)),
-            (width * 0.15 + random.uniform(-6* xscale, 6* xscale), base_y - random.uniform(80 * yscale, 90 * yscale)),
-            (width * 0.34 + random.uniform(-8 * xscale, 8 * xscale), base_y - random.uniform(20 * yscale, 30 * yscale)), 
-            (width * 0.50, base_y),
-        ]
-    else:
-        # 1 peak
-        base_y = 100
-        anchors = [
-            (-width * 0.50, base_y),
-            (-width * 0.25 + random.uniform(-10 * xscale, 10 * xscale), base_y - random.uniform(30 * yscale, 40 * yscale)),        
-            (random.uniform(-10* xscale, 10* xscale), base_y - random.uniform(80 * yscale, 90 * yscale)),
-            (width * 0.25 + random.uniform(-10 * xscale, 10 * xscale), base_y - random.uniform(30 * yscale, 40 * yscale)), 
-            (width * 0.50, base_y),
-        ]
-        #anchors = [
-        #    (-width / 2, base_y),
-        #    (random.uniform(-6* xscale, 6* xscale), base_y - random.uniform(35 * yscale, 50 * yscale)),
-        #    (width / 2, base_y),
-        #]
-
+    shoulders = ((-0.25, 10, 30, 40), (0, 10, 80, 90),
+                 (0.25, 10, 30, 40)) if width < 200 else (
+                     (-0.34, 8, 20, 30), (-0.15, 6, 80, 90),
+                     (0, 6, 40, 60), (0.15, 6, 80, 90),
+                     (0.34, 8, 20, 30))
+    anchors = [(-width / 2, 100)]
+    anchors.extend((width * position + random.uniform(-jitter, jitter),
+                    100 - random.uniform(low, high))
+                   for position, jitter, low, high in shoulders)
+    anchors.append((width / 2, 100))
     points = [anchors[0]]
     for (start_x, start_y), (end_x, end_y) in zip(anchors, anchors[1:]):
         point_count = random.randint(1, 2)
-        for n in range(1, point_count + 1):
-            tx = (n + random.uniform(-0.25, 0.25)) / (point_count + 1)
-            ty = (n + random.uniform(-0.25, 0.25)) / (point_count + 1)
-            points.append((start_x + (end_x - start_x) * tx,
-                             start_y + (end_y - start_y) * ty))
+        for point_index in range(1, point_count + 1):
+            fraction_x = (point_index + random.uniform(-0.25, 0.25)) \
+                / (point_count + 1)
+            fraction_y = (point_index + random.uniform(-0.25, 0.25)) \
+                / (point_count + 1)
+            points.append((start_x + (end_x - start_x) * fraction_x,
+                           start_y + (end_y - start_y) * fraction_y))
         points.append((end_x, end_y))
     return points
 
@@ -381,259 +362,105 @@ def hex_terrain(hexes, terrain='trees'):
     return '\n'.join(svg)
 
 
-def _fit_mountain(placement, hexes, minimum_scale, corner=None):
-    """Fit the full silhouette inside the terrain region, or omit the unit."""
-    points = placement['points']
-    original_scale = placement['scale']
-    center_x = placement['center_x']
-    shift_limit = 90 * original_scale / 4
-    horizontal_limit = placement['width'] * original_scale / 4
-    vertex_heights = {y for vertices in hexes for x, y in vertices}
-    peak_y = min(y for x, y in points)
-
-    def intersect(first, second):
-        return [
-            (max(left, start), min(right, end))
-            for left, right in first for start, end in second
-            if max(left, start) <= min(right, end)
-        ]
-
-    for factor in (1, 0.85, 0.7, 0.55, 0.4):
-        local_scale = original_scale * factor
-        if local_scale < minimum_scale:
-            break
-        top = placement['top'] + 45 * (original_scale - local_scale)
-        peak = top + (peak_y - 10) * local_scale
-        bottom = top + 90 * local_scale
-        shifts = {0, -shift_limit, shift_limit}
-        shifts.update(
-            height - edge for height in vertex_heights
-            for edge in (peak, bottom)
-            if abs(height - edge) <= shift_limit
-        )
-        for shift in sorted(shifts, key=lambda value: (abs(value), value)):
-            shifted_top = top + shift
-            shifted_bottom = bottom + shift
-            if corner is not None and shifted_bottom <= corner[1]:
-                continue
-            heights = {shifted_top + (y - 10) * local_scale for x, y in points}
-            heights.update(
-                height for height in vertex_heights
-                if peak + shift < height < shifted_bottom
-            )
-            heights = sorted(heights)
-            # Horizontal hex edges can change the available span abruptly.
-            samples = heights + [
-                height
-                for start, end in zip(heights, heights[1:])
-                for height in (
-                    math.nextafter(start, end),
-                    (start + end) / 2,
-                    math.nextafter(end, start),
-                )
-            ]
-            centers = [(center_x - horizontal_limit,
-                        center_x + horizontal_limit)]
-            for height in samples:
-                local_y = 10 + (height - shifted_top) / local_scale
-                silhouette = horizontal_segments([points], local_y)
-                silhouette.extend(
-                    (x, x) for x, y in points
-                    if math.isclose(y, local_y, rel_tol=0, abs_tol=1e-8)
-                )
-                spans = horizontal_segments(hexes, height)
-                for left, right in silhouette:
-                    centers = intersect(centers, [
-                        (start - left * local_scale,
-                         end - right * local_scale)
-                        for start, end in spans
-                        if end - start >= (right - left) * local_scale
-                    ])
-                    if not centers:
-                        break
-                if not centers:
-                    break
-            if corner is not None and centers:
-                local_y = 10 + (corner[1] - shifted_top) / local_scale
-                margin = minimum_scale
-                centers = intersect(centers, [
-                    (corner[0] - right * local_scale + margin,
-                     corner[0] - left * local_scale - margin)
-                    for left, right in horizontal_segments([points], local_y)
-                    if (right - left) * local_scale > 2 * margin
-                ])
-            if centers:
-                fitted_x = min(
-                    (min(max(center_x, left), right) for left, right in centers),
-                    key=lambda value: abs(value - center_x))
-                return {
-                    **placement,
-                    'center_x': fitted_x,
-                    'top': shifted_top,
-                    'scale': local_scale,
-                    'bottom': shifted_bottom,
-                }
-    return None
-
-
 def _mountain_layout(hexes, terrain='mountains'):
-    """Lay out local staggered grids, repairing exposed corners at transitions."""
+    """Place staggered grids using cached rectangular placement envelopes."""
     if terrain not in ('mountains', 'hills'):
         raise ValueError(f'Unsupported mountain terrain: {terrain}')
-    min_y, max_y, _, _ = cluster_bounds(hexes)
+    min_y, max_y, min_x, max_x = cluster_bounds(hexes)
     scale = (max(x for x, y in hexes[0])
             - min(x for x, y in hexes[0])) / 240
     if terrain == 'hills':
         scale *= HILL_SCALE
     make_points = _hill_points if terrain == 'hills' else _mountain_points
-    overlap = 100
-    stagger = 45
+    heights = sorted({y for polygon in hexes for x, y in polygon})
+    patterns = {}
     placements = []
-    previous_patterns = []
 
-    def add_mountain(center_x, top, width, local_scale, corner=None):
+    @lru_cache(maxsize=512)
+    def available(top, local_scale):
+        bottom = top + 90 * local_scale
+        samples = [top, bottom]
+        # Probe both sides of horizontal edges; other edges vary linearly.
+        samples.extend(height + offset for height in heights
+                       if top < height < bottom
+                       for offset in (-1e-7 * scale, 1e-7 * scale))
+        spans = [(min_x, max_x)]
+        for height in samples:
+            spans = segment_intersection(
+                spans, horizontal_segments(hexes, height))
+        return spans
+
+    def covers(unit, x, y):
+        return unit['top'] < y < unit['bottom'] and any(
+            left < (x - unit['center_x']) / unit['scale'] < right
+            for left, right in horizontal_segments(
+                [unit['points']], 10 + (y - unit['top']) / unit['scale']))
+
+    def add(center_x, top, width, original_scale, corner=None):
         points = make_points(width)
-        placement = _fit_mountain({
-            'center_x': center_x,
-            'top': top,
-            'width': width,
-            'scale': local_scale,
-            'bottom': top + 90 * local_scale,
-            'points': points,
-        }, hexes, scale / 8, corner)
-        if placement is not None:
-            placements.append(placement)
-        return placement
-
-    band_index = 0
-    while min_y + band_index * stagger * scale < max_y:
-        top = min_y + band_index * stagger * scale
-        sample_y = min(top + stagger * scale / 2, (top + max_y) / 2)
-        patterns = []
-        for start, end in horizontal_segments(hexes, sample_y):
-            span_width = end - start
-            single_peaks = terrain == 'hills' or span_width < 500 * scale
-            maximum_width = 190 if single_peaks else 300
-            pair_width = 2 * maximum_width - overlap
-            subrows = max(1, math.ceil(pair_width * scale / span_width))
-            local_scale = scale / subrows
-            matching = [
-                pattern for left, right, pattern in previous_patterns
-                if left < end and start < right
-            ]
-            columns = []
-            if len(matching) == 1:
-                previous = matching[0]
-                fitting = [
-                    column for column in previous['columns']
-                    if start <= column[1]
-                    and column[1] + column[2] * previous['scale'] <= end
-                ]
-                if len(fitting) >= 2 and previous['scale'] in (
-                        scale, local_scale):
-                    columns = fitting
-                    local_scale = previous['scale']
-                    subrows = round(scale / local_scale)
-                    single_peaks = previous['single_peaks'] and single_peaks
-                    maximum_width = 190 if single_peaks else 300
-            if len(columns) < 2:
-                columns = []
-                column_index = 0
-                left = start
-            else:
-                column_index, left, width = columns[-1]
-                left += (width - overlap) * local_scale
-                column_index += 1
-                first_index, first_left, _ = columns[0]
-                while True:
-                    width = random.uniform(150, maximum_width)
-                    new_left = first_left - (width - overlap) * local_scale
-                    if new_left < start:
-                        break
-                    first_index -= 1
-                    columns.insert(0, (first_index, new_left, width))
-                    first_left = new_left
-            while left + 150 * local_scale <= end:
-                width = random.uniform(150, maximum_width)
-                width = min(width, (end - left) / local_scale)
-                columns.append((column_index, left, width))
-                left += (width - overlap) * local_scale
-                column_index += 1
-            pattern = {
-                'scale': local_scale,
-                'single_peaks': single_peaks,
-                'columns': columns,
-            }
-            patterns.append((start, end, pattern))
-            for subrow in range(subrows):
-                row_index = band_index * subrows + subrow
-                row_top = top + subrow * stagger * local_scale
-                for column_index, left, width in columns:
-                    if column_index % 2 == row_index % 2:
-                        add_mountain(
-                            left + width * local_scale / 2,
-                            row_top, width, local_scale)
-        previous_patterns = patterns
-        band_index += 1
-
-    def covers(placement, corner_x, corner_y):
-        if not placement['top'] < corner_y < placement['bottom']:
-            return False
-        local_x = (corner_x - placement['center_x']) / placement['scale']
-        local_y = 10 + (corner_y - placement['top']) / placement['scale']
-        return any(left < local_x < right for left, right in
-                   horizontal_segments([placement['points']], local_y))
-
-    # A changed grid can expose an old corner. Bridge it with a single peak,
-    # and process that peak too, rather than leaving an isolated terrain unit.
-    pending = sorted(placements, key=lambda placement: placement['bottom'])
-    while pending:
-        placement = pending.pop(0)
-        bottom = placement['bottom']
-        half_width = placement['width'] * placement['scale'] / 2
-        corners = [
-            placement['center_x'] - half_width,
-            placement['center_x'] + half_width,
-        ]
-        visible_segments = horizontal_segments(hexes, bottom)
-        corners = [
-            corner for corner in corners
-            if any(left < corner < right for left, right in visible_segments)
-        ]
-        if not corners or any(
-                covers(other, corner, bottom)
-                for corner in corners for other in placements
-                if other['bottom'] > bottom):
-            continue
-        local_scale = placement['scale']
-        if bottom + stagger * local_scale >= max_y:
-            continue
-        width = random.uniform(150, 190)
-        for _ in range(8):
-            below = horizontal_segments(
-                hexes, bottom + stagger * local_scale / 2)
+        for factor in (1, 0.75, 0.5):
+            local_scale = original_scale * factor
+            shifted_top = top + 45 * (original_scale - local_scale)
             half_width = width * local_scale / 2
-            corner = next((
-                corner for corner in corners
-                if any(left < corner + half_width
-                       and corner - half_width < right for left, right in below)
-            ), None)
-            if corner is not None:
-                bridge = add_mountain(
-                    corner, bottom - stagger * local_scale, width, local_scale,
-                    (corner, bottom))
-                if bridge is not None:
-                    pending.append(bridge)
-                    pending.sort(key=lambda item: item['bottom'])
+            if local_scale < scale / 2:
+                break
+            for left, right in available(shifted_top, local_scale):
+                if right - left < 2 * half_width:
+                    continue
+                x = min(max(center_x, left + half_width), right - half_width)
+                unit = dict(center_x=x, top=shifted_top, width=width,
+                            scale=local_scale, points=points,
+                            bottom=shifted_top + 90 * local_scale)
+                if abs(x - center_x) <= width * original_scale / 4 and (
+                        corner is None or covers(unit, *corner)):
+                    placements.append(unit)
+                    return unit
+        return None
+
+    for band in range(math.ceil((max_y - min_y) / (45 * scale))):
+        top = min_y + band * 45 * scale
+        sample_y = min(top + 22.5 * scale, (top + max_y) / 2)
+        for start, end in horizontal_segments(hexes, sample_y):
+            maximum_width = 190 if (
+                terrain == 'hills' or end - start < 500 * scale) else 300
+            subrows = min(2, max(1, math.ceil(
+                (2 * maximum_width - 100) * scale / (end - start))))
+            local_scale = scale / subrows
+            key = (maximum_width, subrows)
+            if key not in patterns:
+                columns = []
+                left = min_x
+                while left < max_x:
+                    width = random.uniform(150, maximum_width)
+                    columns.append((left + width * local_scale / 2, width))
+                    left += (width - 100) * local_scale
+                patterns[key] = columns
+            for subrow in range(subrows):
+                for column, (x, width) in enumerate(patterns[key]):
+                    if (column % 2 == (band * subrows + subrow) % 2
+                            and start <= x <= end):
+                        add(x, top + subrow * 45 * local_scale,
+                            width, local_scale)
+
+    # Bounded passes repair grid transitions without chains of tiny foothills.
+    for _ in range(3):
+        for unit in placements[:]:
+            bottom, local_scale = unit['bottom'], unit['scale']
+            corners = [unit['center_x'] + side * unit['width'] * local_scale / 2
+                       for side in (-1, 1)]
+            if bottom + 45 * local_scale >= max_y or any(
+                    covers(other, x, bottom)
+                    for x in corners for other in placements):
+                continue
+            for x in corners:
+                if add(x, bottom - 45 * local_scale, 180, local_scale,
+                       (x, bottom)):
                     break
-            local_scale /= 2
     return sorted(placements, key=lambda placement: placement['bottom'])
 
 
 def hex_mountains(hexes, terrain='mountains'):
     """Render fitted mountains or rounded hills in increasing bottom-y order."""
-    if terrain not in ('mountains', 'hills'):
-        raise ValueError(f'Unsupported mountain terrain: {terrain}')
     scale = (max(x for x, y in hexes[0])
              - min(x for x, y in hexes[0])) / 240
     svg = ['<g id="hex-cluster">']
@@ -649,15 +476,10 @@ def hex_mountains(hexes, terrain='mountains'):
             f'{terrain_symbol}</g>')
 
     for vertices in hexes:
-        x = sum(x for x, y in vertices) / len(vertices)
-        y = sum(y for x, y in vertices) / len(vertices)
-
         point_coordinates = ' '.join(f'{x:.4f},{y:.4f}' for x, y in vertices)
-        svg.append(
-            f'<g><polygon points="{point_coordinates}" fill="none" '
-            'stroke="#777777" stroke-width="1"/>')
-        svg.append('</g>')
-
+        #svg.append(
+        #    f'<g><polygon points="{point_coordinates}" fill="none" '
+        #    'stroke="#777777" stroke-width="1"/></g>')
     svg.append('</g>')
     return '\n'.join(svg)
 
