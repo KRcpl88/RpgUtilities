@@ -185,17 +185,6 @@ class HillTests(unittest.TestCase):
 
 class MountainPlacementTests(unittest.TestCase):
     @staticmethod
-    def placement(center_x, top, scale=1):
-        return {
-            'center_x': center_x,
-            'top': top,
-            'width': 160,
-            'scale': scale,
-            'bottom': top + 90 * scale,
-            'points': [(-80, 100), (0, 10), (80, 100)],
-        }
-
-    @staticmethod
     def point_inside(point, polygon):
         sides = [
             (end_x - start_x) * (point[1] - start_y)
@@ -237,51 +226,68 @@ class MountainPlacementTests(unittest.TestCase):
                                 for hexagon in hexes),
                             f'Mountain fill outside terrain at {point}')
 
-    def test_interior_unit_keeps_its_position_and_scale(self):
-        hexes = [[(0, 0), (240, 0), (240, 200), (0, 200)]]
-        original = self.placement(120, 40)
-        fitted = renderer._fit_mountain(original, hexes, 0.125)
-        self.assertEqual(fitted, original)
-
-    def test_bottom_unit_is_moved_and_shrunk_to_fit(self):
-        hexes = [[(0, 0), (240, 0), (240, 200), (0, 200)]]
-        fitted = renderer._fit_mountain(
-            self.placement(120, 140), hexes, 0.125, corner=(120, 180))
-        self.assertIsNotNone(fitted)
-        self.assertLess(fitted['scale'], 1)
-        self.assertLessEqual(fitted['bottom'], 200)
-        self.assertGreater(fitted['bottom'], 180)
-        local_x = (120 - fitted['center_x']) / fitted['scale']
-        local_y = 10 + (180 - fitted['top']) / fitted['scale']
-        self.assertTrue(any(
-            left < local_x < right for left, right
-            in renderer.horizontal_segments([fitted['points']], local_y)))
-        self.assert_units_inside([fitted], hexes)
-
-    def test_units_that_cannot_fit_are_omitted(self):
-        hexes = [[(0, 0), (240, 0), (240, 200), (0, 200)]]
-        for original in (self.placement(1000, 40), self.placement(120, 300)):
-            with self.subTest(original=original):
-                self.assertIsNone(
-                    renderer._fit_mountain(original, hexes, 0.125))
-        ring = renderer.build_hex_cluster({
-            'hexes': [[1, 0], [1, -1], [0, -1],
-                      [-1, 0], [-1, 1], [0, 1]],
-            'radius': 48,
-        })
-        self.assertIsNone(renderer._fit_mountain(
-            self.placement(0, -18, 0.4), ring, 0.05))
-
-    def test_fitting_checks_both_sides_of_horizontal_region_edges(self):
+    def test_envelopes_fit_bottom_edges_and_horizontal_steps(self):
         hexes = [
             [(0, 0), (100, 0), (100, 100), (0, 100)],
             [(100, 40), (200, 40), (200, 100), (100, 100)],
         ]
-        original = self.placement(80, 0)
-        fitted = renderer._fit_mountain(original, hexes, 0.125)
-        self.assertIsNotNone(fitted)
-        self.assertNotEqual(fitted, original)
-        self.assert_units_inside([fitted], hexes)
+        with patch.object(renderer, 'random', random.Random(7)):
+            units = renderer._mountain_layout(hexes)
+        self.assertTrue(units)
+        self.assert_units_inside(units, hexes)
+        self.assertGreater(max(unit['bottom'] for unit in units), 90)
+        self.assertLessEqual(max(unit['bottom'] for unit in units), 100)
+
+    def test_corner_overlap_where_half_size_fillers_have_room(self):
+        scenes = (
+            [[0, 0]],
+            [[column, 0] for column in range(8)],
+            [[column, row] for column in range(8) for row in range(2)],
+            [[column, row] for column in range(7) for row in range(4)],
+            [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]],
+            [[column, row] for column in range(6) for row in range(5)
+             if column in (0, 1, 4, 5) or row >= 3],
+            json.loads(renderer.CLUSTER_JSON)['hexes'],
+        )
+        for cells in scenes:
+            eligible = covered = 0
+            hexes = renderer.build_hex_cluster({'hexes': cells, 'radius': 48})
+            for seed in (0, 7, 23):
+                with patch.object(renderer, 'random', random.Random(seed)):
+                    units = renderer._mountain_layout(hexes)
+                self.assertGreaterEqual(len(units), 2 * len(cells))
+                if len(cells) == 1:
+                    self.assertTrue(all(unit['width'] < 200 for unit in units))
+                    self.assertGreater(
+                        len({unit['center_x'] for unit in units}), 1)
+                if len(cells) > 20:
+                    self.assertTrue(any(unit['scale'] == 0.4 for unit in units))
+                for unit in units:
+                    bottom, scale = unit['bottom'], unit['scale']
+                    corners = [
+                        unit['center_x'] + side * unit['width'] * scale / 2
+                        for side in (-1, 1)
+                    ]
+                    # A minimum-size filler needs a 36-by-18 envelope here.
+                    if not any(all(
+                            any(self.point_inside(
+                                (x + offset_x, bottom + offset_y), polygon)
+                                for polygon in hexes)
+                            for offset_x in (-18, 0, 18)
+                            for offset_y in (-9, 0, 9)) for x in corners):
+                        continue
+                    eligible += 1
+                    covered += any(
+                        other['top'] < bottom < other['bottom'] and any(
+                            left < (x - other['center_x']) / other['scale']
+                            < right
+                            for left, right in renderer.horizontal_segments(
+                                [other['points']],
+                                10 + (bottom - other['top']) / other['scale']))
+                        for x in corners for other in units)
+            with self.subTest(cells=cells):
+                self.assertGreater(eligible, 0)
+                self.assertGreater(covered / eligible, 0.95)
 
     def test_cluster_boundaries_bottom_edges_and_holes_are_respected(self):
         ring = {'hexes': [[1, 0], [1, -1], [0, -1],
@@ -295,6 +301,17 @@ class MountainPlacementTests(unittest.TestCase):
                     units = renderer._mountain_layout(hexes, terrain)
                     self.assertTrue(units)
                     self.assert_units_inside(units, hexes)
+                    normal_scale = 0.4 * (
+                        renderer.HILL_SCALE if terrain == 'hills' else 1)
+                    self.assertTrue(all(
+                        normal_scale / 2 <= unit['scale'] <= normal_scale
+                        for unit in units))
+                    self.assertTrue(any(
+                        unit['scale'] == normal_scale / 2 for unit in units))
+                    self.assertTrue(all(any(
+                        math.isclose(unit['scale'] / normal_scale, factor)
+                        for factor in (1, 0.75, 0.5625, 0.5))
+                        for unit in units))
                     if terrain == 'hills':
                         self.assertTrue(all(
                             unit['width'] <= 190 for unit in units))
