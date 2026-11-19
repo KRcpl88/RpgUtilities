@@ -203,7 +203,7 @@ test('mountain peaks draw one motif per tile, shrinking only for partial tiles',
   assert.ok(globalShapes.some((instance) => instance.scale < 1 && instance.scale >= 0.3));
 });
 
-test('mountain silhouettes and fitted layouts match the Python reference', () => {
+test('mountain envelopes match Python, respect the half-size floor and overlap corners with room for fillers', () => {
   const result = spawnSync('python3', ['-c', `
 import json
 import math
@@ -226,8 +226,13 @@ class RandomStream:
 results = []
 for cells in (
         [[0, 0]],
+        [[q, 0] for q in range(8)],
+        [[q, r] for q in range(8) for r in range(2)],
         [[q, r] for q in range(7) for r in range(4)],
-        [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]]):
+        [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]],
+        [[q, r] for q in range(6) for r in range(5)
+         if q in (0, 1, 4, 5) or r >= 3],
+        json.loads(renderer.CLUSTER_JSON)['hexes']):
     hexes = renderer.build_hex_cluster({'hexes': cells, 'radius': 48})
     renderer.random = RandomStream()
     placements = renderer._mountain_layout(hexes)
@@ -235,6 +240,17 @@ for cells in (
 print(json.dumps(results))
 `], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
+  let eligible = 0;
+  let covered = 0;
+  const covers = (unit, x, y) => {
+    const localX = (x - unit.centerX) / unit.scale;
+    const localY = 10 + (y - unit.top) / unit.scale;
+    return localY < 100 && unit.points.slice(1).some(([endX, endY], index) => {
+      const [startX, startY] = unit.points[index];
+      return startX <= localX && localX <= endX
+        && localY > startY + (endY - startY) * (localX - startX) / (endX - startX);
+    });
+  };
   for (const { hexes, placements } of JSON.parse(result.stdout)) {
     let state = 7;
     const random = () => {
@@ -243,6 +259,8 @@ print(json.dumps(results))
     };
     const actual = mountainTerrain.layout(hexes, random);
     assert.equal(actual.length, placements.length);
+    const normalScale = (Math.max(...hexes[0].map(([x]) => x)) - Math.min(...hexes[0].map(([x]) => x))) / 240;
+    assert.ok(actual.some((placement) => placement.scale === normalScale / 2));
     actual.forEach((placement, index) => {
       const expected = placements[index];
       for (const [key, referenceKey] of [
@@ -251,8 +269,21 @@ print(json.dumps(results))
         assert.ok(Math.abs(placement[key] - expected[referenceKey]) < 1e-8, `${key}: ${placement[key]} vs ${expected[referenceKey]}`);
       }
       assert.deepEqual(placement.points, expected.points);
+      assert.ok(placement.scale >= normalScale / 2 && placement.scale <= normalScale);
+      assert.ok([1, 0.75, 0.5625, 0.5].some((factor) => Math.abs(placement.scale / normalScale - factor) < 1e-12));
+      const corners = [-1, 1].map((side) => placement.centerX + side * placement.width * placement.scale / 2);
+      const offsets = [-1, 0, 1];
+      if (corners.some((x) => offsets.every((across) => offsets.every((down) => hexes.some((hex) =>
+        util.pointInConvex([x + across * 45 * normalScale, placement.bottom + down * 22.5 * normalScale], hex)))))) {
+        eligible++;
+        if (corners.some((x) => actual.some((unit) => covers(unit, x, placement.bottom)))) {
+          covered++;
+        }
+      }
     });
   }
+  assert.ok(eligible > 0);
+  assert.ok(covered / eligible > 0.95, `${covered} of ${eligible} eligible mountains overlap a lower corner`);
 });
 
 test('complete overlapping mountain silhouettes fit terrain edges, clearings and partial panels', () => {

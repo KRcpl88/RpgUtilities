@@ -5285,45 +5285,23 @@
 (function (root) {
   'use strict';
   const rpgMap = root.RpgMap = root.RpgMap || {};
-  const nextBuffer = new DataView(new ArrayBuffer(8));
-
-  function nextToward(value, target) {
-    if (value === 0) {
-      return target > 0 ? Number.MIN_VALUE : -Number.MIN_VALUE;
-    }
-    nextBuffer.setFloat64(0, value);
-    const bits = nextBuffer.getBigUint64(0);
-    nextBuffer.setBigUint64(0, bits + ((target > value) === (value > 0) ? 1n : -1n));
-    return nextBuffer.getFloat64(0);
-  }
-
   // Port of render_trees.py: reference silhouettes have a baseline at y = 100.
   function profile(width, random) {
     const uniform = (start, end) => start + (end - start) * random();
-    const anchors = width < 200 ? [
-      [-width * 0.5, 100],
-      [-width * 0.25 + uniform(-10, 10), 100 - uniform(30, 40)],
-      [uniform(-10, 10), 100 - uniform(80, 90)],
-      [width * 0.25 + uniform(-10, 10), 100 - uniform(30, 40)],
-      [width * 0.5, 100],
-    ] : [
-      [-width * 0.5, 100],
-      [-width * 0.34 + uniform(-8, 8), 100 - uniform(20, 30)],
-      [-width * 0.15 + uniform(-6, 6), 100 - uniform(80, 90)],
-      [uniform(-6, 6), 100 - uniform(40, 60)],
-      [width * 0.15 + uniform(-6, 6), 100 - uniform(80, 90)],
-      [width * 0.34 + uniform(-8, 8), 100 - uniform(20, 30)],
-      [width * 0.5, 100],
-    ];
+    const shoulders = width < 200
+      ? [[-0.25, 10, 30, 40], [0, 10, 80, 90], [0.25, 10, 30, 40]]
+      : [[-0.34, 8, 20, 30], [-0.15, 6, 80, 90], [0, 6, 40, 60], [0.15, 6, 80, 90], [0.34, 8, 20, 30]];
+    const anchors = [[-width / 2, 100], ...shoulders.map(([position, jitter, low, high]) =>
+      [width * position + uniform(-jitter, jitter), 100 - uniform(low, high)]), [width / 2, 100]];
     const points = [anchors[0]];
     for (let anchorIndex = 0; anchorIndex + 1 < anchors.length; anchorIndex++) {
       const start = anchors[anchorIndex];
       const end = anchors[anchorIndex + 1];
       const pointCount = 1 + Math.floor(2 * random());
       for (let pointIndex = 1; pointIndex <= pointCount; pointIndex++) {
-        const tx = (pointIndex + uniform(-0.25, 0.25)) / (pointCount + 1);
-        const ty = (pointIndex + uniform(-0.25, 0.25)) / (pointCount + 1);
-        points.push([start[0] + (end[0] - start[0]) * tx, start[1] + (end[1] - start[1]) * ty]);
+        const fractionX = (pointIndex + uniform(-0.25, 0.25)) / (pointCount + 1);
+        const fractionY = (pointIndex + uniform(-0.25, 0.25)) / (pointCount + 1);
+        points.push([start[0] + (end[0] - start[0]) * fractionX, start[1] + (end[1] - start[1]) * fractionY]);
       }
       points.push(end);
     }
@@ -5331,24 +5309,15 @@
   }
 
   function horizontalSegments(hexes, height) {
-    const intervals = [];
-    for (const vertices of hexes) {
-      const positions = [];
-      vertices.forEach(([x, y], index) => {
-        const [endX, endY] = vertices[(index + 1) % vertices.length];
-        if (Math.min(y, endY) <= height && height <= Math.max(y, endY)) {
-          if (y === endY) {
-            positions.push(x, endX);
-          } else {
-            positions.push(x + (endX - x) * (height - y) / (endY - y));
-          }
-        }
-      });
-      if (positions.length && Math.max(...positions) > Math.min(...positions)) {
-        intervals.push([Math.min(...positions), Math.max(...positions)]);
-      }
-    }
-    intervals.sort((a, b) => a[0] - b[0]);
+    const intervals = hexes.flatMap((vertices) => {
+      const positions = rpgMap.Util.boundary(vertices)
+        .filter(([[, y], [, endY]]) => Math.min(y, endY) <= height && height <= Math.max(y, endY))
+        .flatMap(([[x, y], [endX, endY]]) => y === endY
+          ? [x, endX] : [x + (endX - x) * (height - y) / (endY - y)]);
+      const left = Math.min(...positions);
+      const right = Math.max(...positions);
+      return right > left ? [[left, right]] : [];
+    }).sort((a, b) => a[0] - b[0]);
     const merged = [];
     for (const [left, right] of intervals) {
       if (merged.length && left <= merged.at(-1)[1] + 1e-9) {
@@ -5360,225 +5329,96 @@
     return merged;
   }
 
-  function intersect(first, second) {
-    return first.flatMap(([left, right]) => second
-      .filter(([start, end]) => Math.max(left, start) <= Math.min(right, end))
-      .map(([start, end]) => [Math.max(left, start), Math.min(right, end)]));
-  }
-
-  function fit(placement, hexes, vertexHeights, minimumScale, corner) {
-    const { points, scale: originalScale, centerX } = placement;
-    const shiftLimit = 90 * originalScale / 4;
-    const horizontalLimit = placement.width * originalScale / 4;
-    const peakY = Math.min(...points.map(([, y]) => y));
-    for (const factor of [1, 0.85, 0.7, 0.55, 0.4]) {
-      const scale = originalScale * factor;
-      if (scale < minimumScale) {
-        break;
+  function layout(hexes, random, scale = (Math.max(...hexes[0].map(([x]) => x)) - Math.min(...hexes[0].map(([x]) => x))) / 240) {
+    const heights = [...new Set(hexes.flatMap((vertices) => vertices.map(([, y]) => y)))].sort((a, b) => a - b);
+    const minY = heights[0];
+    const maxY = heights.at(-1);
+    const minX = hexes.reduce((lowest, vertices) => Math.min(lowest, ...vertices.map(([x]) => x)), Infinity);
+    const maxX = hexes.reduce((highest, vertices) => Math.max(highest, ...vertices.map(([x]) => x)), -Infinity);
+    const patterns = new Map();
+    const envelopes = new Map();
+    const placements = [];
+    function available(top, localScale) {
+      const key = `${top},${localScale}`;
+      if (!envelopes.has(key)) {
+        const bottom = top + 90 * localScale;
+        // Probe both sides of horizontal edges; other edges vary linearly.
+        const samples = [top, bottom, ...heights.filter((height) => top < height && height < bottom)
+          .flatMap((height) => [height - 1e-7 * scale, height + 1e-7 * scale])];
+        const spans = samples.reduce((previous, height) => {
+          const intervals = horizontalSegments(hexes, height);
+          return previous.flatMap(([left, right]) => intervals
+            .map(([start, end]) => [Math.max(left, start), Math.min(right, end)])
+            .filter(([start, end]) => start < end));
+        }, [[minX, maxX]]);
+        if (envelopes.size >= 512) {
+          envelopes.delete(envelopes.keys().next().value);
+        }
+        envelopes.set(key, spans);
       }
-      const top = placement.top + 45 * (originalScale - scale);
-      const peak = top + (peakY - 10) * scale;
-      const bottom = top + 90 * scale;
-      const shifts = new Set([0, -shiftLimit, shiftLimit]);
-      for (const height of vertexHeights) {
-        for (const edge of [peak, bottom]) {
-          if (Math.abs(height - edge) <= shiftLimit) {
-            shifts.add(height - edge);
+      return envelopes.get(key);
+    }
+    const covers = (unit, x, y) => unit.top < y && y < unit.bottom
+      && horizontalSegments([unit.points], 10 + (y - unit.top) / unit.scale)
+        .some(([left, right]) => left < (x - unit.centerX) / unit.scale && (x - unit.centerX) / unit.scale < right);
+    function add(centerX, top, width, originalScale, corner = null) {
+      const points = profile(width, random);
+      const scales = [1, 0.75, 0.5].map((factor) => originalScale * factor).filter((value) => value >= scale / 2);
+      for (const localScale of scales) {
+        const shiftedTop = top + 45 * (originalScale - localScale);
+        const halfWidth = width * localScale / 2;
+        for (const [left, right] of available(shiftedTop, localScale)) {
+          const x = Math.min(Math.max(centerX, left + halfWidth), right - halfWidth);
+          const unit = { centerX: x, top: shiftedTop, width, scale: localScale, points, bottom: shiftedTop + 90 * localScale };
+          if (right - left >= 2 * halfWidth && Math.abs(x - centerX) <= width * originalScale / 4
+            && (!corner || covers(unit, ...corner))) {
+            placements.push(unit);
+            return unit;
           }
         }
       }
-      for (const shift of [...shifts].sort((a, b) => Math.abs(a) - Math.abs(b) || a - b)) {
-        const shiftedTop = top + shift;
-        const shiftedBottom = bottom + shift;
-        if (corner && shiftedBottom <= corner[1]) {
+      return null;
+    }
+    for (let band = 0; band < Math.ceil((maxY - minY) / (45 * scale)); band++) {
+      const top = minY + band * 45 * scale;
+      const sampleY = Math.min(top + 22.5 * scale, (top + maxY) / 2);
+      for (const [start, end] of horizontalSegments(hexes, sampleY)) {
+        const maximumWidth = end - start < 500 * scale ? 190 : 300;
+        const subrows = Math.min(2, Math.max(1, Math.ceil((2 * maximumWidth - 100) * scale / (end - start))));
+        const localScale = scale / subrows;
+        const key = `${maximumWidth},${subrows}`;
+        if (!patterns.has(key)) {
+          const columns = [];
+          let left = minX;
+          while (left < maxX) {
+            const width = 150 + (maximumWidth - 150) * random();
+            columns.push([left + width * localScale / 2, width]);
+            left += (width - 100) * localScale;
+          }
+          patterns.set(key, columns);
+        }
+        for (let subrow = 0; subrow < subrows; subrow++) {
+          for (const [column, [x, width]] of patterns.get(key).entries()) {
+            if (column % 2 === (band * subrows + subrow) % 2 && start <= x && x <= end) {
+              add(x, top + subrow * 45 * localScale, width, localScale);
+            }
+          }
+        }
+      }
+    }
+    // Bounded passes repair grid transitions without chains of tiny foothills.
+    for (let repairPass = 0; repairPass < 3; repairPass++) {
+      for (const unit of [...placements]) {
+        const { bottom, scale: localScale } = unit;
+        const corners = [-1, 1].map((side) => unit.centerX + side * unit.width * localScale / 2);
+        if (bottom + 45 * localScale >= maxY || corners.some((x) => placements.some((other) => covers(other, x, bottom)))) {
           continue;
         }
-        const heights = [...new Set([
-          ...points.map(([, y]) => shiftedTop + (y - 10) * scale),
-          ...vertexHeights.filter((height) => peak + shift < height && height < shiftedBottom),
-        ])].sort((a, b) => a - b);
-        const samples = [...heights];
-        for (let index = 0; index + 1 < heights.length; index++) {
-          const start = heights[index];
-          const end = heights[index + 1];
-          samples.push(nextToward(start, end), (start + end) / 2, nextToward(end, start));
-        }
-        let centers = [[centerX - horizontalLimit, centerX + horizontalLimit]];
-        for (const height of samples) {
-          const localY = 10 + (height - shiftedTop) / scale;
-          const silhouette = horizontalSegments([points], localY);
-          silhouette.push(...points.filter(([, y]) => Math.abs(y - localY) <= 1e-8).map(([x]) => [x, x]));
-          const spans = horizontalSegments(hexes, height);
-          for (const [left, right] of silhouette) {
-            centers = intersect(centers, spans
-              .filter(([start, end]) => end - start >= (right - left) * scale)
-              .map(([start, end]) => [start - left * scale, end - right * scale]));
-            if (!centers.length) {
-              break;
-            }
-          }
-          if (!centers.length) {
+        for (const x of corners) {
+          if (add(x, bottom - 45 * localScale, 180, localScale, [x, bottom])) {
             break;
           }
         }
-        if (corner && centers.length) {
-          const localY = 10 + (corner[1] - shiftedTop) / scale;
-          centers = intersect(centers, horizontalSegments([points], localY)
-            .filter(([left, right]) => (right - left) * scale > 2 * minimumScale)
-            .map(([left, right]) => [corner[0] - right * scale + minimumScale, corner[0] - left * scale - minimumScale]));
-        }
-        if (centers.length) {
-          const fittedX = centers.map(([left, right]) => Math.min(Math.max(centerX, left), right))
-            .sort((a, b) => Math.abs(a - centerX) - Math.abs(b - centerX))[0];
-          return { ...placement, centerX: fittedX, top: shiftedTop, scale, bottom: shiftedBottom };
-        }
-      }
-    }
-    return null;
-  }
-
-  function layout(hexes, random, scale = (Math.max(...hexes[0].map(([x]) => x)) - Math.min(...hexes[0].map(([x]) => x))) / 240) {
-    const vertexHeights = [...new Set(hexes.flatMap((vertices) => vertices.map(([, y]) => y)))];
-    const minY = vertexHeights.reduce((lowest, height) => Math.min(lowest, height), Infinity);
-    const maxY = vertexHeights.reduce((highest, height) => Math.max(highest, height), -Infinity);
-    const overlap = 100;
-    const stagger = 45;
-    const placements = [];
-    let previousPatterns = [];
-    // Fit against nearby cells only; retain all vertex heights for identical shift choices.
-    const buckets = new Map();
-    const bucketSize = 240 * scale;
-    for (const vertices of hexes) {
-      const positions = vertices.map(([x]) => x);
-      const heights = vertices.map(([, y]) => y);
-      for (let column = Math.floor(Math.min(...positions) / bucketSize); column <= Math.floor(Math.max(...positions) / bucketSize); column++) {
-        for (let row = Math.floor(Math.min(...heights) / bucketSize); row <= Math.floor(Math.max(...heights) / bucketSize); row++) {
-          const key = `${column},${row}`;
-          (buckets.get(key) || buckets.set(key, []).get(key)).push(vertices);
-        }
-      }
-    }
-    const uniform = (start, end) => start + (end - start) * random();
-    const addMountain = (centerX, top, width, localScale, corner) => {
-      const nearby = new Set();
-      const halfSpan = width * localScale * 0.75;
-      for (let column = Math.floor((centerX - halfSpan) / bucketSize); column <= Math.floor((centerX + halfSpan) / bucketSize); column++) {
-        for (let row = Math.floor((top - 22.5 * localScale) / bucketSize); row <= Math.floor((top + 112.5 * localScale) / bucketSize); row++) {
-          for (const vertices of buckets.get(`${column},${row}`) || []) {
-            nearby.add(vertices);
-          }
-        }
-      }
-      const placement = fit({
-        centerX, top, width, scale: localScale, bottom: top + 90 * localScale, points: profile(width, random),
-      }, [...nearby], vertexHeights, scale / 8, corner);
-      if (placement) {
-        placements.push(placement);
-      }
-      return placement;
-    };
-    for (let bandIndex = 0; minY + bandIndex * stagger * scale < maxY; bandIndex++) {
-      const top = minY + bandIndex * stagger * scale;
-      const sampleY = Math.min(top + stagger * scale / 2, (top + maxY) / 2);
-      const patterns = [];
-      for (const [start, end] of horizontalSegments(hexes, sampleY)) {
-        const spanWidth = end - start;
-        let singlePeaks = spanWidth < 500 * scale;
-        let maximumWidth = singlePeaks ? 190 : 300;
-        const pairWidth = 2 * maximumWidth - overlap;
-        let subrows = Math.max(1, Math.ceil(pairWidth * scale / spanWidth));
-        let localScale = scale / subrows;
-        const matching = previousPatterns.filter(([left, right]) => left < end && start < right);
-        let columns = [];
-        if (matching.length === 1) {
-          const previous = matching[0][2];
-          const fitting = previous.columns.filter(([, left, width]) => start <= left && left + width * previous.scale <= end);
-          if (fitting.length >= 2 && (previous.scale === scale || previous.scale === localScale)) {
-            columns = fitting;
-            localScale = previous.scale;
-            subrows = Math.round(scale / localScale);
-            singlePeaks = previous.singlePeaks && singlePeaks;
-            maximumWidth = singlePeaks ? 190 : 300;
-          }
-        }
-        let columnIndex = 0;
-        let left = start;
-        if (columns.length < 2) {
-          columns = [];
-        } else {
-          const [lastIndex, lastLeft, lastWidth] = columns.at(-1);
-          columnIndex = lastIndex + 1;
-          left = lastLeft + (lastWidth - overlap) * localScale;
-          let [firstIndex, firstLeft] = columns[0];
-          while (true) {
-            const width = uniform(150, maximumWidth);
-            const newLeft = firstLeft - (width - overlap) * localScale;
-            if (newLeft < start) {
-              break;
-            }
-            firstIndex--;
-            columns.unshift([firstIndex, newLeft, width]);
-            firstLeft = newLeft;
-          }
-        }
-        while (left + 150 * localScale <= end) {
-          let width = uniform(150, maximumWidth);
-          width = Math.min(width, (end - left) / localScale);
-          columns.push([columnIndex, left, width]);
-          left += (width - overlap) * localScale;
-          columnIndex++;
-        }
-        patterns.push([start, end, { scale: localScale, singlePeaks, columns }]);
-        for (let subrow = 0; subrow < subrows; subrow++) {
-          const rowIndex = bandIndex * subrows + subrow;
-          const rowTop = top + subrow * stagger * localScale;
-          for (const [index, columnLeft, width] of columns) {
-            if (((index % 2) + 2) % 2 === rowIndex % 2) {
-              addMountain(columnLeft + width * localScale / 2, rowTop, width, localScale);
-            }
-          }
-        }
-      }
-      previousPatterns = patterns;
-    }
-    const covers = (placement, cornerX, cornerY) => {
-      if (!(placement.top < cornerY && cornerY < placement.bottom)) {
-        return false;
-      }
-      const localX = (cornerX - placement.centerX) / placement.scale;
-      const localY = 10 + (cornerY - placement.top) / placement.scale;
-      return horizontalSegments([placement.points], localY).some(([left, right]) => left < localX && localX < right);
-    };
-    const pending = [...placements].sort((a, b) => a.bottom - b.bottom);
-    while (pending.length) {
-      const placement = pending.shift();
-      const { bottom } = placement;
-      const halfWidth = placement.width * placement.scale / 2;
-      const visibleSegments = horizontalSegments(hexes, bottom);
-      const corners = [placement.centerX - halfWidth, placement.centerX + halfWidth]
-        .filter((corner) => visibleSegments.some(([left, right]) => left < corner && corner < right));
-      if (!corners.length || corners.some((corner) => placements
-        .some((other) => other.bottom > bottom && covers(other, corner, bottom)))) {
-        continue;
-      }
-      let localScale = placement.scale;
-      if (bottom + stagger * localScale >= maxY) {
-        continue;
-      }
-      const width = uniform(150, 190);
-      for (let attempt = 0; attempt < 8; attempt++) {
-        const below = horizontalSegments(hexes, bottom + stagger * localScale / 2);
-        const halfSpan = width * localScale / 2;
-        const corner = corners.find((position) => below.some(([left, right]) => left < position + halfSpan && position - halfSpan < right));
-        if (corner !== undefined) {
-          const bridge = addMountain(corner, bottom - stagger * localScale, width, localScale, [corner, bottom]);
-          if (bridge) {
-            pending.push(bridge);
-            pending.sort((a, b) => a.bottom - b.bottom);
-            break;
-          }
-        }
-        localScale /= 2;
       }
     }
     return placements.sort((a, b) => a.bottom - b.bottom);
