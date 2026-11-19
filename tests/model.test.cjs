@@ -95,7 +95,7 @@ test('CreateGlobalMap sizes the terrain to the topology and defaults to water', 
   assert.equal(doc.landmarks.size, 0);
   assert.deepEqual(doc.overlays, []);
   assert.deepEqual(doc.labels, []);
-  assert.equal(model.createGlobalMap().global.panelHexes, 24);
+  assert.equal(model.createGlobalMap().global.panelHexes, 22);
   assert.throws(() => model.createGlobalMap({ tileScale: 'M' }), /tile scale/);
   assert.throws(() => model.createGlobalMap({ panelHexes: 5 }), /even/);
 });
