@@ -21,7 +21,7 @@ Use this checklist to test a release by hand in a current Chromium, Firefox or S
   - [ ] On an equatorial panel (Alpha–Zeta) the note reads `true N = panel N`, and the centre of Alpha is near `0°N 30°W`.
   - [ ] On Eta, the centre is near `54.7°N 0°`. Its upper-left and upper-right corners show matching bearings (about 37.7° east and west of panel north).
   - [ ] Moving the cursor east increases longitude in °E (or decreases in °W). Moving it north increases latitude.
-- [ ] Equatorial seams: in the focus view of an equatorial panel, hover the small tip of a neighbouring panel's edge hex that pokes across the seam. The status bar names the **neighbouring** panel's tile.
+- [ ] Equatorial seams: boundary lines bisect hexes vertically. Hover/paint each half: the status bar names the containing panel, and painting one half leaves the adjacent panel's half unchanged.
 
 ## Terrain tools and undo
 
@@ -75,7 +75,7 @@ Use this checklist to test a release by hand in a current Chromium, Firefox or S
   - [ ] all enabled terrain colours drawn before complete terrain patterns (hills, peaks, lobed trees, dunes, fields…); motifs overlap adjacent terrain without region cropping, stay clipped to the outer map boundary, and draw north to south; single-line tree trunks only near forest boundaries and clearings;
   - [ ] smoothed shorelines only between land and water;
   - [ ] roads, trails, tapered rivers, landmark symbols (and names if enabled), labels with halos;
-  - [ ] an equatorial panel export includes the neighbour's edge-hex tips with their own terrain.
+  - [ ] equatorial boundary halves keep their own terrain. Matching terrain on both halves uses a whole-hex embellishment; different terrain stays separate. Check a local map crossing the seam too.
 - [ ] With terrain colours off, the background is transparent and filled motifs are white.
 - [ ] On an n = 24 L map, the export dialog for a forested or mixed panel shows the **Large export** warning. Download shows "Exporting…" with disabled buttons, then finishes within a few seconds. With embellishments off, the warning disappears.
 

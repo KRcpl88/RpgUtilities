@@ -1,4 +1,4 @@
-# RPGMAP 2
+# RPGMAP 3
 
 [map]
 kind = global
@@ -26,70 +26,70 @@ b badlands
 = farmland
 
 [panel Alpha]
-columns = 4
+columns = 5
 rows = 5
 latticeColumn = 0
 latticeRow = 2
-__A_
-MMAA
-AMMM
-AAAA
-_AAA
+__M__
+MMAAM
+AMMMM
+AAAAA
+_AAA_
 
 [panel Beta]
-columns = 4
+columns = 5
 rows = 5
 latticeColumn = 0
 latticeRow = 2
-__M_
-hhMM
-hMMM
-DcMA
-_bMA
+__h__
+hhMMM
+hMMMM
+DcMAA
+_bbM_
 
 [panel Gamma]
-columns = 4
+columns = 5
 rows = 5
 latticeColumn = 0
 latticeRow = 2
-__D_
-=bbh
-gddh
-~vDD
-_~DD
+__b__
+=bbbh
+gddhh
+~vDDD
+_~~D_
 
 [panel Delta]
-columns = 4
+columns = 5
 rows = 5
 latticeColumn = 0
 latticeRow = 2
-__f_
-~~..
-~~ff
-f.fv
-_ffg
+__~__
+~~..f
+~~fff
+f.fvv
+_fff_
 
 [panel Epsilon]
-columns = 4
+columns = 5
 rows = 5
 latticeColumn = 0
 latticeRow = 2
-__~_
-~~~~
-v~~~
-d.fg
-_fhf
+__~__
+~~~~~
+v~~~~
+d.fgg
+_fff_
 
 [panel Zeta]
-columns = 4
+columns = 5
 rows = 5
 latticeColumn = 0
 latticeRow = 2
-__d_
-hhDD
-h.dD
-AhdD
-_MMD
+__h__
+hhDDD
+h.dDD
+AhdDD
+_MMd_
 
 [panel Eta]
 columns = 5
@@ -216,10 +216,10 @@ Iota 374.1W 216.0S city "Karador" notes="Capital of the \"north\""
 Lambda 374.1E 0.0N tower "Wizard\\Tower"
 
 [labels]
-Zeta 280.6E 108.0S region id=label1 size=28 rot=-15 dx=0 dy=0 "The Northern Wastes"
+Zeta 187.1E 108.0S region id=label1 size=28 rot=-15 dx=0 dy=0 "The Northern Wastes"
 Iota 374.1W 216.0S city id=label2 size=18 rot=0 dx=0.5 dy=-12 "Karador"
 
 [overlays]
-river river1 "Silverrun" : Pi 187.1W 108.0N; 0.0E 216.0N; Gamma 280.6E 108.0S; 93.5E 0.0N
+river river1 "Silverrun" : Pi 187.1W 108.0N; 0.0E 216.0N; Gamma 374.1E 216.0S; 187.1E 108.0S; 0.0E 0.0N
 road road1 style=highway "King's Road" : Iota 374.1W 216.0S; Omicron 187.1E 108.0N
 trail trail1 "" : Theta 374.1W 0.0N

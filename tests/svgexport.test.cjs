@@ -348,7 +348,8 @@ test('global export is panel-north-up, with seam-transformed curves and label co
   const doc = model.createGlobalMap({ panelHexes: 4 });
   const a = coordinates.panelIdByName('Gamma'), b = coordinates.panelIdByName('Beta');
   const tile = doc.topo.tiles.find((item) => item.panelId === a
-    && item.column === doc.topo.panels[a].columnCount - 1 && !item.isPartial);
+    && item.column === doc.topo.panels[a].columnCount - 1
+    && Math.abs(item.area / doc.topo.hexArea - 0.5) < 1e-9);
   const otherIndex = model.neighbors(doc, tile.index).find((tileIndex) => doc.topo.tiles[tileIndex].panelId === b);
   model.addOverlay(doc, { type: 'road', tileIndices: [tile.index, otherIndex] });
   model.addLabel(doc, { tileIndex: tile.index, category: 'location', text: 'Seam label', rotation: 20 });

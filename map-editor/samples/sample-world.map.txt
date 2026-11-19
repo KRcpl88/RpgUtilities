@@ -1,4 +1,4 @@
-# RPGMAP 2
+# RPGMAP 3
 
 [map]
 kind = global
@@ -26,94 +26,94 @@ b badlands
 = farmland
 
 [panel Alpha]
-columns = 8
+columns = 9
 rows = 9
 latticeColumn = 0
 latticeRow = 4
-____M___
-__AAMMc_
-AAAAMhhc
-AAMM.hf.
-MMMhhff.
-hhhhffff
-ffffgg~~
-ffff~~~_
-_f_~~~__
+____M____
+__AAMMh_d
+AAAAMMhhd
+AAAM.hh.d
+MMMMhhf..
+hMhhffffi
+hhffff~~~
+ffff~~~~_
+___m~~___
 
 [panel Beta]
-columns = 8
+columns = 9
 rows = 9
 latticeColumn = 0
 latticeRow = 4
-____A___
-MAAAAAA_
-MAAAAAA_
-MAAAAAAA
-hMMdAAAA
-fhhMMMMM
-ffhMhMhh
-_ffhhhff
-___hhh__
+____A____
+M_AAAAA__
+MAAAAAAAA
+hMAAAAAAA
+fMMdAAAAM
+fhhMMMMMh
+fofhhMhhh
+_ffhhhhhf
+___fhh___
 
 [panel Gamma]
-columns = 8
+columns = 9
 rows = 9
 latticeColumn = 0
 latticeRow = 4
-____.___
-__~~=.._
-v~~~v..h
-fg.~dd.h
-ff..dd=.
-.=.....f
-..h...ff
-....fff_
-_._=ff__
+____~____
+__~~~.._M
+g~~~~..cM
+fgf~..d.h
+ff.=dd=.f
+........f
+..h...fff
+..=.=fff_
+___.ff___
 
 [panel Delta]
-columns = 8
+columns = 9
 rows = 9
 latticeColumn = 0
 latticeRow = 4
-____~___
-~~~~~~~_
-~~~~~~~_
-~~~~~~fg
-~~~~~.ff
-~~~~~=.f
-~~~~~...
-_~~~~~d.
-___~~~__
+____~____
+~_~~~~~__
+~~~~~~~~g
+~~~~~~fgf
+~~~~~~.ff
+~~~~~~.f=
+~~~~~~...
+_~~~~~d..
+___~~~___
 
 [panel Epsilon]
-columns = 8
+columns = 9
 rows = 9
 latticeColumn = 0
 latticeRow = 4
-____D___
-__DDDDD_
-~vDDDDDD
-~DDDbDDD
-~DDbDDD~
-DDDDDD~~
-DDDDDD~~
-DDDD~~~_
-_D_~~~__
+____D____
+__DDDDD_~
+~~DDDDDD~
+~~DDbDDD~
+~DDDbDDD~
+~DDDDDD~~
+~DDDDD~~~
+~DDD~~~~_
+___~~~___
 
 [panel Zeta]
-columns = 8
+columns = 9
 rows = 9
 latticeColumn = 0
 latticeRow = 4
-____D___
-dDDD~~~_
-dDDD~~~_
-dDD~~~~~
-dD~~~~~~
-~~~~~v~~
-~~~~~~~~
-_~~~~~~~
-___~~~__
+____D____
+d_DD~~~__
+dDDD~~~~~
+dDDD~~~~~
+.d~~~~~~~
+~~~~~v~~~
+~~~~~~~~~
+_~~~~~~~~
+___~~~___
 
 [panel Eta]
 columns = 9
@@ -122,13 +122,13 @@ latticeColumn = -4
 latticeRow = 4
 ____t____
 __ttttt__
-MhMtttt..
+MhMtttt=.
 AMMtht...
-AMMh...=.
-AMMhh....
-AMMch.d.v
-_MhcbdDD_
-___cdD___
+AMMh.....
+AMMhc..=.
+AMMhh.d.v
+_MhhbdDD_
+___hdD___
 
 [panel Theta]
 columns = 9
@@ -142,7 +142,7 @@ mf.thtMMA
 ~f.MbbMMA
 ~f..MhAAA
 ~f.hMAAAA
-_..cMAAA_
+_.=cMAAA_
 ___cMA___
 
 [panel Iota]
@@ -153,8 +153,8 @@ latticeRow = 4
 ____t____
 __ttttt__
 ..tttttff
-.=.t.t.f~
-....t.~~~
+...t.t.f~
+.=..t.~~~
 ......~~~
 D.D..~~~~
 _DDDD~~~_
@@ -169,10 +169,10 @@ ____f____
 __hffff__
 fhffffm~~
 ffffff~~~
-ffffff~~~
-foffof~~~
-fotttt~~~
-_f~t~~~~_
+ffffof~~~
+ffffof~~~
+oftttt~~~
+_fit~~~~_
 ___~~~___
 
 [panel Lambda]
@@ -185,7 +185,7 @@ __~....__
 ~~~d....f
 ~~~~~.fff
 ~~~~M~mff
-~~~~~~~ff
+~~~~~~~of
 ~~~~~~~ff
 _~~~~~~f_
 ___~~~___
@@ -285,22 +285,22 @@ __~~~__
 
 [landmarks]
 Iota 0.0E 0.0N ruins "Frostspire"
-Beta 93.5W 108.0N temple "Shrine of Sands"
+Beta 187.1W 108.0N temple "Shrine of Sands"
 Lambda 0.0E 0.0N dungeon "Deepdelve"
 Eta 0.0E 0.0N city "Aurelia" notes="Imperial capital on the prime meridian"
 Theta 187.1E 108.0S fortress "Gatehold"
-Alpha 93.5E 216.0N town "Saltmere"
+Alpha 0.0E 216.0N town "Saltmere"
 
 [labels]
 Eta 0.0E 216.0N region id=label1 size=28 rot=0 dx=0 dy=0 "The Old Empire"
-Delta 93.5W 108.0N region id=label2 size=28 rot=0 dx=0 dy=0 "Sunward Isles"
+Delta 0.0E 216.0N region id=label2 size=28 rot=0 dx=0 dy=0 "Sunward Isles"
 Kappa 0.0E 216.0N region id=label3 size=28 rot=0 dx=0 dy=0 "Southern Wastes"
 Omicron 0.0E 216.0N region id=label4 size=28 rot=0 dx=0 dy=0 "Frost March"
 Eta 0.0E 0.0N city id=label5 size=18 rot=0 dx=0 dy=18 "Aurelia"
 Theta 187.1W 108.0N location id=label6 size=14 rot=20 dx=0 dy=0 "Long River"
 
 [overlays]
-road road1 "Imperial Way" : Eta 0.0E 0.0N; 187.1W 108.0S; 187.1W 324.0S; 374.1W 432.0S; 561.2W 540.0S; Alpha 93.5E 648.0N; 93.5E 432.0N; 93.5E 216.0N; 93.5W 108.0N; 280.6W 0.0N; 467.7W 108.0N; 654.7W 216.0N; Beta 654.7E 108.0N; 467.7E 216.0N; 280.6E 108.0N; 93.5E 216.0N; 93.5W 108.0N
+road road1 "Imperial Way" : Eta 0.0E 0.0N; 187.1W 108.0S; 374.1W 216.0S; 374.1W 432.0S; 561.2W 540.0S; Alpha 187.1E 756.0N; 187.1E 540.0N; 0.0E 432.0N; 0.0E 216.0N; 187.1W 108.0N; 374.1W 216.0N; 561.2W 108.0N; 748.2W 216.0N; Beta 748.2E 216.0N; 561.2E 108.0N; 374.1E 216.0N; 187.1E 108.0N; 0.0E 216.0N; 187.1W 108.0N
 road road2 style=paved "North Road" : Eta 0.0E 0.0N; 187.1W 108.0N; 374.1W 216.0N; 561.2W 324.0N; 561.2W 540.0N; Theta 561.2E 540.0N; 374.1E 432.0N; 374.1E 216.0N; 187.1E 108.0N; 187.1E 108.0S
-river river1 "Long River" : Theta 187.1W 108.0N; 0.0E 0.0N; 187.1E 108.0S; 187.1E 108.0N; 187.1E 324.0N; 374.1E 432.0N; 374.1E 648.0N; Eta 374.1W 648.0N; 374.1W 432.0N; 187.1W 324.0N; 0.0E 216.0N; 0.0E 0.0N; 187.1E 108.0S; 374.1E 216.0S; 561.2E 324.0S; 561.2E 540.0S; Zeta 280.6W 648.0N; 93.5W 540.0N; 93.5W 324.0N; 93.5E 216.0N; 93.5E 0.0N; 280.6E 108.0S
-trail trail1 "Pilgrim Trail" : Beta 93.5W 108.0N; 280.6W 0.0N; 467.7W 108.0N; 654.7W 0.0N; Gamma 654.7E 108.0N; 467.7E 0.0N; 280.6E 108.0N; 93.5E 0.0N
+river river1 "Long River" : Theta 187.1W 108.0N; 0.0E 0.0N; 187.1E 108.0S; 187.1E 108.0N; 187.1E 324.0N; 374.1E 432.0N; 374.1E 648.0N; Eta 374.1W 648.0N; 374.1W 432.0N; 187.1W 324.0N; 0.0E 216.0N; 0.0E 0.0N; 187.1E 108.0S; 374.1E 216.0S; 374.1E 432.0S; 374.1E 648.0S; Zeta 374.1W 648.0N; 187.1W 540.0N; 187.1W 324.0N; 0.0E 216.0N; 0.0E 0.0N; 187.1E 108.0S
+trail trail1 "Pilgrim Trail" : Beta 187.1W 108.0N; 374.1W 0.0N; 561.2W 108.0N; 748.2W 0.0N; Gamma 748.2E 0.0N; 561.2E 108.0N; 374.1E 0.0N; 187.1E 108.0N; 0.0E 0.0N

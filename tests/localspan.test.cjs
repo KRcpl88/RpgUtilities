@@ -31,12 +31,14 @@ function assertAdjacentAcross(doc, a, b) {
   assert.ok(found, `no ${a} tile is adjacent to a ${b} tile`);
 }
 
-test('a regional map crossing an equatorial east/west seam keeps whole edge hexes on each side', () => {
+test('a regional map crossing an equatorial east/west seam keeps independent half-hexes', () => {
   const doc = spanMap('Hyz+-', 0.6, 0.2, 30, 10);
   assert.ok(doc.topo && doc.topo.span, 'the map spans panels');
   assert.deepEqual([...doc.topo.panelIds].sort(), ['Hxy++', 'Hyz+-']);
-  assert.equal(doc.tileCount, 30 * 10, 'equatorial seams cut no tiles');
-  assert.ok(doc.topo.tiles.every((tile) => !tile.pieces));
+  assert.equal(doc.tileCount, 31 * 10, 'seam columns have two independent half-hexes');
+  const partials = doc.topo.tiles.filter((tile) => tile.isPartial);
+  assert.equal(partials.length, 20);
+  assert.ok(partials.every((tile) => Math.abs(tile.area / doc.topo.hexArea - 0.5) < 1e-9));
   assertPanelLattices(doc);
   assertAdjacentAcross(doc, 'Hyz+-', 'Hxy++');
 });
@@ -64,11 +66,11 @@ test('a local map stops short of panel corner vertices instead of tearing around
   const doc = spanMap('Hxz+-', 0.45, 0.5, 60, 60);
   assert.deepEqual([doc.local.width, doc.local.height], [29, 60]);
   const other = spanMap('Hyz+-', 0.5, 0.6, 20, 6, 'XL');
-  assert.deepEqual([other.local.width, other.local.height], [5, 6]);
+  assert.deepEqual([other.local.width, other.local.height], [4, 6]);
   assert.deepEqual(coordinates.previewLocalSpan({
     width: 20, height: 6, systemName: 'regional', scaleName: 'XL',
     anchor: coordinates.makeLocation('Hyz+-', 0.5 * MILES_PER_EDGE, 0.6 * MILES_PER_EDGE),
-  }), { width: 5, height: 6, panelIds: ['Hyz+-', 'Hxz+-'] });
+  }), { width: 4, height: 6, panelIds: ['Hyz+-'] });
   // No two kept panels may meet only at a vertex inside the map.
   const built = projection.build();
   for (const probe of [doc, other]) {

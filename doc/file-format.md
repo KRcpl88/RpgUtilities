@@ -1,4 +1,4 @@
-# Map file format (`.map.txt`, version 1)
+# Map file format (`.map.txt`, version 3)
 
 Maps are saved as human-readable ASCII text (prompt.md: "one ASCII character per
 tile, other layers appended in universal coordinates"). The editor writes files in a
@@ -9,7 +9,9 @@ Reader and writer: the `FileFormat` module in `map-editor/index.html`.
 
 ## Lexical rules
 
-* The first non-blank line must be exactly `# RPGMAP 1`.
+* The first non-blank line must be exactly `# RPGMAP 3`. Older versions are
+  rejected explicitly, not migrated: equatorial lattice alignment and tile
+  ownership changed in version 3.
 * Line endings may be `\n` or `\r\n`. Leading and trailing spaces are ignored.
 * Blank lines and lines whose first non-blank character is `#` are ignored.
   Comments only cover whole lines, because `#` can appear inside quoted strings.
@@ -70,7 +72,7 @@ crosses panel seams has one section for each panel holding its tiles (see
 `[local]` below). The header keys are:
 
 ```
-columns = 4        # grid width (lattice columns spanned by the panel's tiles)
+columns = 5        # grid width (lattice columns spanned by the panel's tiles)
 rows = 5           # grid height
 latticeColumn = 0  # lattice column of the first character in each row
 latticeRow = 2     # lattice row of the first grid line
@@ -82,12 +84,14 @@ the panel's hex lattice. They are followed by exactly `rows` grid lines, each
 exactly `columns` characters wide. Column *c* of grid line *r* is lattice cell
 (`latticeColumn + c`, `latticeRow − r`), so north is up. Lattice cells in odd columns
 sit half a hex north of cells in even columns ("odd-q up"). A cell that is not a
-tile of this panel is `_`. Seams resolve tile ownership as defined in prompt.md:
-partial edge hexes belong to exactly one panel, and the other panel has `_` there.
+tile of this panel is `_`. Each panel owns only the portion of a hex inside
+its polygon. Equatorial east/west boundaries pass through hex centres: both
+panels store an independent half-hex at the same physical centre. An equatorial
+panel spans `n * ratio + 1` stored columns, including its two half-columns,
+where `ratio` is XL hex miles divided by tile-scale hex miles.
 A `_` on a tile, or a terrain character on a non-tile, is an error.
-Single-panel equatorial maps include all lattice cells intersecting their
-polygon, including edge cells whose centres lie beyond the panel boundary;
-unlike global-world seams, these cells belong to this panel and are clipped to it.
+Single-panel maps use exactly the same clipped cells as their global counterpart,
+but have no adjacency to neighbouring panels.
 
 ### `[local]` (local maps only)
 
@@ -170,7 +174,7 @@ inside the map. Otherwise the line is rejected (`No tile within 0.25 hex of …`
 ## Example (local map)
 
 ```
-# RPGMAP 1
+# RPGMAP 3
 
 [map]
 kind = local

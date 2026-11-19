@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const { loadModules } = require('./_load.cjs');
-const { Util: util, Lattice: lattice, Coordinates: coordinates, Model: model, Terrain: terrain, View: view, Regions: regions, MountainTerrain: mountainTerrain, Embellish: embellish, SvgExport: svgExport } = loadModules();
+const { Util: util, Projection: projection, Lattice: lattice, Topology: topology, Coordinates: coordinates, Model: model, Terrain: terrain, View: view, Regions: regions, MountainTerrain: mountainTerrain, Embellish: embellish, SvgExport: svgExport } = loadModules();
 
 const PLAIN = ['water', 'lakes', 'firth', 'plain'];
 const id = (key) => terrain.byKey(key).id;
@@ -46,6 +46,68 @@ function exposedForestEdges(data) {
   }
   return results;
 }
+
+test('equatorial SVG motifs join only matching half-hex terrain, including the strip cut', () => {
+  for (const tileScale of ['XL', 'L']) {
+    const doc = model.createGlobalMap({ panelHexes: 4, tileScale });
+    for (const panelId of projection.build().equatorialWestToEast) {
+      const info = doc.topo.panels[panelId];
+      const first = topology.tileAt(doc.topo, panelId, info.lattice.columnCount, 0);
+      const second = topology.tileAt(doc.topo, info.eastPanel, 0, 0);
+      model.setTerrain(doc, first, id('mountainPeak'));
+      const pattern = () => {
+        const data = regions.build(doc, panelId, { joinEquatorialHalves: true });
+        return embellish.build(data).find((item) => item && item.key === 'mountainPeak').instances;
+      };
+      assert.equal(pattern().length, 1);
+      assert.ok(Math.abs(pattern()[0].scale - Math.sqrt(0.5)) < 1e-9, 'different terrain stays a half motif');
+      model.setTerrain(doc, second, id('mountainPeak'));
+      assert.equal(pattern().length, 1);
+      assert.equal(pattern()[0].scale, 1, 'matching halves make a full-size motif');
+      assert.ok(util.pointDistance(pattern()[0].point, util.scale(doc.topo.tiles[first].center, 1 / doc.topo.d)) < 1e-9);
+      const svg = svgExport.write(doc, { panelId });
+      assert.equal((svg.match(/<use href="#emb-mountainPeak-/g) || []).length, 1);
+      assert.doesNotMatch(svg, /<use href="#emb-mountainPeak-[^>]+transform=/);
+      const clipped = regions.build(doc, panelId);
+      const cell = clipped.cells.find((item) => item.tileIndex === first);
+      assert.ok(Math.abs(util.polygonArea(polygon(clipped, cell)) - lattice.hexArea(1) / 2) < 1e-9,
+        'terrain and grid geometry stays clipped');
+      model.setTerrain(doc, first, 0);
+      model.setTerrain(doc, second, 0);
+    }
+  }
+});
+
+test('matching forest halves remove the artificial seam from embellishment boundaries', () => {
+  const doc = model.createGlobalMap({ panelHexes: 8 });
+  const panelId = projection.build().equatorialWestToEast[0];
+  const info = doc.topo.panels[panelId];
+  const first = topology.tileAt(doc.topo, panelId, info.lattice.columnCount, 0);
+  const second = topology.tileAt(doc.topo, info.eastPanel, 0, 0);
+  const next = topology.tileAt(doc.topo, panelId, info.lattice.columnCount, 1);
+  [first, second, next].forEach((tileIndex) => model.setTerrain(doc, tileIndex, id('forest')));
+  const data = regions.build(doc, panelId, { joinEquatorialHalves: true });
+  const forest = data.regions.find((region) => region.terrainId === id('forest'));
+  const area = forest.loops.reduce((sum, loop) => sum + util.polygonArea(loop), 0);
+  assert.ok(Math.abs(area - 1.5 * lattice.hexArea(1)) < 1e-9, 'one joined hex and one unmatched half');
+  assert.ok(embellish.build(data).find((item) => item && item.key === 'forest').instances.length > 0);
+});
+
+test('spanning local SVG exports draw one whole motif for a matching seam pair', () => {
+  const doc = model.createLocalMap({
+    width: 30, height: 10, systemName: 'regional', scaleName: 'L',
+    anchor: coordinates.makeLocation('Hyz+-', 0.6 * projection.getMilesPerEdge(24), 0.2 * projection.getMilesPerEdge(24)),
+  });
+  const first = doc.topo.tiles.find((tile) => tile.isPartial);
+  const second = [...topology.neighbors(doc.topo, first.index)].find((tileIndex) =>
+    doc.topo.tiles[tileIndex].panelId !== first.panelId);
+  [first.index, second].forEach((tileIndex) => model.setTerrain(doc, tileIndex, id('mountainPeak')));
+  const data = regions.build(doc, 'local', { joinEquatorialHalves: true });
+  const instances = embellish.build(data).filter(Boolean).flatMap((item) => item.instances);
+  assert.equal(instances.length, 1);
+  assert.equal(instances[0].scale, 1);
+  assert.equal((svgExport.write(doc).match(/<use href="#emb-mountainPeak-/g) || []).length, 1);
+});
 
 test('terrain descriptors match the plan: every patterned terrain has four frozen variants', () => {
   for (const type of terrain.TERRAINS) {

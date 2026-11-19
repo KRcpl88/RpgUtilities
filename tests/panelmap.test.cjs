@@ -24,11 +24,11 @@ for (const name of Object.keys(projection.SECTOR_LABELS).map((panelId) => projec
       if (projection.build().panels[panelId].isEquatorial) {
         const halfWidth = projection.build().equatorialWidth / 2;
         for (const tile of topo.tiles) {
-          assert.ok(Math.abs(Math.abs(tile.center[0]) - halfWidth) >= topo.w / 2 - 1e-12,
-            `${tileScale}: neither east/west edge passes through a column`);
-          assert.ok(Math.abs(tile.center[0]) >= topo.w / 2 - 1e-12,
-            `${tileScale}: the centreline is between columns`);
+          if (Math.abs(Math.abs(tile.center[0]) - halfWidth) < 1e-12) {
+            assert.ok(tile.isPartial, `${tileScale}: boundary columns are partial`);
+          }
         }
+        assert.ok(topo.tiles.some((tile) => Math.abs(tile.center[0]) < 1e-12), 'centreline column');
       }
       const area = topo.tiles.reduce((sum, tile) => sum + tile.area, 0);
       assert.ok(Math.abs(area - util.polygonArea(polygon)) < 1e-8, 'no holes or duplicated edge-hex area');

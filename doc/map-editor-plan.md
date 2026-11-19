@@ -93,20 +93,20 @@ Every module is an inline block that registers one frozen object:
 - **Global size:** set by `panelHexes` (n), the number of XL hexes (216 mi between centres) across an equatorial panel from its west edge to its east edge. n is an **even** integer, default 24.
   - Column spacing `w = d·√3/2`, where `d` is the distance between hex centres.
   - Equatorial panel width `W = n·w`. At n=24: W ≈ 4489 mi, panel edge ≈ 2552 mi, equatorial circumference ≈ 26,937 mi.
-- **Tile scale** of a global map: regional XL (default) or L. L has 6n columns per equatorial panel.
+- **Tile scale** of a global map: regional XL (default) or L. L spans 6n column spacings per equatorial panel.
 - **Tile counts:** about 10.33·n² at XL (~5,950 at n=24) and ~36× that at L (~214k).
 
 ### 4.2 Scales
 - **Regional:** S = 1 mi, M = 6 mi, L = 36 mi, XL = 216 mi.
 - **Local:** S = 1 yd, M = 10 yd, L = 100 yd, XL = 600 yd.
-- Each step within a system is an even integer ratio, so a coarse lattice nests exactly inside a finer one. With ratio r, coarse hex (C, J) is fine hex (r·C, r·J); because r is even, the half-hex offset of odd columns is a whole number of fine rows. Regional and local scales never mix.
+- Each step within a system is an even integer ratio, so a coarse lattice nests exactly inside a finer one. With ratio r, coarse offset hex (C, J) is fine hex (r·C, r·J + r/2 if C is odd, otherwise r·J). The half-hex offset becomes a whole number of fine rows. Regional and local scales never mix.
 
 ### 4.3 Equatorial panels (Alpha–Zeta)
 - One continuous lattice runs across all six panels and wraps around.
-  - Panel column `i = 0…k−1`. k = n × (216 / tile-scale miles). At XL the centres are at `(i+½)·w` east of the panel's west edge. Finer scales are anchored on the XL centres so they nest (§4.2, §11.14): the column at `(i+½)·w` at XL becomes fine column `r·i + r/2`, so at L the first column's centre sits on the west edge.
+  - Panel column `i = 0…k`. k = n × (216 / tile-scale miles). Centres are at `i·w` east of the panel's west edge at every scale. The two boundary columns are half-hexes; the k−1 interior columns are whole away from north/south edges.
   - Even columns have hex centres at `north = j·d` from the equator.
-  - Odd columns are shifted ½ hex north: `north = (j+½)·d`. So the east-most column sits ½ hex above the first column and lines up with the next panel's first column.
-- **East/west edges:** tiles are whole and belong to their column's panel. The small hex corners that cross the line are ignored; they are **not** partial tiles.
+  - Odd columns are shifted ½ hex north: `north = (j+½)·d`. Both boundary columns have even parity, so their centres line up exactly across each seam, including the strip cut.
+- **East/west edges:** each boundary bisects hexes vertically. Each half is an independent tile owned by its containing panel. SVG embellishments may join a complete aligned pair only when both halves have the same terrain.
 - **North/south edges:** the boundary cuts through tiles, giving partial tiles (§4.5).
 
 ### 4.4 Other panels
@@ -115,7 +115,7 @@ Every module is an inline block that registers one frozen object:
 - Every edge produces partial tiles.
 
 ### 4.5 Tiles and partial tiles
-- A panel's tiles are every lattice hex whose hexagon overlaps the panel polygon by more than 1e-6 of a hex area, except at equatorial east/west edges (§4.3).
+- A panel's tiles are every lattice hex whose hexagon overlaps the panel polygon by more than 1e-6 of a hex area.
 - A partial tile is a full tile with its own terrain. It is drawn **clipped to the panel polygon**, so a hex cut by a seam appears as two independent tiles, one per panel.
 - Each tile has an internal ID `(panel, col, row)`: zero-based offset coordinates in the panel's bounding rectangle. A dense `tileIndex` is used for typed arrays. Store the clipped polygon (or its overlap fraction) for each partial tile.
 
@@ -123,7 +123,7 @@ Every module is an inline block that registers one frozen object:
 - Two tiles are adjacent when their clipped polygons share a boundary segment longer than ε:
   - in the same panel, compare them directly;
   - across a seam, first map them through the seam transform.
-- Across equatorial east/west seams, use plain lattice adjacency (the lattice is continuous there).
+- Across every seam, link clipped pieces with overlapping boundary intervals, including matching equatorial halves.
 - Store adjacency in CSR form (`Int32Array`) and make it symmetric.
 - **Tests:**
   - interior tiles have exactly 6 neighbours;
@@ -133,7 +133,7 @@ Every module is an inline block that registers one frozen object:
 
 ### 4.7 Universal coordinates (`Coordinates`)
 - A location is `(panel, east, north)` in **miles** measured in the panel plane: plain Cartesian distances from the panel reference point, with no curvature correction.
-- For equatorial panels, north is measured from the equator and east from the panel centreline. With an even column count, no hex sits at east = 0.
+- For equatorial panels, north is measured from the equator and east from the panel centreline. A hex column sits at east = 0, halfway between the two boundary half-columns.
 - For other panels, the reference point is the panel centre, and the primary column is at east = 0.
 - Provide:
   - `tileToUniversal` / `universalToTile` (snap to the nearest tile centre and reject anything more than 0.25·d away);
@@ -180,7 +180,7 @@ MapDoc {
 ## 6. ASCII file format (`*.map.txt`, printable ASCII; full spec in `doc/file-format.md`)
 
 ```
-# RPGMAP 1
+# RPGMAP 3
 [map]
 kind = global
 name = "Aerth"
@@ -298,10 +298,10 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
 - **lattice:** offset ↔ cube coordinate ↔ point round trips for flat-top odd-q layouts; point → hex hit tests; nesting of scale ratios (§4.2).
 - **topology:** for n ∈ {4, 8, 24}:
   - per panel: tile ↔ index round trips; total partial-tile area matches the panel area;
-  - equatorial columns are exactly n·ratio with no east/west partial tiles;
+  - equatorial columns span n·ratio spacings, with independently clipped half-columns on both east/west boundaries;
   - the primary column sits on the bisector of non-equatorial panels;
   - adjacency is symmetric and connected, interior tiles have 6 neighbours, and the strip wraps.
-- **coordinates:** universal ↔ tile round trips; at n=24 XL, the equatorial width is ≈4489 mi and no equatorial hex sits at east = 0.
+- **coordinates:** universal ↔ tile round trips; at n=24 XL, the equatorial width is ≈4489 mi and a hex column sits at east = 0.
 - **model/history:** only one landmark per tile; overlay adjacency is enforced; undo/redo restores exactly.
 - **features:** A* versus BFS, all seams, exclusions/unreachable paths; insert/remove/split/join and feature edits undo and round-trip exactly; matching seam curves and tangents; label transforms and adaptive curve hit geometry.
 - **feature-renderer:** canvas contract tests for drawing/picking visibility, label previews and handles, and terrain raster reuse after feature changes; real browser checks cover pixels and pointer/file interactions.
@@ -341,10 +341,10 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
 11. **True latitude/longitude:** central projection onto the sphere. Used for display only.
 12. **Frame units:** `Projection` frames and seams are in edge units, so `build()` is independent of panel size. `getMilesPerEdge(hexes)` converts to miles: `hexes · 216 · √3/2` miles across the equatorial panel width.
 13. **Seam direction:** panel A and B of a seam are the solid edge's `faces[0]` and `faces[1]`. Transforms use the canvas/SVG matrix layout `[a, b, c, d, e, f]`.
-14. **Equatorial lattice anchor at finer scales:** equatorial lattices at every scale are anchored on the XL hex centres, so a coarse hex `(c, J)` is fine hex `(r·c, r·J)` (`prompt.md` nesting rule). This overrides the `(i+½)·w` rule of §4.3 for scales finer than XL.
+14. **Equatorial lattice anchor at finer scales:** every scale starts on the west boundary. Coarse column c becomes fine column r·c; its row becomes r·J plus r/2 for odd coarse columns (§4.2). No scale-specific column shift is needed.
 15. **Tile numbering:** tiles are ordered by panel (golden JSON face order), then north to south, then west to east. `row = 0` is the northernmost lattice row in the panel; `column` counts from the westernmost lattice column (equal to `i` on equatorial panels).
-16. **Partial-tile pieces:** a partial tile stores `pieces = [{panelId, polygon}]` in its own panel's frame (edge units). An equatorial east/west tile can have pieces in the neighbouring panel, mapped through the seam transform. Whole tiles store `pieces = null`. A tile is whole if its area is at least (1 − 1e-9) of a hex.
-17. **Adjacency tolerance:** two tiles are adjacent if their shared lattice edge, clipped to the regions they cover, is longer than 1e-6·d. Across non-equatorial seams, the pieces' boundary intervals along the seam edge must overlap by more than that.
+16. **Partial-tile pieces:** a partial tile stores `pieces = [{panelId, polygon}]` in its own panel's frame (edge units), clipped to that panel only. Whole tiles store `pieces = null`. A tile is whole if its area is at least (1 − 1e-9) of a hex.
+17. **Adjacency tolerance:** two tiles are adjacent if their shared lattice edge, clipped to their panel, is longer than 1e-6·d. Across every seam, the pieces' boundary intervals along the seam edge must overlap by more than that.
 18. **Local-map anchor parity:** a regional local map snaps its anchor to the global lattice of the same scale and records that hex's column parity, so its odd columns shift north exactly like the global lattice. Local (yard) maps are not snapped.
 19. **Terrain IDs and colours:** a terrain's ID is its row in the §5 table (water = 0, the default), so IDs must never be reordered. Files store the char, not the ID. Colours are the planner's choice (§12).
 20. **Model change records:** every mutator validates, applies, and returns `{ layer: 'terrain'|'landmark'|'overlay'|'label', key, index, before, after }` (or null for a no-op). `key` is the tile index (terrain, landmark) or item id (overlay, label); `index` is the list position, so undoing a removal restores the original order. Overlay, label and landmark values are frozen objects and are replaced, never edited in place.
@@ -355,7 +355,7 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
 25. **Local tile numbering:** local tile index = `y · width + x`; local `(x, y)` is lattice offset `(x + parity, −y)`, which gives the neighbours.
 26. **View module:** camera, layouts, culling, hit testing and the demo terrain live in a DOM-free `View` module (after `History`) so they are unit-tested; `Renderer` only does canvas drawing.
 27. **World space:** in the net view, world = net space; in the panel focus view, world = the focus panel's frame. Both are y-up edge units. A layout is a list of placements `{ panelId, frameToWorld, … }`; focus layouts place each edge-neighbour through its seam transform and draw the focus panel last.
-28. **Point ownership at seams** (`prompt.md` "Map projection"): on the east/west seams between equatorial panels, edge hexes belong wholly to their own panel. The small tip of an edge hex that pokes across the seam into the neighbouring panel therefore belongs to that hex, and so to the other panel. On every other seam, partial tiles are clipped to their panel, so the panel containing the point owns it. Each equatorial panel draws its strip neighbours' edge columns (mapped through the seam), clipped to its own polygon. `View.hitTest` follows the same rule: it returns the owning tile, `panelId` = the owner's panel, `framePoint` = the point in the owner's frame, and `drawPanel` = the panel whose outline contains the point.
+28. **Point ownership at seams** (`prompt.md` "Map projection"): partial tiles are clipped to their panel at every boundary. Each panel draws only its own tiles. `View.hitTest` returns the containing panel's tile, with `panelId` and `drawPanel` naming that panel and `framePoint` in its frame.
 29. **Drawing thresholds (hex size in screen pixels):** below 3 px, a cached raster of the whole layout is used (at most 4096 px across; rebuilt when the document changes in a way it was not told about, otherwise repainted per tile, §11.37); below 4 px, tiles are filled as their w × d cells; the hex grid appears at 8 px (raised from 6 in M12: at L scale the grid doubled frame time where its lines are barely visible). Fills are inflated by ½ px to hide anti-aliasing seams and are issued in chunks of 512 tiles, because canvas path fills slow down superlinearly with subpath count.
 30. **Demo terrain:** until files can be opened (milestone 7), the editor starts with `View.demoTerrain(topo, 1)`, a deterministic world from seeded sphere waves.
 31. **Viewport input (milestone 5):** dragging with any button pans; milestone 6 moves pan to the middle/right button or Space+drag when the left button becomes the active tool. A double-click opens the focus view on the clicked panel. A minimap click recentres the net view, or refocuses on the clicked panel in focus view. Keys: arrows pan (Shift ×4), `+`/`=`/`-` zoom, Home fits all, `f` fits the panel, `N` shows the net, `P` focuses the panel at the view centre.
@@ -365,7 +365,7 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
 34. **Strokes:** between pointer samples, the segment is hit-tested every d/4 world units so fast strokes leave no gaps; each tile under the path stamps the brush once per stroke. A whole stroke (pointer down to up) is one History command, labelled `Paint <terrain>`.
 35. **Flood fill** replaces the connected region of the clicked tile's terrain (BFS across seams, no size cap) with the active terrain, as one command labelled `fill <terrain>`; filling with the same terrain is a no-op. Even the whole world at n = 24 L (218,088 tiles) fills in well under a second, so no confirmation is asked.
 36. **Tool input (replaces §11.31's "any button pans"):** tools are Pan (`h`), Brush (`b`), Fill (`G`) and Pick/eyedropper (`I`); `[`/`]` change the brush radius. The left button drives the active tool; the middle or right button, Space+drag, or the Pan tool pans. Alt+click picks a terrain with any tool. A double-click opens the focus view only with the Pan tool, so quick brush clicks never change view. Clicking a terrain in the properties legend makes it active (default: plain). Ctrl+Z undoes; Ctrl+Y and Ctrl+Shift+Z redo; toolbar Undo/Redo buttons are disabled when unavailable. The status message leads with the last action (`Paint forest: 37 tiles`, `undo fill water: 1,999 tiles`).
-37. **Incremental raster:** after an edit, undo or redo, `Renderer.markTilesChanged` marks the changed tiles on each cached raster of that document. The next draw clears an integer-pixel box around each tile in every placement it is drawn in (its own panel, plus the strip neighbours for equatorial tiles) and redraws whatever overlaps the boxes, clipped to them. More than 3,000 changed tiles redraws the whole raster in place. Colour buckets are painted in terrain-id order so a partial repaint matches a full redraw (apart from a few hundred anti-aliased pixels, which are invisible).
+37. **Incremental raster:** after an edit, undo or redo, `Renderer.markTilesChanged` marks the changed tiles on each cached raster of that document. The next draw clears an integer-pixel box around each tile in its owning panel's placement and redraws whatever overlaps the boxes, clipped to them. More than 3,000 changed tiles redraws the whole raster in place. Colour buckets are painted in terrain-id order so a partial repaint matches a full redraw (apart from a few hundred anti-aliased pixels, which are invisible).
 38. **File details:** one module, `FileFormat` (after `Edit`), writes and parses `*.map.txt` (spec: `doc/file-format.md`).
     - The writer always emits `[legend]`, but a missing legend means the default characters; a legend may remap characters (except space, `#`, `[`, `]`, `"`, `\` and `_`).
     - Panel sections also carry `latticeColumn`/`latticeRow` (the lattice cell of the first character), which are validated like `columns`/`rows`.
@@ -395,7 +395,7 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
 49. **Local bounds and navigation:** the viewport outline is the rectangle containing every full edge hex, including parity offsets. Gaps in its corners/edges do not own tiles. `Coordinates.localPointToTile` tests full hexes, separately from the 0.25-hex file-coordinate snap threshold. Flat local maps (yard scales, single-panel maps and `[local]` files) stay flat beyond their anchor panel, with no projection seams, wrapping or partial tiles; regional maps crossing seams follow §11.68. Panel focus/net/name controls are disabled; the minimap recentres the local camera. Fit sets a camera-specific minimum of min(4, fit scale / 4), allowing large local rectangles to fit and zoom out further without changing ordinary global zoom behavior.
 50. **Shared local editing:** terrain strokes, raster caches, feature curves, glyphs, label transforms/handles, picking, properties and status all use the same local geometry. Label size/offset units remain 1/48 hex. Open and Restore accept either kind and reset layout, history, hover, selection and draw metadata. New documents are dirty immediately, including untouched all-water maps; creation clears the previous autosave and schedules a fresh one.
 51. **Free-anchor serialization:** yard-scale anchors are rounded to the scale-dependent precision in §11.39 when saved. All saved feature coordinates are calculated against that rounded anchor, without mutating the document, so even arbitrary high-precision free anchors produce byte-identical write → parse → write output. Regional anchors retain their same-scale lattice snapping.
-52. **Region geometry:** the DOM-free `Regions` module clips `View.panelTileGroups` into the selected global panel or whole-local scope. It retains each tile's owner and terrain, including neighbouring equatorial tips and partial pieces. Geometry is normalized to hex heights, y north/up. Vertices merge within 1e-8 hex using adjacent spatial buckets, so seam-transform roundoff cannot leave cracks in boundary topology. Shared edges connect same-terrain cells by BFS and cancel inside each region; directed outer/hole loops close explicitly. Connectivity is within the exported scope, not through terrain outside it. Invalid/non-manifold boundaries report errors.
+52. **Region geometry:** the DOM-free `Regions` module clips `View.panelTileGroups` into the selected global panel or whole-local scope. It retains each tile's owner and terrain. Geometry is normalized to hex heights, y north/up. Vertices merge within 1e-8 hex using adjacent spatial buckets, so seam-transform roundoff cannot leave cracks in boundary topology. Shared edges connect same-terrain cells by BFS and cancel inside each region; directed outer/hole loops close explicitly. Connectivity is within the exported scope, not through terrain outside it. Invalid/non-manifold boundaries report errors. The SVG embellishment-only build uses `joinEquatorialHalves` to join complete matching-terrain halves before motif placement; the outer SVG scope still clips the result, and terrain fills/grid remain independently clipped.
 53. **Shorelines:** only shared edges separating water from land are coastal (`Terrain.isWater`, including islands/lakes/firth). Exterior export edges and boundaries between two land or two water terrains are not stroked. Trace directed open chains and closed loops with land on the left; two Chaikin passes smooth them. Open endpoints remain fixed at the panel/map boundary. Terrain colour regions remain exact clipped hex polygons.
 54. **SVG coordinates and size:** `SvgExport.write(doc, { panelId?, width?, layers? })` builds UTF-8 SVG 2 strings without DOM APIs. Global calls require a panel id; local calls default to `local`. The viewBox uses 48 units per hex height, north up before the SVG y-axis flip. Width defaults to 1600 px; height is rounded to the nearest positive pixel at the same aspect ratio. Changing width changes only intrinsic dimensions, not geometry/styling. Six-decimal number formatting is deterministic; text/attributes are XML-escaped, and unrepresentable XML characters are explicit errors. No timestamps, external assets or randomness.
 55. **SVG structure and styles:** one scope clip path contains all drawing. Terrain uses reusable even-odd region paths in defs, preserving holes; the grid contains each clipped edge once. Features retain document order and use `View.overlayCurves`, `featureCopies`, `featureAnchor` and `labelTransform`. Road/trail/river colours and widths now live in shared `View.OVERLAY_STYLES`; glyph paths remain in Terrain. Landmarks use symbol/use with optional names (off by default); labels keep halo, category weight, rotation and 1/48-hex units. Rivers approximate source-to-mouth taper using eight exact cubic sub-curves per original segment (35% to 100% width); source is the first path tile. Seam copies use the original segment index, so taper agrees across cuts. `View.splitCurve` is shared with adaptive canvas curve flattening; canvas appearance otherwise remains unchanged.
@@ -412,7 +412,7 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
 66. **Sample maps:** `tools/make_sample_maps.cjs` deterministically generates `map-editor/samples/sample-world.map.txt` (n = 8 XL with all 17 terrains, roads, a trail and a river, with routes crossing polar/equatorial and equatorial seams, landmarks and labels of every category) and `sample-valley.map.txt` (36 × 26 regional M local map with every terrain, overlay type, landmark type and label category). `--check` verifies the committed files, and `tests/samples.test.cjs` checks they are canonical, match the generator and export every panel as well-formed SVG.
 67. **Version:** milestone 12 completes the plan; the editor reports v1.0.0. The step-by-step manual browser checklist is [`manual-checklist.md`](manual-checklist.md).
 68. **Local maps across panel seams (supersedes the flat rule in §11.49 for regional maps):**
-    - `Topology.buildSpan` unfolds the W×H rectangle from the anchor panel across every seam it crosses, so it may cross several. Each panel keeps the global-map tile rules inside the rectangle: its own lattice, whole edge hexes at equatorial east/west seams, and clipped partial tiles at other seams. The grid therefore turns at a seam and the map looks bent there.
+    - `Topology.buildSpan` unfolds the W×H rectangle from the anchor panel across every seam it crosses, so it may cross several. Each panel keeps its own lattice and clipped partial tiles at every seam. The grid therefore turns at a seam and the map looks bent there.
     - Width, then height, are reduced so the rectangle (plus 0.6 hex) never contains or wraps around a panel corner vertex.
     - Yard-scale maps and maps inside one panel stay flat. Files with a `[local]` section stay flat (`isFlat`).
     - Span maps have `doc.topo` with `topo.span`, are drawn in the `span` layout (one placement per panel) and are saved with `[panel]` sections.

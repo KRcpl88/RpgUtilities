@@ -208,23 +208,17 @@ test('HitTest of random points lands in a tile containing the point', () => {
   assert.ok(hits > 500, `${hits} hits`);
 });
 
-// prompt.md "Map projection": on the east/west seams of the equatorial panels, edge hexes
-// belong wholly to their own panel, so the tip that pokes into the neighbouring panel
-// belongs to that hex. Elsewhere, partial tiles are clipped to their panel, so the panel
-// containing the point owns it.
-test('points across an equatorial seam belong to the neighbouring panel\'s edge hex', () => {
+test('points inside equatorial seams belong to that panel\'s clipped half-hex', () => {
   const built = projection.build();
   const layout = view.buildNetLayout();
   const halfWidth = built.equatorialWidth / 2;
-  const radius = lattice.hexRadius(topologyFixture.d);
-  let across = 0;
-  let own = 0;
+  let checked = 0;
   for (const [panelId, info] of Object.entries(topologyFixture.panels)) {
     if (!info.lattice.isEquatorial) {
       continue;
     }
     const placement = view.findPlacement(layout, panelId);
-    for (const [otherId, side] of [[info.westPanel, -1], [info.eastPanel, 1]]) {
+    for (const side of [-1, 1]) {
       // Probe a vertical line just inside this panel's west/east edge.
       for (let north = -0.4; north <= 0.4; north += 0.003) {
         const framePoint = [side * (halfWidth - 0.02 * topologyFixture.w), north];
@@ -236,22 +230,14 @@ test('points across an equatorial seam belong to the neighbouring panel\'s edge 
         assert.equal(hit.drawPanel, panelId);
         const tile = topologyFixture.tiles[hit.tileIndex];
         assert.equal(hit.panelId, tile.panelId);
-        assert.ok(hit.panelId === panelId || hit.panelId === otherId, `${panelId}: owner ${hit.panelId}`);
-        // The owner is the hex of the continuous strip lattice containing the point,
-        // and the point is reported in the owner's frame.
-        if (!tile.pieces) {
-          assert.ok(Math.hypot(hit.framePoint[0] - tile.center[0], hit.framePoint[1] - tile.center[1]) <= radius + 1e-9);
-        }
-        if (hit.panelId === otherId) {
-          across++;
-          assert.ok(Math.abs(hit.framePoint[0]) > halfWidth - 1e-9, `${hit.framePoint}`);
-        } else {
-          own++;
-        }
+        assert.equal(hit.panelId, panelId);
+        assert.ok(tile.isPartial);
+        assert.ok(tile.pieces.some((piece) => util.pointInConvex(hit.framePoint, piece.polygon)));
+        checked++;
       }
     }
   }
-  assert.ok(across > 0 && own > 0, `${across} across, ${own} own`);
+  assert.ok(checked > 1000, `${checked} half-hex hits`);
 });
 
 test('points just inside any other panel edge belong to that panel', () => {
@@ -272,10 +258,6 @@ test('points just inside any other panel edge belong to that panel', () => {
       for (let t = 0.03; t < 1; t += 0.02) {
         const onEdge = [startPoint[0] + t * (end[0] - startPoint[0]), startPoint[1] + t * (end[1] - startPoint[1])];
         const framePoint = [onEdge[0] * (1 - 1e-4), onEdge[1] * (1 - 1e-4)];
-        // Equatorial corners: the strip neighbour's edge hex may reach this far.
-        if (info.lattice.isEquatorial && Math.abs(framePoint[0]) > halfWidth - topologyFixture.w) {
-          continue;
-        }
         const hit = view.hitTest(topologyFixture, layout, projection.applyTransform(placement.frameToWorld, framePoint));
         assert.ok(hit, `${panelId} edge ${index} missed`);
         assert.equal(hit.panelId, panelId, `${panelId} edge ${index} at ${t}`);
@@ -287,28 +269,14 @@ test('points just inside any other panel edge belong to that panel', () => {
   assert.ok(checked > 1000, `${checked}`);
 });
 
-test('PanelTileGroups adds strip-neighbour edge columns only for equatorial panels', () => {
-  let equatorial = 0;
+test('PanelTileGroups draws only the containing panel\'s own tiles', () => {
   for (const [panelId, info] of Object.entries(topologyFixture.panels)) {
     const groups = view.panelTileGroups(topologyFixture, panelId);
     assert.equal(groups, view.panelTileGroups(topologyFixture, panelId), 'cached');
     assert.equal(groups[0].owner, panelId);
     assert.equal(groups[0].tileIndices.length, info.tileCount);
-    if (info.lattice.isEquatorial) {
-      equatorial++;
-      assert.equal(groups.length, 3);
-      assert.deepEqual(groups.slice(1).map((group) => group.owner), [info.westPanel, info.eastPanel]);
-      for (const group of groups.slice(1)) {
-        assert.ok(group.tileIndices.length > 0 && group.tileIndices.length < topologyFixture.panels[group.owner].tileCount);
-        for (const tileIndex of group.tileIndices) {
-          assert.equal(topologyFixture.tiles[tileIndex].panelId, group.owner);
-        }
-      }
-    } else {
-      assert.equal(groups.length, 1);
-    }
+    assert.equal(groups.length, 1);
   }
-  assert.ok(equatorial > 0);
 });
 
 test('VisibleTiles keeps every tile with a vertex in view', () => {
