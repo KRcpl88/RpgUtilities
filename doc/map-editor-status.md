@@ -4,6 +4,10 @@ Last updated: 2026-11-19 (equatorial half-hex alignment; the plan is complete). 
 
 ## Summary
 
+Post-plan adjustment (2026-11-19): SVG mountain outlines and forest crowns and
+trunks inherit the same 1.1-unit embellishment stroke as hills and other terrain
+motifs, replacing their thinner reference-renderer stroke overrides.
+
 Post-plan addition (2026-11-19): equatorial east/west boundaries pass through
 hex centres at every regional scale. Every panel owns only its clipped pieces;
 matching halves are separate editable tiles joined by ordinary seam adjacency.
@@ -15,7 +19,7 @@ Files now use `# RPGMAP 3`; older versions are rejected without migration.
 Samples and fixtures use the new format and lattice.
 
 Post-plan addition (2026-11-06): SVG forest trees use the lobed elliptical
-crowns, proportions, colours and fine outlines from `tools/render_trees.py`.
+crowns, proportions and colours from `tools/render_trees.py`.
 Each tree is anchored at its feet and drawn north to south, with its single-line
 trunk immediately before its crown. Trunks are included only within one trunk
 height of an internal forest/non-forest boundary (including holes and gaps);

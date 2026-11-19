@@ -6205,8 +6205,7 @@
             continue;
           }
           const visibleShapes = type.key === 'forest' && !suffix ? shapes.slice(1) : shapes;
-          const strokeWidth = type.key === 'forest' ? ` stroke-width="${motifNumber(2 * embellish.TREE_SCALE * HEX_UNITS)}"` : '';
-          lines.push(`<g id="emb-${type.key}-${variant}${suffix}"${strokeWidth}>${visibleShapes.map((shape) => motifPath(shape, spec, body)).join('')}</g>`);
+          lines.push(`<g id="emb-${type.key}-${variant}${suffix}">${visibleShapes.map((shape) => motifPath(shape, spec, body)).join('')}</g>`);
         }
       });
     }
@@ -6245,8 +6244,7 @@
         const point = projection.applyTransform(hexToSvg, instance.point).map(motifNumber);
         if (instance.shapes) {
           const spec = terrain.byId(item.terrainId).embellish;
-          const strokeWidth = numberText(2 * embellish.TREE_SCALE * HEX_UNITS);
-          lines.push(`<g transform="translate(${point.join(' ')})" stroke-width="${strokeWidth}">${instance.shapes
+          lines.push(`<g transform="translate(${point.join(' ')})">${instance.shapes
             .map((shape) => motifPath(shape, spec, spec.body)).join('')}</g>`);
           continue;
         }

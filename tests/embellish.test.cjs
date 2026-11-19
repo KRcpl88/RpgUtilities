@@ -312,7 +312,7 @@ test('complete overlapping mountain silhouettes fit terrain edges, clearings and
   assert.ok(doublePeaks > 0, 'wide terrain spans include double peaks');
 });
 
-test('SVG mountains use white bodies, open black outlines and uniform fine strokes in depth order', () => {
+test('SVG mountains use white bodies and open black outlines inheriting terrain strokes in depth order', () => {
   const doc = localMap(5, 5, 'mountains');
   const data = regions.build(doc);
   const mountains = embellish.build(data)[0].instances;
@@ -321,12 +321,10 @@ test('SVG mountains use white bodies, open black outlines and uniform fine strok
     const layer = text.match(/<g id="layer-embellishment"[^>]*>([\s\S]*?)<g id="layer-shoreline"/)?.[1]
       || text.slice(text.indexOf('<g id="layer-embellishment"'));
     assert.doesNotMatch(layer, /clip-path|scale\(|<use/);
-    const groups = [...layer.matchAll(/<g transform="translate\(([^ ]+) ([^)]+)\)" stroke-width="([^"]+)">([^]*?)<\/g>/g)];
+    assert.doesNotMatch(layer, /stroke-width=/);
+    const groups = [...layer.matchAll(/<g transform="translate\(([^ ]+) ([^)]+)\)">([^]*?)<\/g>/g)];
     assert.equal(groups.length, mountains.length);
-    const widths = new Set(groups.map((match) => match[3]));
-    assert.equal(widths.size, 1);
-    assert.ok(Math.abs(Number(groups[0][3]) - 2 * embellish.TREE_SCALE * 48) < 1e-6);
-    groups.forEach(([, , y, , content], index) => {
+    groups.forEach(([, , y, content], index) => {
       const paths = [...content.matchAll(/<path d="([^"]+)" fill="([^"]+)" stroke="([^"]+)"\/>/g)];
       assert.equal(paths.length, 2);
       assert.equal(paths[0][1], paths[1][1] + 'Z');
@@ -518,6 +516,28 @@ test('SVG embellishment layer references defined motifs, honours colours-off and
   const wide = svgExport.write(doc, { width: 2400 });
   const strip = (text) => text.replace(/^<svg [^>]*>/m, (tag) => tag.replace(/ (?:width|height)="[^"]*"/g, ''));
   assert.equal(strip(wide), strip(text));
+});
+
+test('SVG mountains, forests and other embellishments inherit the shared hill stroke weight', () => {
+  const doc = localMap(12, 9);
+  for (let tileIndex = 0; tileIndex < doc.tileCount; tileIndex++) {
+    model.setTerrain(doc, tileIndex, tileIndex % 17);
+  }
+  for (const terrainEnabled of [true, false]) {
+    const text = svgExport.write(doc, { layers: { terrain: terrainEnabled } });
+    const layerStart = text.indexOf('<g id="layer-embellishment"');
+    const layerEnd = text.indexOf('<g id="layer-shoreline"');
+    const layer = text.slice(layerStart, layerEnd);
+    assert.match(layer, /data-terrain="hills"/);
+    assert.match(layer, /data-terrain="mountains"/);
+    assert.match(layer, /data-terrain="forest"/);
+    assert.deepEqual([...layer.matchAll(/stroke-width="([^"]+)"/g)].map((match) => match[1]), ['1.1']);
+    const definitions = [...text.matchAll(/<g id="emb-[^"]+"[^>]*>.*?<\/g>/g)];
+    assert.ok(definitions.length > 0);
+    for (const [definition] of definitions) {
+      assert.doesNotMatch(definition, /stroke-width=/, 'motif definitions must not override the shared weight');
+    }
+  }
 });
 
 test('SVG forest ground matches plains only with terrain colours enabled, leaving crowns unchanged', () => {
