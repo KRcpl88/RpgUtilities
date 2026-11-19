@@ -877,3 +877,14 @@ The most recent update to render_trees.py was an improvement in the visual appea
 Make sure if there is enough width to continue with a regular pattern so that each mountain has a clean overlap of iys corners from the row below, that is the purpose of the grid. But where it is too narrow we need to deviate so we always have an overlap on the corners from the next lower row.  Also in narrow sections if we need to scale the mountains we use single peaks which fit better in smaller areas
 
 Please make these improvements in the mountain rendering algorithm in render_trees.py, and then render the output to an svg and get a screenshot so I can review the results
+
+
+# panel boundary
+
+Your organization's data cannot be pasted here. Only 800 characters are allowed.
+
+
+Your organization's data cannot be pasted here. Only 800 characters are allowed.
+
+Please make a small adjustment to the alignment of hexes near the edges of equatorial panels.
+Currently, for the vertical edges of equitorial panels, and ONLY for thos edges, hexes are aligned so that the left or right edge of the hex will touch the edge of the panel, interweaving with adjacent hexes from the adjacent panel along the edge. Instead, please make sure these hexes no align with the center of the hex algined with the panel boundary edge. Also, the special handling of hex edges near vertical panel bounaries on the equator are no longer valid. Instead, use the normal hex treatment near panel boundaries for all other panel boundaries. Any hex which touches or crosses the panel boundary will be considered a partial hex, and the portion of the hex within one panel belongs to that panel, and any portions that go outside the panel boundary are not considered part of the current panel. Any hexes or partial hexes from an adjacent panel will belong to the adjacent panel. Because the actual panel width will always exactly match an interger number of whole columns, the hexes along the vertical panel boundaries for equatorial panels will always be split exactly in the middle veritcally by the panel boundary. This means exactly 1/2 of each hex belongs in one panel, and 1/2 the hex belongs to the other panel. But because these hexes are always aligned and exactly 1/2 a hex on each side of the boundary, for the purpose of SVG terrain export, they may be treated as a single whole hex only if the terrain on each side of the panel boundary are the same. In other words, if 1/2 a hex on one side of the panel boundary is forest, and the 1/2 of the exact same hex on the adjacent panel is also forest, the SVG export rendering would treat the two individual 1/2 hex forrest tiles as a single, whole forest hex tile and render accordingly.
