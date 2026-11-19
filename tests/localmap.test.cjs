@@ -50,7 +50,7 @@ test('regional S through XL anchors of either parity align with each panel latti
       for (const q of [-3, -2, 0, 1]) {
         const anchorPoint = topology.latticeCenter(grid, q, 2).map((d) => d * grid.milesPerEdge);
         const doc = model.createLocalMap({
-          width: 5, height: 4, systemName: 'regional', scaleName, isFlat: true,
+          width: 5, height: 4, systemName: 'regional', scaleName, isFlat: true, panelHexes: grid.panelHexes,
           anchor: coordinates.makeLocation(panelId, anchorPoint[0] + grid.d * grid.milesPerEdge / 10, anchorPoint[1]),
         });
         assert.equal(doc.local.parity, lattice.isOdd(q) ? 1 : 0);

@@ -88,8 +88,8 @@ test('downscaling takes the most common terrain of the tiles each larger hex cov
   assert.ok(checked >= 6, `${checked} tiles checked`);
 });
 
-test('global maps rescale between XL and L and back without losing terrain', () => {
-  const global = model.createGlobalMap({ name: 'World' });
+test('n=24 global maps rescale between XL and L and back without losing terrain', () => {
+  const global = model.createGlobalMap({ panelHexes: 24, name: 'World' });
   for (let tileIndex = 0; tileIndex < global.tileCount; tileIndex++) {
     global.terrainIds[tileIndex] = (tileIndex * 7) % TERRAIN_COUNT;
   }

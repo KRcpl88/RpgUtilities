@@ -1334,7 +1334,7 @@
   // Global-map tiles: one hex lattice per panel, except that the six equatorial
   // panels share one continuous lattice that wraps around the strip. Lengths
   // are in edge units, measured in each panel's frame ([east, north]).
-  const DEFAULT_PANEL_HEXES = 24;
+  const DEFAULT_PANEL_HEXES = 22;
   const TILE_SCALES = Object.freeze(['XL', 'L']);
   const MIN_AREA_FRACTION = 1e-6;
   const FULL_AREA_FRACTION = 1 - 1e-9;
@@ -7361,6 +7361,7 @@
     const anchorLocation = local ? local.anchor : anchorTile >= 0 ? model.tileToUniversal(current, anchorTile) : coordinates.parseUniversal('Eta 0.0E 0.0N');
     const anchor = element('input', { type: 'text', required: true, value: coordinates.formatUniversal(anchorLocation, 10) });
     const projectedLegend = element('legend', { textContent: 'Global map' });
+    const circumference = element('p', { id: 'new-global-circumference', className: 'tool-help' });
     const globalFields = element('fieldset', {}, [
       projectedLegend, field('new-tile-scale', 'Tile scale', tileScale),
       panelField,
@@ -7376,8 +7377,8 @@
     const form = element('form', { id: 'new-map-form', noValidate: true }, [
       element('h2', { id: 'new-map-title', textContent: 'New map' }),
       field('new-kind', 'Map type', kind), field('new-name', 'Name', name),
-      field('new-panel-hexes', 'World panel size in XL hexes (even; independent of tile scale; also sets regional anchor alignment)', panelHexes),
-      globalFields, localFields, preview, errorText,
+      field('new-panel-hexes', 'World panel size in 216 mile XL hexes (must be even; independent of tile scale)', panelHexes),
+      circumference, globalFields, localFields, preview, errorText,
       element('div', { className: 'property-actions' }, [
         element('button', { id: 'new-create', type: 'submit', className: 'tool-button', textContent: 'Create map' }),
         actionButton('new-cancel', 'Cancel', () => dialog.close()),
@@ -7394,6 +7395,11 @@
       localFields.hidden = localFields.disabled = !local;
       globalFields.hidden = globalFields.disabled = local;
       panelField.hidden = panel.disabled = !isPanel;
+      const columnCount = Number(panelHexes.value);
+      circumference.textContent = Number.isSafeInteger(columnCount) && columnCount > 0 && columnCount % 2 === 0
+        ? `Global circumference: ${(projection.XL_HEX_MILES * columnCount * Math.sin(Math.PI / 3) * 6)
+          .toLocaleString('en-US', { maximumFractionDigits: 1 })} miles.`
+        : 'Enter a positive even panel size to calculate the global circumference.';
       const scaleName = tileScale.value;
       const scales = isPanel ? ['XL', 'L', 'M'] : ['XL', 'L'];
       if (tileScale.options.length !== scales.length) {

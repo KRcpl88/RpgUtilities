@@ -83,7 +83,7 @@ function makeValley() {
   const width = 36;
   const height = 26;
   const doc = model.createLocalMap({
-    width, height, systemName: 'regional', scaleName: 'M', name: 'Sample Valley',
+    width, height, systemName: 'regional', scaleName: 'M', name: 'Sample Valley', panelHexes: 24,
     anchor: coordinates.parseUniversal('Eta 120W 340N'),
   });
   const point = (columnIndex, rowIndex) => coordinates.localTilePoint(doc.local, columnIndex, rowIndex);

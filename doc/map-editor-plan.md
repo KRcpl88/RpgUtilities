@@ -90,7 +90,7 @@ Every module is an inline block that registers one frozen object:
 
 ### 4.1 Orientation and size
 - **Flat-top hexes** (flat edges horizontal). Columns run panel-north to panel-south; the two diagonal hex directions run NE–SW and NW–SE.
-- **Global size:** set by `panelHexes` (n), the number of XL hexes (216 mi between centres) across an equatorial panel from its west edge to its east edge. n is an **even** integer, default 24.
+- **Global size:** set by `panelHexes` (n), the number of XL hexes (216 mi between centres) across an equatorial panel from its west edge to its east edge. n is an **even** integer, default 22.
   - Column spacing `w = d·√3/2`, where `d` is the distance between hex centres.
   - Equatorial panel width `W = n·w`. At n=24: W ≈ 4489 mi, panel edge ≈ 2552 mi, equatorial circumference ≈ 26,937 mi.
 - **Tile scale** of a global map: regional XL (default) or L. L spans 6n column spacings per equatorial panel.

@@ -35,7 +35,7 @@ editor always writes every key that applies.
 |---|---|---|---|
 | `kind` | ✔ | ✔ | `global`, `panel` (single panel), or `local` |
 | `name` | optional | optional | quoted string (default `""`) |
-| `panelHexes` | optional | optional | even integer *n*, panel size in XL hexes regardless of tile scale (default 24) |
+| `panelHexes` | optional | optional | even integer *n*, panel size in XL hexes regardless of tile scale (default 22) |
 | `tileScale` | optional | – | `L` (the tile is the hex) or `XL` (a 3-hex-wide super-tile); default `XL` |
 | `width`, `height` | – | ✔ | local map size in hexes |
 | `system` | – | ✔ | `regional` (S/M/L/XL) or `local` (yard scales) |

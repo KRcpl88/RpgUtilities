@@ -5,7 +5,7 @@ const { loadModules } = require('./_load.cjs');
 
 const { Util: util, Projection: projection, Lattice: lattice, Topology: topology } = loadModules();
 const builtProjection = projection.build();
-const CASES = [[4, 'XL'], [8, 'XL'], [24, 'XL'], [4, 'L']];
+const CASES = [[4, 'XL'], [8, 'XL'], [22, 'XL'], [24, 'XL'], [4, 'L']];
 
 function panelArea(panelId) {
   return util.polygonArea(builtProjection.frames[panelId].polygon);

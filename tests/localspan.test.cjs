@@ -64,7 +64,7 @@ test('a local map may cross several panel seams', () => {
 
 test('a local map stops short of panel corner vertices instead of tearing around them', () => {
   const doc = spanMap('Hxz+-', 0.45, 0.5, 60, 60);
-  assert.deepEqual([doc.local.width, doc.local.height], [29, 60]);
+  assert.deepEqual([doc.local.width, doc.local.height], [26, 60]);
   const other = spanMap('Hyz+-', 0.5, 0.6, 20, 6, 'XL');
   assert.deepEqual([other.local.width, other.local.height], [4, 6]);
   assert.deepEqual(coordinates.previewLocalSpan({

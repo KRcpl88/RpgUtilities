@@ -93,7 +93,7 @@ test('Model.TrueCoordinates covers global tiles and local maps via their anchor'
   const expected = coordinates.trueCoordinates(model.tileToUniversal(global, tileIndex), global.topo.milesPerEdge);
   assert.deepEqual(model.trueCoordinates(global, tileIndex), expected);
   const local = model.createLocalMap({ width: 5, height: 4, systemName: 'regional', scaleName: 'M', anchor: coordinates.parseUniversal('Alpha 100E 50N') });
-  assert.deepEqual(model.trueCoordinates(local, 0), coordinates.trueCoordinates(local.local.anchor, projection.getMilesPerEdge(24)));
+  assert.deepEqual(model.trueCoordinates(local, 0), coordinates.trueCoordinates(local.local.anchor, projection.getMilesPerEdge(local.local.panelHexes)));
   const far = model.trueCoordinates(local, 19);
   assert.ok(far.latitude < model.trueCoordinates(local, 0).latitude);
   assert.ok(far.longitude > model.trueCoordinates(local, 0).longitude);
