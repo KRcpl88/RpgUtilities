@@ -5,7 +5,7 @@ const { spawnSync } = require('node:child_process');
 const { loadModules } = require('./_load.cjs');
 const { Util: util, Projection: projection, Lattice: lattice, Topology: topology, Coordinates: coordinates, Model: model, Terrain: terrain, View: view, Regions: regions, MountainTerrain: mountainTerrain, Embellish: embellish, SvgExport: svgExport } = loadModules();
 
-const PLAIN = ['water', 'lakes', 'firth', 'plain'];
+const PLAIN = ['water', 'lakes', 'firth', 'plain', 'frozenPlain'];
 const id = (key) => terrain.byKey(key).id;
 
 function localMap(width = 9, height = 9, key = 'plain') {
@@ -136,6 +136,15 @@ test('terrain descriptors match the plan: every patterned terrain has four froze
     }
   }
   assert.ok(terrain.TERRAINS.filter((type) => type.embellish).length === 13);
+});
+
+test('frozen plain exports white terrain without embellishments', () => {
+  const doc = localMap(3, 3, 'frozenPlain');
+  assert.deepEqual(embellish.build(regions.build(doc)), [null]);
+  const text = svgExport.write(doc);
+  assert.match(text, /fill="#ffffff"/);
+  assert.doesNotMatch(text, /<use href="#emb-/);
+  assert.equal(svgExport.estimate(doc).embellishedCount, 0);
 });
 
 test('embellishment is deterministic, read-only and keeps scatter motifs inside their region', () => {

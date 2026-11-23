@@ -1,8 +1,12 @@
 # Global Map Editor: Plan Status
 
-Last updated: 2026-11-19 (equatorial half-hex alignment; the plan is complete). See [`map-editor-plan.md`](map-editor-plan.md) for the full plan and [`../prompt.md`](../prompt.md) for the specification.
+Last updated: 2026-11-23 (frozen plain terrain; the plan is complete). See [`map-editor-plan.md`](map-editor-plan.md) for the full plan and [`../prompt.md`](../prompt.md) for the specification.
 
 ## Summary
+
+Post-plan addition (2026-11-23): Frozen plain (`F`, `frozenPlain`) is white
+non-water terrain with no embellishments. It appears in the editor palette and
+supports painting, save/open and SVG export. Existing terrain IDs are unchanged.
 
 Post-plan adjustment (2026-11-19): SVG mountain outlines and forest crowns and
 trunks inherit the same 1.1-unit embellishment stroke as hills and other terrain
@@ -85,7 +89,7 @@ Post-plan additions (2026-10-30): local maps across panel seams, and crop/rescal
     - Equatorial lattices are anchored on XL centres so finer scales nest (§11.14).
   - `Coordinates` (DOM-free): `tileToUniversal` / `universalToTile` (miles; returns −1 beyond 0.25·d), `formatUniversal` (`eta 187.1W 324.0N`), `parseUniversal`, `panelIdByName`, `makeLocation`, `createLocalMap`, `localTileToUniversal`, `universalToLocalTile` (local x east, y south; regional anchors snap to the global lattice, §11.18). `localTilePoint` / `localPointToTile` convert normalized local world points and full-hex hits, independently of the file-coordinate snap threshold. Dimensions/reference n use positive safe integers; anchors and parsed distances must be finite.
     - True coordinates (display only, plan §11.62): `trueCoordinates(location, milesPerEdge)` → `{ latitude, longitude, northBearing }` (degrees; bearing of true north from panel north, clockwise positive, null at a pole); `formatTrue(trueLocation, decimals = 3)` (`35.26°N 30.00°W`); `trueDecimals(hexMiles, milesPerEdge)` (about 0.1 hex, 1–9 decimals). The prime meridian is the (+1, +1, −1) direction; longitude runs west along the strip (Alpha 30°W … Zeta 30°E).
-  - `Terrain` (DOM-free): `TERRAINS` (17 frozen `{ id, char, key, name, color, isWater, Embellish }`, ID = row of plan §5, water = 0; `Embellish` is a frozen `{ layoutKind: scatter | tile | field, dx, dy, chance, ink, accent, body }` pattern descriptor (plan §8, §11.58), or null for water, lakes, firth and plain), `RESERVED_CHAR` (`_`), `WATER_ID`, `byId`, `byChar`, `byKey`, `isValidId`, `isWater`, and `LANDMARK_TYPES` (village … dungeon) with `landmarkType`, `isLandmarkType`.
+  - `Terrain` (DOM-free): `TERRAINS` (18 frozen `{ id, char, key, name, color, isWater, Embellish }`, ID = row of plan §5 with additions appended, water = 0; `Embellish` is a frozen `{ layoutKind: scatter | tile | field, dx, dy, chance, ink, accent, body }` pattern descriptor (plan §8, §11.58), or null for water, lakes, firth, plain and frozen plain), `RESERVED_CHAR` (`_`), `WATER_ID`, `byId`, `byChar`, `byKey`, `isValidId`, `isWater`, and `LANDMARK_TYPES` (village … dungeon) with `landmarkType`, `isLandmarkType`.
   - `Model` (DOM-free): `createGlobalMap({ panelHexes = 24, tileScale = 'XL', name })` and `createLocalMap({ width, height, systemName, scaleName, anchor, panelHexes?, name })`.
     - Document: `{ versionNumber, kind, name, global | local, topo (global only), tileCount, terrainIds: Uint8Array (water), landmarks: Map<tile, {type, name, notes}>, overlays: [{id, type, name, style, tileIndices}], labels: [{id, tileIndex, text, category, size, rotation, dx, dy}], revision }`. The document is mutable; its items are frozen and replaced on edit.
     - Mutators validate, apply, and return a change record `{ layer, key, index, before, after }` or null for a no-op (plan §11.20): `setTerrain`, `setLandmark` (place/replace/edit; null removes), `removeLandmark`, `addOverlay`/`updateOverlay`/`removeOverlay` (paths of adjacent tiles), `addLabel`/`updateLabel`/`removeLabel`. `applyChange(doc, change, forward)` replays a record and bumps `revision`.

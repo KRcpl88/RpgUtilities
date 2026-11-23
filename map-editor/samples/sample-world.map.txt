@@ -24,6 +24,7 @@ t tundra
 c canyon
 b badlands
 = farmland
+F frozenPlain
 
 [panel Alpha]
 columns = 9
@@ -154,7 +155,7 @@ ____t____
 __ttttt__
 ..tttttff
 ...t.t.f~
-.=..t.~~~
+.=..F.~~~
 ......~~~
 D.D..~~~~
 _DDDD~~~_

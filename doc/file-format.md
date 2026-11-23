@@ -54,14 +54,16 @@ not stored in map files.
 
 ### `[legend]` (optional)
 
-One `<char> <terrainKey>` line per terrain. Every terrain must appear exactly once
-and every character must be unique. If the section is missing, the default
+One `<char> <terrainKey>` line per terrain used in the file. Terrain keys and
+characters must be unique. The editor writes all known terrains; older legends
+may omit newly added terrains. If the section is missing, the default
 characters are used (the ones the editor writes). A legend may remap characters;
 the remapping only applies to that file. The characters space, `#`, `[`, `]`, `"`
 and `\` are not allowed, and neither is `_`, which marks "no tile".
 
 Terrain keys are `water islands lakes firth plain hills mountains mountainPeak desert
-sandDunes forest marsh mangrove tundra canyon badlands farmland`.
+sandDunes forest marsh mangrove tundra canyon badlands farmland frozenPlain`.
+Frozen plain uses `F` by default, is white, and has no embellishments.
 
 ### `[panel <Name>]` (global maps: one for every panel; local maps that cross seams)
 
