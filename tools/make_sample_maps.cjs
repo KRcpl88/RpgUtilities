@@ -68,7 +68,7 @@ function makeWorld() {
   model.setLandmark(doc, harbour, { type: 'town', name: 'Saltmere' });
   model.setLandmark(doc, pass, { type: 'fortress', name: 'Gatehold' });
   model.setLandmark(doc, oasis, { type: 'temple', name: 'Shrine of Sands' });
-  model.setLandmark(doc, tile('Iota', 0, 0, 'tundra'), { type: 'ruins', name: 'Frostspire' });
+  model.setLandmark(doc, tile('Iota', 0, 0, 'frozenPlain'), { type: 'ruins', name: 'Frostspire' });
   model.setLandmark(doc, tile('Lambda', 0, 0, 'mountains'), { type: 'dungeon', name: 'Deepdelve' });
   for (const [panelId, text] of [['Eta', 'The Old Empire'], ['Delta', 'Sunward Isles'], ['Kappa', 'Southern Wastes'], ['Omicron', 'Frost March']]) {
     model.addLabel(doc, { tileIndex: tile(panelId, 0, 0.15), text, category: 'region' });
@@ -98,6 +98,7 @@ function makeValley() {
     ['farmland', 15, 10, 3.2], ['farmland', 19, 15, 2.2],
     ['forest', 13, 3, 4.2], ['forest', 24, 9, 2.6],
     ['tundra', 31, 2, 4.2],
+    ['frozenPlain', 34, 0, 1.5],
     ['hills', 25, 4, 3.2], ['mountains', 28, 6, 2.6], ['mountainPeak', 28, 6, 0.8], ['mountainPeak', 30, 4, 0.6],
     ['lakes', 20, 6, 1.2],
     ['desert', 30, 19, 4.5], ['sandDunes', 32, 22, 2.2], ['badlands', 24, 22, 2.8], ['canyon', 26, 18, 1.4], ['canyon', 27, 19, 1],

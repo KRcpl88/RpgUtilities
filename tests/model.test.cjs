@@ -5,13 +5,14 @@ const { loadModules } = require('./_load.cjs');
 
 const { Topology: topology, Coordinates: coordinates, Terrain: terrain, Model: model, History: history } = loadModules();
 
-// The plan §5 table: char → terrain key, water flag.
+// The terrain table: char → terrain key, water flag.
 const EXPECTED_TERRAINS = [
   ['~', 'water', true], ['i', 'islands', true], ['o', 'lakes', true], ['v', 'firth', true],
   ['.', 'plain', false], ['h', 'hills', false], ['M', 'mountains', false], ['A', 'mountainPeak', false],
   ['d', 'desert', false], ['D', 'sandDunes', false], ['f', 'forest', false], ['m', 'marsh', false],
   ['g', 'mangrove', false], ['t', 'tundra', false], ['c', 'canyon', false], ['b', 'badlands', false],
   ['=', 'farmland', false],
+  ['F', 'frozenPlain', false],
 ];
 
 function smallGlobal() {
@@ -47,12 +48,12 @@ function farTile(doc, tileIndex) {
   throw new Error('no far tile');
 }
 
-test('terrain table matches plan §5 with unique chars and IDs', () => {
-  assert.equal(terrain.TERRAINS.length, 17);
+test('terrain table has unique chars and IDs', () => {
+  assert.equal(terrain.TERRAINS.length, 18);
   assert.deepEqual(terrain.TERRAINS.map((item) => [item.char, item.key, item.isWater]), EXPECTED_TERRAINS);
   const chars = terrain.TERRAINS.map((item) => item.char);
-  assert.equal(new Set(chars).size, 17);
-  assert.equal(new Set(terrain.TERRAINS.map((item) => item.name)).size, 17);
+  assert.equal(new Set(chars).size, 18);
+  assert.equal(new Set(terrain.TERRAINS.map((item) => item.name)).size, 18);
   terrain.TERRAINS.forEach((item, index) => {
     assert.equal(item.id, index);
     assert.match(item.char, /^[!-~]$/, 'printable ASCII');
@@ -66,7 +67,7 @@ test('terrain table matches plan §5 with unique chars and IDs', () => {
   assert.ok(!chars.includes(terrain.RESERVED_CHAR));
   assert.equal(terrain.RESERVED_CHAR, '_');
   assert.equal(terrain.byChar('_'), null);
-  assert.equal(terrain.byId(17), null);
+  assert.equal(terrain.byId(18), null);
   assert.equal(terrain.byId(1.5), null);
   assert.equal(terrain.byId(terrain.WATER_ID).key, 'water');
   assert.ok(terrain.isWater(terrain.byChar('i').id));

@@ -175,6 +175,9 @@ MapDoc {
 | `=` | farmland | | | `_` | *(reserved: cell is not a tile of this panel)* | |
 
 - **Landmarks:** village, town, city, castle, fortress, tower, ruins, mine, temple, cave, dungeon. Each has a canvas glyph and an SVG `<symbol>`.
+- **Additional terrain (2026-11-23):** `F` / `frozenPlain` / Frozen plain is
+  non-water terrain coloured white (`#ffffff`), without embellishments. It is
+  appended to the terrain table to preserve existing IDs.
 - **History:** a command-pattern undo/redo stack that stores only the changes. Each brush stroke is one command.
 
 ## 6. ASCII file format (`*.map.txt`, printable ASCII; full spec in `doc/file-format.md`)

@@ -157,6 +157,22 @@ test('CRLF, comments, blank lines, a missing legend and custom legend characters
   assertSameDocument(fileFormat.parse(custom), fileFormat.parse(LOCAL_FIXTURE));
 });
 
+test('frozen plain round trips with default and custom legend characters', () => {
+  const doc = model.createLocalMap({
+    width: 3, height: 3, systemName: 'regional', scaleName: 'M',
+    anchor: coordinates.parseUniversal('Eta 0E 0N'),
+  });
+  doc.terrainIds.fill(terrain.byKey('frozenPlain').id);
+  const text = roundTrip(doc);
+  assert.match(text, /^F frozenPlain$/m);
+  assertSameDocument(fileFormat.parse(text.replace(/\[legend\][^[]*/, '')), doc);
+  const custom = text.replace('F frozenPlain', 'P frozenPlain')
+    .replace(/^F+$/gm, (row) => 'P'.repeat(row.length));
+  assertSameDocument(fileFormat.parse(custom), doc);
+  const oldLegend = LOCAL_FIXTURE.replace('F frozenPlain\n', '');
+  assertSameDocument(fileFormat.parse(oldLegend), fileFormat.parse(LOCAL_FIXTURE));
+});
+
 test('optional item fields take their defaults', () => {
   const text = LOCAL_FIXTURE.replace(/\[labels\][\s\S]*$/, '') +
     '[labels]\nEta 140.3W 315.0N city "Defaults"\n\n[overlays]\nriver : Eta 176.7W 282.0N\n'.replace('river :', 'river r :');

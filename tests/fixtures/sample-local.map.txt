@@ -28,6 +28,7 @@ t tundra
 c canyon
 b badlands
 = farmland
+F frozenPlain
 
 [local]
 columns = 12
