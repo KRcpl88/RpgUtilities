@@ -250,12 +250,12 @@ road road1 style=highway "King's Road" : Alpha 93.5E 108.0N; 280.6E 0.0N; ...; Z
 
 ## 8. SVG export (`prompt.md` "SVG Export")
 
-- **Scope:** a global map is exported **one panel at a time**, drawn north-up in the panel frame and clipped to the panel polygon. A local map is exported whole.
+- **Scope:** a global map can be exported one panel at a time, drawn north-up in the panel frame and clipped to the panel polygon. At XL tile scale only, **Whole global map (XL)** exports all 18 panels in the net layout, retaining each panel's clipping and seam copies. A local map is exported whole.
 - **Options popup:**
   - which layers to include: terrain colours, terrain embellishments, shoreline, roads, trails, rivers, landmarks, labels;
   - hex overlay (on/off);
   - output size;
-  - panel selector.
+  - scope selector (panels, plus the whole global map at XL).
 - **Output:**
   - Built as a string, so it is testable in Node.
   - Uses `<defs>` and `<symbol>`/`<use>`.

@@ -1,8 +1,16 @@
 # Global Map Editor: Plan Status
 
-Last updated: 2026-11-24 (mountain terrain greys; the plan is complete). See [`map-editor-plan.md`](map-editor-plan.md) for the full plan and [`../prompt.md`](../prompt.md) for the specification.
+Last updated: 2026-11-24 (XL whole-global SVG export and mountain terrain greys; the plan is complete). See [`map-editor-plan.md`](map-editor-plan.md) for the full plan and [`../prompt.md`](../prompt.md) for the specification.
 
 ## Summary
+
+Post-plan addition (2026-11-24): **Export SVG** offers **Whole global map (XL)**
+only for XL-scale global maps. All 18 panels export in the existing net layout
+with independent panel clips and namespaced SVG IDs, preserving terrain,
+embellishments, seam-transformed features and reference-layer controls.
+Dimensions and size estimates cover the entire map; downloads use
+`<name>-global.svg`. L-scale worlds and single-panel/local maps retain their
+existing export scopes. The model, saved data and projection are unchanged.
 
 Post-plan adjustment (2026-11-24): Mountains (`M`, `mountains`) use 30% grey
 (`#b3b3b3`) in the editor and SVG ground fill. SVG mountain embellishment bodies
@@ -132,7 +140,7 @@ Post-plan additions (2026-10-30): local maps across panel seams, and crop/rescal
     - Forest: four deterministic variants of the reference renderer's 4–7-lobed quadratic crowns, sampled into polylines, above single-line trunks; feet on a jittered 0.265 × 0.3 hex lattice. `hasTrunk` is true only within 55/(120√3) hex of an internal forest/non-forest boundary. Spatial buckets avoid scanning every boundary for every tree; no clearance band or fringe row moves crowns.
   - `SvgExport` (DOM-free, §11.54–57, §11.59): `write(doc, { panelId?, width?, layers? })` → deterministic self-contained SVG; `dimensions(doc, panel?, width?)` → `{ width, height, spanWidth, spanHeight, bounds }`; `fileName(doc, panel?)`; XML `escape`; `LAYER_DEFINITIONS`, `DEFAULT_WIDTH` (1600) and `HEX_UNITS` (48).
     - `estimate(doc, panel?, embellish = true)` → `{ tileCount, embellishedCount, bytes }`: an upper-bound size of 4 KB + 4 B per tile + `EMBELLISHED_TILE_BYTES` (1,100) per embellished tile (§11.64).
-    - A selected global panel is north-up and clipped; local maps export whole. The viewBox has 48 units per hex, independent of physical scale, and output height follows width/aspect ratio.
+    - A selected global panel is north-up and clipped; local maps export whole. `panelId: 'global'` exports an XL global map's entire net, with one transformed, clipped group per panel and unique prefixed IDs. All export entry points reject that scope for other scales or map kinds; `canExportGlobal(doc)` gates the UI. The viewBox has 48 units per hex, independent of physical scale, and output height follows width/aspect ratio.
     - Terrain uses even-odd region paths/use; shorelines are smoothed, the optional hex grid has unique edges. Roads/trails and tapered rivers reuse shared curves/styles. Glyph symbols/use and haloed labels retain partial-tile anchors, seam transforms, category/rotation/offset units. Landmark names are optional.
     - The `embellishment` layer sits between terrain and shoreline, above all ground fills. Instances from all regions are sorted north to south and emitted in consecutive `<g data-terrain>` runs without region clips; only `map-clip` applies. Used motif variants are defined once as `emb-<key>-<n>` and placed with `<use>` (scaled for partial peaks). Forest variants with trunks have a `-trunk` suffix and contain the trunk before the crown, preserving per-tree depth order. Filled motifs use the descriptor body or terrain colour, or white with colours off.
     - `layers` boolean keys: `terrain`, `embellishment`, `shoreline`, `grid`, `road`, `trail`, `river`, `landmark`, `landmarkNames`, `label`; all default on except grid/names. Disabled groups are omitted. No external files or mutation of the model/history. XML-invalid text and invalid settings throw explicitly.

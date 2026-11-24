@@ -69,6 +69,7 @@ Use this checklist to test a release by hand in a current Chromium, Firefox or S
 ## SVG export
 
 - [ ] **Export SVG** opens a dialog. The scope defaults to the focused, selected or centre panel (or **Whole local map**). Width validation rejects 0 and non-integers.
+- [ ] An XL global map offers **Whole global map (XL)**. Export it and verify all 18 panels in the net layout, panel clipping, terrain and seam-crossing features; the filename is `<name>-global.svg`. Rescale to L and confirm this scope is absent while individual panels still export.
 - [ ] Layer checkboxes start from the canvas visibility, with shorelines and terrain embellishments on and landmark names off. Changing them does not change the canvas.
 - [ ] A single-panel map exports only its chosen panel (scope cannot change). Equator and poles follow their checkbox in global, single-panel and local exports.
 - [ ] **Download SVG** downloads `<name>-<Panel>.svg` (or `<name>.svg` locally). The map stays unsaved (`*`) and undo history is unchanged. The status bar reports the size and time.

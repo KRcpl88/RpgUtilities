@@ -202,7 +202,10 @@ browser autosave.
 ### SVG export
 
 **Export SVG** downloads one selected global panel, the complete single-panel map,
-or the entire local map, north-up. Choose the output width (default 1600 px); height preserves the map's aspect
+or the entire local map, north-up. Global maps at **XL tile scale** also offer
+**Whole global map (XL)** in the Scope selector, exporting all 18 panels in the
+net layout as `<name>-global.svg`. This scope is unavailable at L tile scale.
+Choose the output width (default 1600 px); height preserves the map's aspect
 ratio. Layer options include terrain colours, terrain embellishments, smoothed
 shorelines, hex grid, roads, trails, tapered rivers, landmarks, optional landmark
 names, labels, and the equator/poles reference layer.
