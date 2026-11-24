@@ -288,12 +288,19 @@ test('SVG is well-formed XML with unique ids and resolved internal references', 
   const global = model.createGlobalMap({ panelHexes: 4 });
   const rich = model.createGlobalMap({ panelHexes: 8 });
   rich.terrainIds.set(view.demoTerrain(rich.topo, 3));
+  for (const panelId of Object.keys(rich.topo.panels)) {
+    const tile = rich.topo.tiles.find((item) => item.panelId === panelId && !item.isPartial);
+    model.setLandmark(rich, tile.index, { type: 'castle', name: 'Global keep' });
+    model.addOverlay(rich, { type: 'road', tileIndices: [tile.index] });
+    model.addLabel(rich, { tileIndex: tile.index, category: 'location', text: 'Global label' });
+  }
   for (let tileIndex = 0; tileIndex < doc.tileCount; tileIndex++) {
     model.setTerrain(doc, tileIndex, tileIndex % 17);
   }
   const texts = [svgExport.write(doc), svgExport.write(doc, { layers: { grid: true, landmarkNames: true } }),
     svgExport.write(doc, { layers: { terrain: false } }),
     svgExport.write(global, { panelId: coordinates.panelIdByName('Eta') }),
+    svgExport.write(rich, { panelId: 'global', layers: { grid: true, landmarkNames: true } }),
     ...['Beta', 'Gamma', 'Delta', 'Iota'].map((name) => svgExport.write(rich, { panelId: coordinates.panelIdByName(name) }))];
   const check = spawnSync('python3', ['-c', `
 import json
@@ -367,6 +374,96 @@ test('global export is panel-north-up, with seam-transformed curves and label co
   }
   const remote = svgExport.write(doc, { panelId: coordinates.panelIdByName('Mu') });
   assert.doesNotMatch(remote, />Seam label</);
+  const whole = svgExport.write(doc, { panelId: 'global' });
+  const size = svgExport.dimensions(doc, 'global');
+  const toSvg = [48 / doc.topo.d, 0, 0, -48 / doc.topo.d, -size.bounds[0] * 48, size.bounds[3] * 48];
+  for (const panelId of [a, b]) {
+    const group = new RegExp(`<g id="panel-\\d+" data-panel="${panelId}" transform="matrix\\(([^)]+)\\)">([\\s\\S]*?)(?=<g id="panel-\\d+" data-panel=|</svg>)`).exec(whole);
+    assert.ok(group, 'both sides of a seam are included in the whole-map export');
+    assert.match(group[2], /Seam label/);
+    const transform = group[1].split(' ').map(Number);
+    const match = /<path data-point="0" d="M([^C]+)C([^"]+)"/.exec(group[2]);
+    const values = `${match[1]} ${match[2]}`.trim().split(/\s+/).map(Number);
+    const placement = view.findPlacement(view.mapLayout(doc), panelId);
+    const curve = view.overlayCurves(doc.topo, doc.overlays[0]).find((item) => item.panelId === panelId);
+    curve.control.forEach((point, index) => {
+      const actual = projection.applyTransform(transform, values.slice(index * 2, index * 2 + 2));
+      const expected = projection.applyTransform(toSvg, projection.applyTransform(placement.frameToWorld, point));
+      assert.ok(util.pointDistance(actual, expected) < 1e-5, 'seam curves use their own panel net transform');
+    });
+  }
+});
+
+test('whole XL global SVG covers every net panel and preserves features, layers and map data', () => {
+  for (const panelHexes of [4, 8]) {
+    const doc = model.createGlobalMap({ panelHexes, tileScale: 'XL', name: 'Whole world' });
+    doc.terrainIds.set(view.demoTerrain(doc.topo, 3));
+    for (const panelId of Object.keys(doc.topo.panels)) {
+      const tile = doc.topo.tiles.find((item) => item.panelId === panelId && !item.isPartial);
+      model.setLandmark(doc, tile.index, { type: 'castle', name: `Keep ${panelId}` });
+      model.addLabel(doc, { tileIndex: tile.index, category: 'location', text: `Label ${panelId}`, rotation: 35 });
+    }
+    const before = fileFormat.write(doc);
+    const revision = doc.revision;
+    const options = { panelId: 'global', width: 1200, layers: { grid: true, landmarkNames: true } };
+    const text = svgExport.write(doc, options);
+    const size = svgExport.dimensions(doc, 'global', 1200, false);
+    const layout = view.mapLayout(doc);
+    size.bounds.forEach((value, index) => {
+      assert.ok(Math.abs(value - layout.bounds[index] / doc.topo.d) < 1e-10);
+    });
+    assert.equal(size.height, Math.round(1200 * size.spanHeight / size.spanWidth));
+    assert.equal(svgExport.write(doc, options), text);
+    assert.equal(fileFormat.write(doc), before);
+    assert.equal(doc.revision, revision);
+    assert.match(text, /Whole world - Whole global map<\/title>/);
+    assert.doesNotMatch(text, /(?:NaN|Infinity|undefined)/);
+    const renderedSize = svgExport.dimensions(doc, 'global', 1200);
+    const netToSvg = [48 / doc.topo.d, 0, 0, -48 / doc.topo.d,
+      -renderedSize.bounds[0] * 48, renderedSize.bounds[3] * 48];
+    const groups = [...text.matchAll(/<g id="panel-(\d+)" data-panel="([^"]+)" transform="matrix\(([^)]+)\)">\n<defs>\n<clipPath[^>]+><path d="([^"]+)"/g)];
+    assert.deepEqual(groups.map((match) => match[2]), layout.placements.map((placement) => placement.panelId));
+    for (const match of groups) {
+      const placement = view.findPlacement(layout, match[2]);
+      const transform = match[3].split(' ').map(Number);
+      const points = [...match[4].matchAll(/[ML]([^MLZ]+)/g)].map((point) => point[1].trim().split(/\s+/).map(Number));
+      assert.equal(points.length, placement.frameOutline.length);
+      points.forEach((point, index) => {
+        const actual = projection.applyTransform(transform, point);
+        const expected = projection.applyTransform(netToSvg, placement.outline[index]);
+        assert.ok(util.pointDistance(actual, expected) < 1e-5, 'each clip follows the exact panel net outline');
+        assert.ok(actual[0] >= -1e-5 && actual[0] <= renderedSize.spanWidth + 1e-5);
+        assert.ok(actual[1] >= -1e-5 && actual[1] <= renderedSize.spanHeight + 1e-5);
+      });
+      assert.ok(text.includes(`>Keep ${match[2]}</text>`));
+      assert.ok(text.includes(`>Label ${match[2]}</text>`));
+    }
+    assert.equal(svgExport.fileName(doc, 'global'), 'Whole-world-global.svg');
+    const estimate = svgExport.estimate(doc, 'global');
+    assert.equal(estimate.tileCount, doc.tileCount);
+    assert.equal(estimate.embellishedCount, [...doc.terrainIds].filter((id) => terrain.byId(id).embellish).length);
+    assert.ok(estimate.bytes >= text.length);
+    const disabled = svgExport.write(doc, { panelId: 'global',
+      layers: { terrain: false, embellishment: false, reference: false, label: false, landmark: false } });
+    assert.doesNotMatch(disabled, /id="panel-\d+-(?:layer-(?:terrain|embellishment|reference|label|landmark)|region-)|<symbol|<text/);
+    assert.ok(svgExport.estimate(doc, 'global', false).bytes < estimate.bytes);
+  }
+});
+
+test('whole global SVG scope rejects non-XL and non-global maps at every export entry point', () => {
+  const docs = [
+    model.createGlobalMap({ panelHexes: 4, tileScale: 'L' }),
+    model.createPanelMap({ panelHexes: 4, tileScale: 'XL', panelId: coordinates.panelIdByName('Alpha') }),
+    localMap('regional', 'XL'),
+  ];
+  for (const doc of docs) {
+    assert.equal(svgExport.canExportGlobal(doc), false);
+    assert.throws(() => svgExport.write(doc, { panelId: 'global' }), /XL global map/);
+    for (const method of ['dimensions', 'estimate', 'fileName']) {
+      assert.throws(() => svgExport[method](doc, 'global'), /XL global map/);
+    }
+    assert.doesNotThrow(() => svgExport.write(doc, { panelId: doc.local ? 'local' : Object.keys(doc.topo.panels)[0] }));
+  }
 });
 
 test('rivers taper from source to mouth along exact cubic sub-curves; trails stay dashed', () => {

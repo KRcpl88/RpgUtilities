@@ -5780,6 +5780,7 @@
   const HEX_UNITS = view.LABEL_UNITS_PER_HEX;
   const UNCOLOURED_BODY = '#ffffff';
   const DEFAULT_WIDTH = 1600;
+  const GLOBAL_SCOPE = 'global';
   const SHORE_DEVIATION = 0.30 * 2 / Math.sqrt(3); // Full flat-top hex width in hex-height units.
   const LAYER_DEFINITIONS = Object.freeze([
     ['terrain', 'Terrain colours', true], ['embellishment', 'Terrain embellishments', true], ['shoreline', 'Shorelines', true], ['grid', 'Hex overlay', false],
@@ -5820,22 +5821,41 @@
     return `<path d="${data}${shape.isClosed ? 'Z' : ''}" ${paint}/>`;
   }
 
-  function matrix(transform) {
-    return `matrix(${transform.map(numberText).join(' ')})`;
+  function matrix(transform, precision = 6) {
+    assertCondition(transform.every(Number.isFinite), 'SVG geometry must be finite');
+    return `matrix(${transform.map((value) => util.formatNumber(value, precision)).join(' ')})`;
+  }
+
+  function canExportGlobal(doc) {
+    return doc.kind === 'global' && doc.global.tileScale === 'XL';
+  }
+
+  function scopePlacements(doc, panelId) {
+    if (panelId === GLOBAL_SCOPE) {
+      assertCondition(canExportGlobal(doc), 'Whole global map SVG export requires an XL global map');
+      return view.mapLayout(doc).placements;
+    }
+    regions.outlineShape(doc, panelId);
+    return [{ panelId, frameToWorld: [1, 0, 0, 1, 0, 0] }];
   }
 
   function dimensions(doc, panelId = doc.local ? 'local' : doc.global.panelId || null, width = DEFAULT_WIDTH, reference = true) {
     assertCondition(Number.isSafeInteger(width) && width > 0, 'SVG width must be a positive integer');
-    const bounds = view.boundsOf(regions.outlineShape(doc, panelId));
+    const placements = scopePlacements(doc, panelId);
+    const geometry = view.mapGeometry(doc);
+    const toHex = (placement, point) => util.scale(projection.applyTransform(placement.frameToWorld, point), 1 / geometry.d);
+    const bounds = view.boundsOf(placements.flatMap((placement) =>
+      view.getFrameOutline(geometry, placement.panelId).map((point) => toHex(placement, point))));
     if (reference) {
-      const geometry = view.mapGeometry(doc);
       const margin = (bounds[2] - bounds[0]) * 14 / DEFAULT_WIDTH;
-      for (const pole of view.referenceGeometry(doc, panelId).poles) {
-        const [x, y] = util.scale(pole.point, 1 / geometry.d);
-        bounds[0] = Math.min(bounds[0], x - margin);
-        bounds[1] = Math.min(bounds[1], y - margin);
-        bounds[2] = Math.max(bounds[2], x + margin);
-        bounds[3] = Math.max(bounds[3], y + margin);
+      for (const placement of placements) {
+        for (const pole of view.referenceGeometry(doc, placement.panelId).poles) {
+          const [x, y] = toHex(placement, pole.point);
+          bounds[0] = Math.min(bounds[0], x - margin);
+          bounds[1] = Math.min(bounds[1], y - margin);
+          bounds[2] = Math.max(bounds[2], x + margin);
+          bounds[3] = Math.max(bounds[3], y + margin);
+        }
       }
     }
     const spanWidth = (bounds[2] - bounds[0]) * HEX_UNITS;
@@ -5993,6 +6013,37 @@
       layers[key] = value;
     }
     const size = dimensions(doc, panelId, options.width === undefined ? DEFAULT_WIDTH : options.width, layers.reference);
+    const scope = panelId === GLOBAL_SCOPE ? 'Whole global map'
+      : doc.local ? 'Local map' : projection.build().panels[panelId].name;
+    const lines = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${size.width}" height="${size.height}" viewBox="0 0 ${numberText(size.spanWidth)} ${numberText(size.spanHeight)}" role="img" aria-labelledby="map-title">`,
+      `<title id="map-title">${escape(doc.name || 'Untitled')} - ${escape(scope)}</title>`,
+    ];
+    if (panelId === GLOBAL_SCOPE) {
+      const geometry = view.mapGeometry(doc);
+      const netToSvg = [HEX_UNITS / geometry.d, 0, 0, -HEX_UNITS / geometry.d,
+        -size.bounds[0] * HEX_UNITS, size.bounds[3] * HEX_UNITS];
+      for (const [index, placement] of scopePlacements(doc, panelId).entries()) {
+        const panelSize = dimensions(doc, placement.panelId, DEFAULT_WIDTH, false);
+        const svgToFrame = [geometry.d / HEX_UNITS, 0, 0, -geometry.d / HEX_UNITS,
+          panelSize.bounds[0] * geometry.d, panelSize.bounds[3] * geometry.d];
+        const transform = projection.composeTransforms(svgToFrame,
+          projection.composeTransforms(placement.frameToWorld, netToSvg));
+        lines.push(`<g id="panel-${index}" data-panel="${placement.panelId}" transform="${matrix(transform, 12)}">`);
+        appendScope(lines, doc, placement.panelId, layers, panelSize, `panel-${index}-`, size.spanWidth / DEFAULT_WIDTH);
+        lines.push('</g>');
+      }
+    } else {
+      appendScope(lines, doc, panelId, layers, size);
+    }
+    lines.push('</svg>', '');
+    return lines.join('\n');
+  }
+
+  // Reuse the north-up panel renderer, with isolated IDs when assembling the net.
+  function appendScope(lines, doc, panelId, layers, size, prefix = '', referencePixel = size.spanWidth / DEFAULT_WIDTH) {
+    const svgId = (id) => `${prefix}${id}`;
     const geometry = view.mapGeometry(doc);
     const regionsData = regions.build(doc, panelId);
     const shorelines = layers.shoreline ? buildShorelines(regionsData) : null;
@@ -6002,14 +6053,10 @@
     const hexToSvg = [HEX_UNITS, 0, 0, -HEX_UNITS, -size.bounds[0] * HEX_UNITS, size.bounds[3] * HEX_UNITS];
     const frameToSvg = projection.composeTransforms([1 / geometry.d, 0, 0, 1 / geometry.d, 0, 0], hexToSvg);
     const outlineShape = { points: [...regionsData.outline, regionsData.outline[0]], isClosed: true };
-    const scope = doc.local ? 'Local map' : projection.build().panels[panelId].name;
-    const lines = [
-      '<?xml version="1.0" encoding="UTF-8"?>',
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${size.width}" height="${size.height}" viewBox="0 0 ${numberText(size.spanWidth)} ${numberText(size.spanHeight)}" role="img" aria-labelledby="map-title">`,
-      `<title id="map-title">${escape(doc.name || 'Untitled')} - ${escape(scope)}</title>`,
+    lines.push(
       '<defs>',
-      `<clipPath id="map-clip"><path d="${pathData(outlineShape, hexToSvg)}"/></clipPath>`,
-    ];
+      `<clipPath id="${svgId('map-clip')}"><path d="${pathData(outlineShape, hexToSvg)}"/></clipPath>`,
+    );
     // Motifs may span matching equatorial halves; terrain fills, grid and ownership
     // continue to use the independently clipped cells.
     const embellishmentData = layers.embellishment
@@ -6022,13 +6069,13 @@
       if (item && item.key === 'farmland') {
         const path = embellishmentData.regions[index].loops
           .map((points) => pathData({ points, isClosed: true }, hexToSvg, embellishmentShorelines)).join('');
-        lines.push(`<clipPath id="farmland-clip-${index}"><path clip-rule="evenodd" d="${path}"/></clipPath>`);
+        lines.push(`<clipPath id="${svgId(`farmland-clip-${index}`)}"><path clip-rule="evenodd" d="${path}"/></clipPath>`);
       }
     });
     if (layers.terrain) {
       regionsData.regions.forEach((region, index) => {
         const path = region.loops.map((points) => pathData({ points: points, isClosed: true }, hexToSvg, shorelines)).join('');
-        lines.push(`<path id="region-${index}" fill-rule="evenodd" clip-rule="evenodd" d="${path}"/>`);
+        lines.push(`<path id="${svgId(`region-${index}`)}" fill-rule="evenodd" clip-rule="evenodd" d="${path}"/>`);
       });
     }
     const usedVariants = new Map();
@@ -6047,28 +6094,28 @@
             continue;
           }
           const visibleShapes = type.key === 'forest' && !suffix ? shapes.slice(1) : shapes;
-          lines.push(`<g id="emb-${type.key}-${variant}${suffix}">${visibleShapes.map((shape) => motifPath(shape, spec, body)).join('')}</g>`);
+          lines.push(`<g id="${svgId(`emb-${type.key}-${variant}${suffix}`)}">${visibleShapes.map((shape) => motifPath(shape, spec, body)).join('')}</g>`);
         }
       });
     }
     if (layers.landmark) {
       const types = new Set([...doc.landmarks.values()].map((landmark) => landmark.type));
       for (const type of terrain.LANDMARK_TYPES.filter((item) => types.has(item.key))) {
-        lines.push(`<symbol id="landmark-${type.key}" viewBox="-12 -12 24 24" overflow="visible"><path d="${type.path}" fill="#f9edcc" stroke="#28221b" stroke-width="1.8" stroke-linejoin="round"/></symbol>`);
+        lines.push(`<symbol id="${svgId(`landmark-${type.key}`)}" viewBox="-12 -12 24 24" overflow="visible"><path d="${type.path}" fill="#f9edcc" stroke="#28221b" stroke-width="1.8" stroke-linejoin="round"/></symbol>`);
       }
     }
-    lines.push('</defs>', '<g clip-path="url(#map-clip)">');
+    lines.push('</defs>', `<g clip-path="url(#${svgId('map-clip')})">`);
     if (layers.terrain) {
-      lines.push('<g id="layer-terrain">');
+      lines.push(`<g id="${svgId('layer-terrain')}">`);
       regionsData.regions.forEach((region, index) => {
         const type = terrain.byId(region.terrainId);
         const ground = type.key === 'forest' ? terrain.byKey('plain') : type;
-        lines.push(`<use href="#region-${index}" fill="${ground.color}"/>`);
+        lines.push(`<use href="#${svgId(`region-${index}`)}" fill="${ground.color}"/>`);
       });
       lines.push('</g>');
     }
     if (layers.embellishment) {
-      lines.push('<g id="layer-embellishment" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round">');
+      lines.push(`<g id="${svgId('layer-embellishment')}" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round">`);
       const instances = embellishments.flatMap((item, regionIndex) => item
         ? item.instances.map((instance) => ({ item, instance, regionIndex })) : []);
       instances.sort((a, b) => b.instance.point[1] - a.instance.point[1] || a.instance.point[0] - b.instance.point[0]);
@@ -6079,7 +6126,7 @@
           if (activeKey !== null) {
             lines.push('</g>');
           }
-          const clip = item.key === 'farmland' ? ` clip-path="url(#farmland-clip-${regionIndex})"` : '';
+          const clip = item.key === 'farmland' ? ` clip-path="url(#${svgId(`farmland-clip-${regionIndex}`)})"` : '';
           lines.push(`<g data-terrain="${item.key}"${clip}>`);
           activeKey = groupKey;
         }
@@ -6091,7 +6138,7 @@
             .map((shape) => motifPath(shape, spec, body)).join('')}</g>`);
           continue;
         }
-        const href = `href="#emb-${item.key}-${instance.variant}${instance.hasTrunk ? '-trunk' : ''}"`;
+        const href = `href="#${svgId(`emb-${item.key}-${instance.variant}${instance.hasTrunk ? '-trunk' : ''}`)}"`;
         lines.push(instance.scale === 1 ? `<use ${href} x="${point[0]}" y="${point[1]}"/>`
           : `<use ${href} transform="matrix(${util.formatNumber(instance.scale, 4)} 0 0 ${util.formatNumber(instance.scale, 4)} ${point[0]} ${point[1]})"/>`);
       }
@@ -6101,7 +6148,7 @@
       lines.push('</g>');
     }
     if (layers.shoreline) {
-      lines.push('<g id="layer-shoreline" fill="none" stroke="#253c46" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">');
+      lines.push(`<g id="${svgId('layer-shoreline')}" fill="none" stroke="#253c46" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">`);
       for (const path of regionsData.shorelines) {
         lines.push(`<path d="${pathData(path, hexToSvg, shorelines)}"/>`);
       }
@@ -6111,14 +6158,14 @@
       const grid = regionsData.edges.map((edge) => pathData({
         points: [regionsData.points[edge.indexA], regionsData.points[edge.indexB]], isClosed: false,
       }, hexToSvg)).join('');
-      lines.push(`<g id="layer-grid" fill="none" stroke="#10151c" stroke-opacity="0.35" stroke-width="0.75"><path d="${grid}"/></g>`);
+      lines.push(`<g id="${svgId('layer-grid')}" fill="none" stroke="#10151c" stroke-opacity="0.35" stroke-width="0.75"><path d="${grid}"/></g>`);
     }
     for (const overlay of doc.overlays) {
       if (!layers[overlay.type]) {
         continue;
       }
       const style = view.OVERLAY_STYLES[overlay.type];
-      lines.push(`<g id="overlay-${escape(overlay.id)}" data-layer="${overlay.type}" fill="none" stroke="${style.color}" stroke-width="${numberText(style.spanWidth * 1.5)}" stroke-linecap="round" stroke-linejoin="round"${style.dash.length ? ` stroke-dasharray="${style.dash.join(' ')}"` : ''}>`);
+      lines.push(`<g id="${svgId(`overlay-${escape(overlay.id)}`)}" data-layer="${overlay.type}" fill="none" stroke="${style.color}" stroke-width="${numberText(style.spanWidth * 1.5)}" stroke-linecap="round" stroke-linejoin="round"${style.dash.length ? ` stroke-dasharray="${style.dash.join(' ')}"` : ''}>`);
       if (overlay.tileIndices.length === 1) {
         const tileIndex = overlay.tileIndices[0], copy = view.featureCopies(geometry, layout, tileIndex)[0];
         if (copy) {
@@ -6146,7 +6193,7 @@
       lines.push('</g>');
     }
     if (layers.landmark) {
-      lines.push('<g id="layer-landmark">');
+      lines.push(`<g id="${svgId('layer-landmark')}">`);
       for (const [tileIndex, landmark] of [...doc.landmarks].sort((a, b) => a[0] - b[0])) {
         const copy = view.featureCopies(geometry, layout, tileIndex)[0];
         if (!copy) {
@@ -6156,7 +6203,7 @@
         const unit = geometry.d / HEX_UNITS;
         const glyph = [26 / 24 * unit, 0, 0, -26 / 24 * unit, point[0], point[1]];
         const transform = projection.composeTransforms(glyph, projection.composeTransforms(copy.frameToWorld, frameToSvg));
-        lines.push(`<g data-tile="${tileIndex}" transform="${matrix(transform)}"><use href="#landmark-${landmark.type}" x="-12" y="-12" width="24" height="24"/>`);
+        lines.push(`<g data-tile="${tileIndex}" transform="${matrix(transform)}"><use href="#${svgId(`landmark-${landmark.type}`)}" x="-12" y="-12" width="24" height="24"/>`);
         if (layers.landmarkNames && landmark.name) {
           lines.push(`<text x="0" y="21" text-anchor="middle" font-family="system-ui, sans-serif" font-size="12" fill="#201c19" stroke="#f9edcc" stroke-width="1.5" paint-order="stroke">${escape(landmark.name)}</text>`);
         }
@@ -6165,7 +6212,7 @@
       lines.push('</g>');
     }
     if (layers.label) {
-      lines.push('<g id="layer-label" text-anchor="middle" dominant-baseline="central" font-family="system-ui, sans-serif" fill="#201c19" stroke="#f9edcc" stroke-linejoin="round" paint-order="stroke">');
+      lines.push(`<g id="${svgId('layer-label')}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, sans-serif" fill="#201c19" stroke="#f9edcc" stroke-linejoin="round" paint-order="stroke">`);
       for (const label of doc.labels) {
         const copy = view.featureCopies(geometry, layout, label.tileIndex)[0];
         if (!copy) {
@@ -6180,9 +6227,9 @@
     lines.push('</g>');
     if (layers.reference) {
       const reference = view.referenceGeometry(doc, panelId);
-      const pixel = size.spanWidth / DEFAULT_WIDTH;
+      const pixel = referencePixel;
       const radius = 9 * pixel;
-      lines.push(`<g id="layer-reference" fill="none" stroke="#d32f2f" stroke-width="${numberText(1.5 * pixel)}">`);
+      lines.push(`<g id="${svgId('layer-reference')}" fill="none" stroke="#d32f2f" stroke-width="${numberText(1.5 * pixel)}">`);
       for (const segment of reference.equatorSegments) {
         lines.push(`<path data-reference="equator" d="${pathData({ points: segment, isClosed: false }, frameToSvg)}"/>`);
       }
@@ -6196,8 +6243,6 @@
       }
       lines.push('</g>');
     }
-    lines.push('</svg>', '');
-    return lines.join('\n');
   }
 
   // Mountain silhouettes are unique inline paths; other terrains reuse motif definitions.
@@ -6207,7 +6252,14 @@
   // Rough size of an export before writing it: { tileCount, embellishedCount, bytes }. Counts
   // the scope's own tiles; features add comparatively little.
   function estimate(doc, panelId = doc.local ? 'local' : doc.global.panelId || null, embellish = true) {
-    regions.outlineShape(doc, panelId);
+    const placements = scopePlacements(doc, panelId);
+    if (panelId === GLOBAL_SCOPE) {
+      return placements.reduce((total, placement) => {
+        const part = estimate(doc, placement.panelId, embellish);
+        return { tileCount: total.tileCount + part.tileCount, embellishedCount: total.embellishedCount + part.embellishedCount,
+          bytes: total.bytes + part.bytes };
+      }, { tileCount: 0, embellishedCount: 0, bytes: 4096 });
+    }
     const firstIndex = doc.local ? 0 : doc.topo.panels[panelId].firstTile;
     const tileCount = doc.local ? doc.tileCount : doc.topo.panels[panelId].tileCount;
     const embellished = terrain.TERRAINS.map((type) => !!type.embellish);
@@ -6229,13 +6281,14 @@
   }
 
   function fileName(doc, panelId = doc.local ? 'local' : doc.global.panelId || null) {
-    regions.outlineShape(doc, panelId);
+    scopePlacements(doc, panelId);
     const base = fileFormat.fileName(doc).slice(0, -fileFormat.FILE_EXTENSION.length);
-    return `${base}${doc.local ? '' : '-' + projection.build().panels[panelId].name}.svg`;
+    const suffix = panelId === GLOBAL_SCOPE ? '-global' : doc.local ? '' : '-' + projection.build().panels[panelId].name;
+    return `${base}${suffix}.svg`;
   }
 
-  rpgMap.SvgExport = Object.freeze({ HEX_UNITS, DEFAULT_WIDTH, LAYER_DEFINITIONS, EMBELLISHED_TILE_BYTES,
-    SHORE_DEVIATION, buildShorelines, Escape: escape, dimensions, estimate, write, fileName });
+  rpgMap.SvgExport = Object.freeze({ HEX_UNITS, DEFAULT_WIDTH, GLOBAL_SCOPE, LAYER_DEFINITIONS, EMBELLISHED_TILE_BYTES,
+    SHORE_DEVIATION, buildShorelines, Escape: escape, canExportGlobal, dimensions, estimate, write, fileName });
 })(globalThis);
 </script>
 
@@ -7737,8 +7790,11 @@
       || (state.selectedTile >= 0 ? geometry.tiles[state.selectedTile].panelId : null)
       || (hit ? hit.panelId : Object.keys(projection.SECTOR_LABELS)[0]);
     const panel = selectControl(doc.local ? [['local', 'Whole local map']]
-      : Object.keys(projection.SECTOR_LABELS).filter((id) => Object.hasOwn(doc.topo.panels, id))
-        .map((id) => [id, projection.build().panels[id].name]), panelId, () => updatePreview());
+      : [
+        ...(svgExport.canExportGlobal(doc) ? [[svgExport.GLOBAL_SCOPE, 'Whole global map (XL)']] : []),
+        ...Object.keys(projection.SECTOR_LABELS).filter((id) => Object.hasOwn(doc.topo.panels, id))
+          .map((id) => [id, projection.build().panels[id].name]),
+      ], panelId, () => updatePreview());
     panel.disabled = doc.kind !== 'global';
     const widthInput = element('input', { type: 'number', required: true, min: '1', max: String(Number.MAX_SAFE_INTEGER),
       step: '1', value: String(svgExport.DEFAULT_WIDTH) });
@@ -7756,7 +7812,7 @@
       element('h2', { id: 'export-map-title', textContent: 'Export SVG' }),
       field('export-panel', 'Scope', panel), field('export-width', 'Width (pixels; height keeps aspect ratio)', widthInput),
       element('fieldset', {}, [element('legend', { textContent: 'Include layers' }), ...layerRows]),
-      element('p', { className: 'tool-help', textContent: 'Exports north-up, clipped to this panel or the whole local map. Transparent where terrain colours are omitted. Trees fit inside forest bounds; farmland is clipped to its region. Other embellishments draw over terrain boundaries. With terrain colours off, filled motifs are white.' }),
+      element('p', { className: 'tool-help', textContent: 'Exports panels and local maps north-up. Whole global maps use the net layout and are available only at XL tile scale. Each panel stays clipped to its boundary. Transparent where terrain colours are omitted. Trees fit inside forest bounds; farmland is clipped to its region. Other embellishments draw over terrain boundaries. With terrain colours off, filled motifs are white.' }),
       preview, errorText,
       element('div', { className: 'property-actions' }, [
         element('button', { id: 'export-download', type: 'submit', className: 'tool-button', textContent: 'Download SVG' }),
@@ -7981,7 +8037,7 @@
       element('button', { id: 'file-open', type: 'button', textContent: 'Open\u2026', title: 'Open a .map.txt file (Ctrl+O)', onclick: openMap }),
       element('button', { id: 'file-import', type: 'button', textContent: 'Import / merge\u2026', title: 'Replace overlapping terrain and features from another map at this map\'s hex size; Undo available', onclick: importMap }),
       element('button', { id: 'file-save', type: 'button', textContent: 'Save', title: 'Download the map as a .map.txt file (Ctrl+S)', onclick: saveMap }),
-      element('button', { id: 'file-export', type: 'button', textContent: 'Export SVG', title: 'Export one panel or a local map as SVG', onclick: exportMap }),
+      element('button', { id: 'file-export', type: 'button', textContent: 'Export SVG', title: 'Export a panel, a local map or a whole XL global map as SVG', onclick: exportMap }),
       element('button', { id: 'file-crop', type: 'button', textContent: 'Crop\u2026', title: 'Copy a rectangle or entire panel into a new map, optionally at another hex size', onclick: cropMap }),
       element('button', { id: 'file-rescale', type: 'button', textContent: 'Rescale\u2026', title: 'Change the tile scale of this map', onclick: rescaleMap }),
       openInput, importInput,
