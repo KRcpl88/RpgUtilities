@@ -352,12 +352,19 @@ test('complete overlapping mountain silhouettes fit terrain edges, clearings and
   assert.ok(doublePeaks > 0, 'wide terrain spans include double peaks');
 });
 
-test('SVG mountains use white bodies and open black outlines inheriting terrain strokes in depth order', () => {
+test('SVG mountains use gray ground and bodies with open black outlines in depth order', () => {
   const doc = localMap(5, 5, 'mountains');
   const data = regions.build(doc);
   const mountains = embellish.build(data)[0].instances;
   for (const terrainEnabled of [true, false]) {
     const text = svgExport.write(doc, { layers: { terrain: terrainEnabled } });
+    if (terrainEnabled) {
+      const ground = text.match(/<g id="layer-terrain">(.*?)<\/g>/s)[1];
+      assert.match(ground, /fill="#b3b3b3"/);
+    } else {
+      assert.ok(!text.includes('id="layer-terrain"'));
+      assert.doesNotMatch(text, /fill="#(?:b3b3b3|999999)"/);
+    }
     const layer = text.match(/<g id="layer-embellishment"[^>]*>([\s\S]*?)<g id="layer-shoreline"/)?.[1]
       || text.slice(text.indexOf('<g id="layer-embellishment"'));
     assert.doesNotMatch(layer, /clip-path|scale\(|<use/);
@@ -368,7 +375,7 @@ test('SVG mountains use white bodies and open black outlines inheriting terrain 
       const paths = [...content.matchAll(/<path d="([^"]+)" fill="([^"]+)" stroke="([^"]+)"\/>/g)];
       assert.equal(paths.length, 2);
       assert.equal(paths[0][1], paths[1][1] + 'Z');
-      assert.equal(paths[0][2], '#ffffff');
+      assert.equal(paths[0][2], terrainEnabled ? '#999999' : '#ffffff');
       assert.equal(paths[0][3], 'none');
       assert.equal(paths[1][2], 'none');
       assert.equal(paths[1][3], '#000000');
