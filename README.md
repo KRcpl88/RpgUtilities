@@ -85,7 +85,7 @@ follow [`doc/manual-checklist.md`](doc/manual-checklist.md).
 3. Pan with the middle/right button, Space+drag or arrow keys; zoom with the
    wheel or `+`/`-`. **Home** fits the map; double-click (Pan tool) or `P`
    focuses a panel, and `N` returns to the net view.
-4. **Save** (Ctrl+S) downloads a `.map.txt`; **Export SVG** downloads a picture.
+4. **Save** (Ctrl+S) lets you edit the map name before downloading a `.map.txt`; **Export SVG** downloads a picture.
 
 ### Navigation and the status bar
 
@@ -161,7 +161,7 @@ and can also be toggled independently in SVG export. Polar exports include a
 small transparent margin so the full circle and crosshairs remain visible.
 
 **Open** accepts all three kinds of `.map.txt`, including the samples in
-`map-editor/samples/` and the test fixtures in `tests/fixtures/`. **Save** (Ctrl+S) downloads a canonical text file. New maps start
+`map-editor/samples/` and the test fixtures in `tests/fixtures/`. **Save** (Ctrl+S) opens a dialog with the current map name and a filename preview. Edit the name and confirm **Save** to update the map name and download a canonical `<name>.map.txt` file (unsafe filename characters are replaced). Cancel leaves the name and unsaved state unchanged. New maps start
 unsaved and are autosaved even before their first edit. Canceling New or rejecting
 its discard confirmation preserves the current map.
 

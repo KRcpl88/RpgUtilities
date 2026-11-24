@@ -59,7 +59,8 @@ Use this checklist to test a release by hand in a current Chromium, Firefox or S
 
 ## Save, open and autosave
 
-- [ ] **Save** / Ctrl+S downloads `<name>.map.txt` and clears the `*` from the status bar.
+- [ ] **Save** / Ctrl+S opens a dialog prefilled with the current map name. Edit the name and check the filename preview; confirming **Save** downloads `<name>.map.txt`, updates the title/status name and clears the `*`. Reopen the file and confirm its map name matches.
+- [ ] Cancel or Escape in the Save dialog leaves the name, unsaved indicator and autosave unchanged. Typing in the dialog does not trigger editor shortcuts. Unsafe filename characters are replaced; a blank name downloads `map.map.txt`.
 - [ ] **Open…** / Ctrl+O: open the saved file. The map, features and name are restored, and history is cleared.
 - [ ] Open `map-editor/samples/sample-world.map.txt` and `sample-valley.map.txt`. Both show all 17 terrains; the valley shows every landmark type, label category and overlay type, and the world's routes cross panel seams.
 - [ ] Opening a non-map text file shows an error and keeps the current map.
