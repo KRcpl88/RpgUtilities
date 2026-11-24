@@ -2268,7 +2268,7 @@
     ['v', 'firth', 'Firth', '#5a8bb0', true],
     ['.', 'plain', 'Plain', '#c9d98f', false],
     ['h', 'hills', 'Hills', '#b5b56e', false],
-    ['M', 'mountains', 'Mountains', '#9a8a74', false],
+    ['M', 'mountains', 'Mountains', '#b3b3b3', false],
     ['A', 'mountainPeak', 'Mountain peak', '#7d6e5d', false],
     ['d', 'desert', 'Desert', '#e8d49a', false],
     ['D', 'sandDunes', 'Sand dunes', '#e3c27a', false],
@@ -2288,7 +2288,7 @@
   const EMBELLISH_DEFINITIONS = {
     islands: ['scatter', 0.34, 0.28, 0.8, '#253c46', null, '#d8c690'],
     hills: ['scatter', 0.34, 0.22, 1, '#5e592b', null, null],
-    mountains: ['scatter', 0.42, 0.34, 1, '#000000', null, '#ffffff'],
+    mountains: ['scatter', 0.42, 0.34, 1, '#000000', null, '#999999'],
     mountainPeak: ['tile', 1, 1, 1, '#3d3229', null, null],
     desert: ['scatter', 0.3, 0.2, 0.9, '#9c7a3a', null, null],
     sandDunes: ['scatter', 0.36, 0.22, 1, '#8f6a2c', null, null],
@@ -6085,8 +6085,9 @@
         const point = projection.applyTransform(hexToSvg, instance.point).map(motifNumber);
         if (instance.shapes) {
           const spec = terrain.byId(item.terrainId).embellish;
+          const body = layers.terrain ? spec.body : UNCOLOURED_BODY;
           lines.push(`<g transform="translate(${point.join(' ')})">${instance.shapes
-            .map((shape) => motifPath(shape, spec, spec.body)).join('')}</g>`);
+            .map((shape) => motifPath(shape, spec, body)).join('')}</g>`);
           continue;
         }
         const href = `href="#emb-${item.key}-${instance.variant}${instance.hasTrunk ? '-trunk' : ''}"`;

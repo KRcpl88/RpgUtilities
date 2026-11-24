@@ -1,8 +1,14 @@
 # Global Map Editor: Plan Status
 
-Last updated: 2026-11-23 (frozen plain terrain; the plan is complete). See [`map-editor-plan.md`](map-editor-plan.md) for the full plan and [`../prompt.md`](../prompt.md) for the specification.
+Last updated: 2026-11-24 (mountain terrain greys; the plan is complete). See [`map-editor-plan.md`](map-editor-plan.md) for the full plan and [`../prompt.md`](../prompt.md) for the specification.
 
 ## Summary
+
+Post-plan adjustment (2026-11-24): Mountains (`M`, `mountains`) use 30% grey
+(`#b3b3b3`) in the editor and SVG ground fill. SVG mountain embellishment bodies
+use 40% grey (`#999999`), retaining black outlines and white bodies when terrain
+colours are disabled. Percentages denote black coverage; mountain peak terrain
+is unchanged.
 
 Post-plan addition (2026-11-23): Frozen plain (`F`, `frozenPlain`) is white
 non-water terrain with no embellishments. It appears in the editor palette and
