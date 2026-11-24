@@ -208,6 +208,7 @@
   <span id="status-message"></span>
 </footer>
 <dialog id="new-map-dialog" class="map-dialog" aria-labelledby="new-map-title"></dialog>
+<dialog id="save-map-dialog" class="map-dialog" aria-labelledby="save-map-title"></dialog>
 <dialog id="export-map-dialog" class="map-dialog" aria-labelledby="export-map-title"></dialog>
 <dialog id="crop-map-dialog" class="map-dialog" aria-labelledby="crop-map-title"></dialog>
 <dialog id="rescale-map-dialog" class="map-dialog" aria-labelledby="rescale-map-title"></dialog>
@@ -7674,13 +7675,50 @@
   }
 
   function saveMap() {
+    const dialog = root.document.getElementById('save-map-dialog');
+    if (dialog.open) {
+      return;
+    }
     endStroke();
     finishLabelDrag(false);
-    const name = fileFormat.fileName(state.doc);
-    download(fileFormat.write(state.doc), 'text/plain', name);
-    state.savedRevision = state.doc.revision;
-    clearAutosave();
-    setMessage(`Saved ${name}`);
+    const doc = state.doc;
+    const nameInput = element('input', { type: 'text', value: doc.name, autofocus: true });
+    const preview = element('p', { id: 'save-map-preview', className: 'tool-help' });
+    const errorText = element('p', { id: 'save-map-error', className: 'dialog-error', role: 'alert' });
+    const form = element('form', { id: 'save-map-form' }, [
+      element('h2', { id: 'save-map-title', textContent: 'Save map' }),
+      field('save-name', 'Map name', nameInput), preview, errorText,
+      element('div', { className: 'property-actions' }, [
+        element('button', { id: 'save-download', type: 'submit', className: 'tool-button', textContent: 'Save' }),
+        actionButton('save-cancel', 'Cancel', () => dialog.close()),
+      ]),
+    ]);
+    function updatePreview() {
+      preview.textContent = `Download: ${fileFormat.fileName({ name: nameInput.value })}`;
+      errorText.textContent = '';
+    }
+    form.addEventListener('input', updatePreview);
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      errorText.textContent = '';
+      try {
+        const savedDoc = { ...doc, name: nameInput.value };
+        const name = fileFormat.fileName(savedDoc);
+        download(fileFormat.write(savedDoc), 'text/plain', name);
+        doc.name = savedDoc.name;
+        state.savedRevision = doc.revision;
+        root.document.title = `${doc.name || 'Untitled'} \u2013 RPG World Map Editor`;
+        clearAutosave();
+        dialog.close();
+        setMessage(`Saved ${name}`);
+      } catch (caught) {
+        errorText.textContent = `Save failed: ${caught.message}`;
+      }
+    });
+    dialog.replaceChildren(form);
+    updatePreview();
+    state.spaceDown = false;
+    dialog.showModal();
   }
 
   function exportMap() {
